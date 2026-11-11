@@ -1,0 +1,29 @@
+[Unit]
+Description=ELLA World — Standalone Rust 3D Multiplayer & UDP Spatial Voice Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ella-world
+ExecStart=/opt/ella-world/ella-world-server
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+
+# Bind HTTP only on loopback behind Nginx HTTPS reverse proxy
+Environment=ELLA_HTTP_ADDR=127.0.0.1:8097
+# Bind single-port multiplexed WebRTC UDP Voice + 20Hz Binary State on :44444/udp
+Environment=ELLA_WEBRTC_BIND_IP=0.0.0.0
+Environment=ELLA_WEBRTC_UDP_PORT=44444
+# Bind Native Raw UDP EWLD v1 Voice + State on :44445/udp
+Environment=ELLA_NATIVE_UDP_PORT=44445
+# Optional: set ELLA_PUBLIC_IP via systemd drop-in (/etc/systemd/system/ella-world.service.d/override.conf)
+# so WAN public IPv4 is advertised alongside LAN host UDP ICE candidates.
+Environment=ELLA_DATA_DIR=/var/lib/ella-world
+Environment=ELLA_PUBLIC_DIR=/opt/ella-world/public
+Environment=ELLA_SEED_USERS_FILE=/opt/ella-world/config/users.example.json
+Environment=RUST_LOG=info,webrtc_sctp=error,webrtc_ice=warn
+
+[Install]
+WantedBy=multi-user.target

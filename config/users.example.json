@@ -1,0 +1,99 @@
+{
+  "worldName": "Ella's Starlight Glam Plaza",
+  "adminPassword": "changeme-parent-admin",
+  "voiceDefaultMode": "party",
+  "iceServers": [
+    {
+      "urls": [
+        "stun:stun.l.google.com:19302",
+        "stun:stun1.l.google.com:19302"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "ella",
+      "displayName": "Ella",
+      "password": "changeme-starlight",
+      "role": "host",
+      "avatar": {
+        "avatarMode": "stylized",
+        "characterPreset": "ella_idol",
+        "skinColor": "#ffdfc4",
+        "eyeColor": "#60a5fa",
+        "hairStyle": "twin_pigtails",
+        "hairColor": "#fde047",
+        "topStyle": "glam_gown",
+        "topColor": "#f472b6",
+        "torsoColor": "#f472b6",
+        "bottomStyle": "pleated_skirt",
+        "bottomColor": "#6366f1",
+        "legsColor": "#6366f1",
+        "shoeStyle": "runway_heels",
+        "shoeColor": "#fbbf24",
+        "hat": "crown",
+        "hatColor": "#fbbf24",
+        "accessory": "star_purse",
+        "accessoryColor": "#ec4899",
+        "fabricFinish": "glitter",
+        "face": "star"
+      }
+    },
+    {
+      "username": "maya",
+      "displayName": "Maya",
+      "password": "changeme-puppy",
+      "role": "friend",
+      "avatar": {
+        "avatarMode": "stylized",
+        "characterPreset": "amy",
+        "skinColor": "#f5cba7",
+        "eyeColor": "#34d399",
+        "hairStyle": "amy_waves",
+        "hairColor": "#9a3412",
+        "topStyle": "star_tee",
+        "topColor": "#38bdf8",
+        "torsoColor": "#38bdf8",
+        "bottomStyle": "pleated_skirt",
+        "bottomColor": "#f8fafc",
+        "legsColor": "#1e293b",
+        "shoeStyle": "platform_boots",
+        "shoeColor": "#f472b6",
+        "hat": "catears",
+        "hatColor": "#f472b6",
+        "accessory": "star_purse",
+        "accessoryColor": "#f472b6",
+        "fabricFinish": "satin",
+        "face": "cat"
+      }
+    },
+    {
+      "username": "chloe",
+      "displayName": "Chloe",
+      "password": "changeme-rainbow",
+      "role": "friend",
+      "avatar": {
+        "avatarMode": "stylized",
+        "characterPreset": "katey",
+        "skinColor": "#e5b887",
+        "eyeColor": "#60a5fa",
+        "hairStyle": "katey_long",
+        "hairColor": "#451a03",
+        "topStyle": "sweater",
+        "topColor": "#c084fc",
+        "torsoColor": "#c084fc",
+        "bottomStyle": "jeans",
+        "bottomColor": "#3b82f6",
+        "legsColor": "#3b82f6",
+        "shoeStyle": "sneakers",
+        "shoeColor": "#f8fafc",
+        "hat": "beret",
+        "hatColor": "#f472b6",
+        "accessory": "sunglasses",
+        "accessoryColor": "#1e293b",
+        "fabricFinish": "matte",
+        "face": "cool"
+      }
+    }
+  ]
+}

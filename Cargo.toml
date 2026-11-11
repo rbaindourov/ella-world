@@ -1,0 +1,40 @@
+[package]
+name = "ella-world"
+version = "0.2.0"
+edition = "2021"
+description = "Standalone Rust 3D multiplayer hangout, Dress to Impress wardrobe & spatial voice server powered by UDP (WebRTC SFU + Binary UDP State Sync)"
+license = "MIT"
+readme = "README.md"
+keywords = ["gamedev", "udp", "webrtc", "sfu", "threejs"]
+categories = ["games", "network-programming", "multimedia::audio"]
+
+[lib]
+name = "ella_world"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ella-world-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.7", features = ["json"] }
+base64 = "0.22"
+bytes = "1"
+hmac = "0.12"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "compression-gzip", "set-header"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+webrtc = "0.12"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

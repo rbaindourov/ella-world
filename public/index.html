@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ella's Starlight Glam Plaza — 3D Friends Hangout, Dress to Impress &amp; Voice World</title>
+  <meta name="description" content="Private, password-protected 3D hangout world with rigged Ella Forensics characters, Dress to Impress fashion runway &amp; glam closet, real-time voice chat, sky obby, and co-op building." />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/ella-world/vendor/three.module.js",
+        "three/addons/": "/ella-world/vendor/addons/"
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="/ella-world/css/styles.css" />
+</head>
+<body>
+  <!-- 3D WebGL Canvas Container -->
+  <div id="canvas-container" aria-label="3D Starlight Glam Virtual World"></div>
+
+  <!-- Sign-In Overlay Screen (Shown before joining world) -->
+  <section id="login-screen" class="login-screen" aria-labelledby="world-welcome-title">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="brand-badge" aria-hidden="true">👑👗🎤</div>
+        <h1 id="world-welcome-title">Ella's Starlight Glam Plaza</h1>
+        <p class="login-subtitle">3D Stylized Characters, Dress-to-Impress Runway, Sky Obby &amp; Voice Party</p>
+        <div class="online-pill">
+          <span class="status-dot"></span>
+          <span id="login-online-count">0 friends in world right now</span>
+        </div>
+      </div>
+
+      <form id="friend-login-form" class="auth-form">
+        <div class="field-group">
+          <label for="login-username">Friend Username</label>
+          <input
+            type="text"
+            id="login-username"
+            name="username"
+            autocomplete="username"
+            spellcheck="false"
+            autocorrect="off"
+            autocapitalize="none"
+            enterkeyhint="next"
+            placeholder="e.g. ella, maya, chloe, zoe, lily..."
+            required
+          />
+        </div>
+
+        <div class="field-group">
+          <div class="label-row">
+            <label for="login-password">Secret Password</label>
+            <button type="button" id="toggle-login-password" class="text-btn" aria-controls="login-password">
+              Show password
+            </button>
+          </div>
+          <input
+            type="password"
+            id="login-password"
+            name="password"
+            autocomplete="current-password"
+            enterkeyhint="done"
+            placeholder="Enter the password your parent gave you"
+            required
+          />
+        </div>
+
+        <p id="login-error" class="error-banner" hidden role="alert"></p>
+
+        <button type="submit" id="login-submit-btn" class="primary-cta-btn">
+          ✨ Join 3D Glam World &amp; Voice Party
+        </button>
+      </form>
+
+      <div class="login-footer">
+        <button type="button" id="open-admin-from-login" class="secondary-outline-btn">
+          🔐 Parent Admin Panel (Manage Friends &amp; Passwords)
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main In-Game HUD (Shown after joining world) -->
+  <div id="game-hud" class="game-hud" hidden>
+    <!-- Top Bar: World Info, Voice Controls, Warp Buttons, Glam Closet & Parent Admin -->
+    <header class="hud-top-bar">
+      <div class="hud-brand">
+        <span class="hud-logo" aria-hidden="true">👑</span>
+        <div>
+          <strong id="hud-world-title" class="hud-world-title">Ella's Starlight Glam Plaza</strong>
+          <div class="hud-sub-badges">
+            <span id="hud-player-badge" class="hud-player-badge">@ella</span>
+            <span id="udp-status-pill" class="udp-status-pill is-connecting" title="Rust UDP Voice SFU + 20Hz Binary Game State">⚡ UDP Connecting...</span>
+            <span id="udp-status-sr" class="visually-hidden" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Primary Voice Chat Control Strip -->
+      <div class="voice-strip" role="region" aria-label="Voice Chat Controls">
+        <button type="button" id="mic-toggle-btn" class="voice-btn mic-unmuted" title="Toggle Microphone (Shortcut: M)">
+          <span id="mic-icon" aria-hidden="true">🎤</span>
+          <span id="mic-label">Mic On</span>
+          <span id="local-speaking-meter" class="mic-level-bar" aria-hidden="true"></span>
+        </button>
+
+        <label class="switch-pill" title="Switch between hearing everyone anywhere (Party Voice) vs louder when standing close in 3D (Proximity Voice)">
+          <span>3D Proximity Voice</span>
+          <input type="checkbox" id="proximity-voice-switch" switch />
+        </label>
+
+        <label class="switch-pill" title="When enabled, hold the V key to talk">
+          <span>Push-to-Talk (Hold V)</span>
+          <input type="checkbox" id="ptt-voice-switch" switch />
+        </label>
+
+        <button type="button" id="audio-settings-btn" class="hud-chip-btn" title="Choose Microphone &amp; Test Voice">
+          🎧 Mic Setup
+        </button>
+      </div>
+
+      <!-- Action & Teleport Buttons -->
+      <div class="hud-actions">
+        <button type="button" id="warp-plaza-btn" class="hud-chip-btn" title="Teleport back to Central Plaza (Shortcut: H)">
+          ⛲ Plaza
+        </button>
+        <button type="button" id="warp-runway-btn" class="hud-chip-btn runway-chip" title="Teleport to the Dress to Impress Fashion Runway! (Shortcut: F)">
+          💃 Runway
+        </button>
+        <button type="button" id="warp-obby-btn" class="hud-chip-btn" title="Teleport to Sky Obby Start or Last Checkpoint (Shortcut: R)">
+          🏃‍♀️ Obby
+        </button>
+        <button type="button" id="toggle-build-btn" class="hud-chip-btn" title="Toggle Co-Op Block Builder Mode (Shortcut: B)">
+          🔨 Build Mode
+        </button>
+        <button type="button" id="open-avatar-btn" class="hud-chip-btn accent-chip" title="Open the Dress to Impress Glam Salon Closet (Shortcut: C)">
+          👗 Glam Closet
+        </button>
+        <button type="button" id="open-help-btn" class="hud-chip-btn" title="Controls &amp; How to Play">
+          ❓ Controls
+        </button>
+        <button type="button" id="open-admin-hud-btn" class="hud-chip-btn" title="Parent Admin Panel">
+          🔐 Parent Admin
+        </button>
+        <button type="button" id="logout-btn" class="hud-chip-btn danger-chip" title="Leave World">
+          🚪 Leave
+        </button>
+      </div>
+    </header>
+
+    <!-- Dress to Impress Fashion Runway Theme & 1-5 Star Voting Bar -->
+    <section id="runway-hud-bar" class="runway-hud-bar" aria-label="Fashion Runway Theme and Star Voting">
+      <div class="runway-theme-box">
+        <span class="runway-badge">👗 RUNWAY THEME</span>
+        <strong id="runway-theme-label">Starlight Princess Gala</strong>
+        <button type="button" id="runway-next-theme-btn" class="runway-mini-btn" title="Spin a new Dress to Impress Runway Theme!">
+          🎲 New Theme
+        </button>
+      </div>
+
+      <div class="runway-vote-box">
+        <label for="runway-model-select" class="runway-vote-label">Rate Look:</label>
+        <select id="runway-model-select" class="runway-model-select" aria-label="Select friend on the runway to rate"></select>
+        <div class="star-vote-group" role="group" aria-label="Give 1 to 5 Stars">
+          <button type="button" class="star-vote-btn" data-stars="1" title="1 Star">⭐</button>
+          <button type="button" class="star-vote-btn" data-stars="2" title="2 Stars">⭐⭐</button>
+          <button type="button" class="star-vote-btn" data-stars="3" title="3 Stars">⭐⭐⭐</button>
+          <button type="button" class="star-vote-btn" data-stars="4" title="4 Stars">⭐⭐⭐⭐</button>
+          <button type="button" class="star-vote-btn" data-stars="5" title="5 Stars — Slay!">⭐⭐⭐⭐⭐</button>
+        </div>
+        <span id="runway-leader-pill" class="runway-leader-pill">🏆 Walk the West Runway!</span>
+      </div>
+    </section>
+
+    <!-- Center Toast Banner for Obby Checkpoints / Trophy Celebration / Runway Votes -->
+    <div id="hud-toast" class="hud-toast" role="status" aria-live="polite" hidden></div>
+
+    <!-- Left Panel: Friends Online + Voice Status & Individual Volume Sliders -->
+    <aside class="hud-left-panel" aria-label="Friends in World and Voice Mixer">
+      <div class="panel-header">
+        <h2>🎤 Friends &amp; Voice (<span id="friends-online-count">1</span>)</h2>
+        <span id="voice-mode-badge" class="mode-badge">Party Voice</span>
+      </div>
+      <p id="voice-connection-hint" class="voice-hint">
+        Connected! Green ring glows when you or a friend talk.
+      </p>
+      <ul id="friends-list" class="friends-list"></ul>
+    </aside>
+
+    <!-- Bottom Center: Emote & Runway Pose Bar + Optional Build Palette -->
+    <div class="hud-bottom-center">
+      <!-- Sandbox Build Palette (Shown when Build Mode is active) -->
+      <div id="build-toolbar" class="build-toolbar" hidden role="region" aria-label="Block Building Palette">
+        <div class="build-toolbar-top">
+          <strong>🔨 Co-Op Block Builder</strong>
+          <div class="build-mode-buttons">
+            <button type="button" id="build-action-place" class="tool-mode-btn active">➕ Place Block (Click)</button>
+            <button type="button" id="build-action-remove" class="tool-mode-btn">⛏️ Remove Block (Right-Click)</button>
+          </div>
+          <span class="build-hint">Aim at ground, platforms, or blocks!</span>
+          <span id="build-save-status" class="build-save-pill" role="status" aria-live="polite">💾 Saved World</span>
+        </div>
+        <div id="color-swatch-bar" class="color-swatch-bar" role="radiogroup" aria-label="Block Colors"></div>
+      </div>
+
+      <!-- Emote / Runway Pose Wheel Bar -->
+      <div class="emote-bar" role="toolbar" aria-label="Avatar Runway Poses, Dances and Emotes">
+        <button type="button" class="emote-btn" data-emote="pose" title="Runway Supermodel Pose (Shortcut: 1)">📸 Pose <span>1</span></button>
+        <button type="button" class="emote-btn" data-emote="peace" title="Peace Sign Selfie Pose (Shortcut: 2)">✌️ Peace <span>2</span></button>
+        <button type="button" class="emote-btn" data-emote="dance" title="Pop Dance (Shortcut: 3)">💃 Dance <span>3</span></button>
+        <button type="button" class="emote-btn" data-emote="spin" title="Twirl Gown (Shortcut: 4)">🌀 Twirl <span>4</span></button>
+        <button type="button" class="emote-btn" data-emote="wave" title="Friendly Wave (Shortcut: 5)">👋 Wave <span>5</span></button>
+        <button type="button" class="emote-btn" data-emote="cheer" title="Victory Cheer (Shortcut: 6)">🎉 Cheer <span>6</span></button>
+        <button type="button" class="emote-btn" data-emote="flip" title="Acrobatic Backflip (Shortcut: 7)">🤸‍♀️ Flip <span>7</span></button>
+        <button type="button" class="emote-btn" data-emote="sit" title="Sit &amp; Chill (Shortcut: 8)">🪑 Sit <span>8</span></button>
+      </div>
+    </div>
+
+    <!-- Bottom Right: Live Chat & Quick Reactions -->
+    <aside class="hud-chat-panel" aria-label="Friends Text Chat">
+      <div id="chat-messages" class="chat-messages" role="log" aria-live="polite"></div>
+      <div class="quick-reactions" aria-label="Quick Emoji Chat">
+        <button type="button" class="reaction-btn" data-react="⭐⭐⭐⭐⭐ 5 STARS! Slay!!">⭐ 5 Stars!</button>
+        <button type="button" class="reaction-btn" data-react="💃 Meet me at the Fashion Runway!">💃 Runway!</button>
+        <button type="button" class="reaction-btn" data-react="🎉 Let's race the Sky Obby!">🏃‍♀️ Obby!</button>
+        <button type="button" class="reaction-btn" data-react="👗 Check out my new Glam Closet look!">👗 New Fit!</button>
+        <button type="button" class="reaction-btn" data-react="👋 Hi besties!!">👋 Hi!</button>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <label for="chat-input" class="visually-hidden">Chat Message</label>
+        <input
+          type="text"
+          id="chat-input"
+          name="message"
+          maxlength="180"
+          autocomplete="off"
+          enterkeyhint="send"
+          placeholder="Say something (shows bubble above your head)..."
+        />
+        <button type="submit" id="chat-send-btn" class="chat-send-btn">Send</button>
+      </form>
+    </aside>
+
+    <!-- Touch / On-Screen D-Pad & Jump Button for Tablets / Laptops without Mouse -->
+    <div class="touch-controls" aria-label="On-screen movement controls">
+      <div class="dpad">
+        <button type="button" class="dpad-btn dpad-up" data-move="forward" aria-label="Walk Forward">▲</button>
+        <button type="button" class="dpad-btn dpad-left" data-move="left" aria-label="Turn Left">◀</button>
+        <button type="button" class="dpad-btn dpad-down" data-move="backward" aria-label="Walk Backward">▼</button>
+        <button type="button" class="dpad-btn dpad-right" data-move="right" aria-label="Turn Right">▶</button>
+      </div>
+      <button type="button" id="touch-jump-btn" class="touch-jump-btn" aria-label="Jump">JUMP ⬆</button>
+    </div>
+  </div>
+
+  <!-- Hidden Container for WebRTC Remote Audio Elements -->
+  <div id="remote-audio-container" hidden></div>
+
+  <!-- NON-MODAL POPOVER PANEL: Dress to Impress Glam Salon Closet (modern-web-guidance: dialog Rule 2 + tabs) -->
+  <dialog id="avatar-dialog" class="glam-salon-popover" popover="manual" aria-labelledby="avatar-dialog-title">
+    <div class="glam-salon-shell">
+      <header class="glam-salon-header">
+        <div>
+          <h2 id="avatar-dialog-title">👗 Glam Salon &amp; Wardrobe</h2>
+          <p class="glam-mirror-hint">Drag on the 3D mirror to spin your character &amp; press 1–8 to test poses!</p>
+        </div>
+        <button type="button" class="modal-close-btn" id="close-salon-btn" aria-label="Close Glam Salon">✕</button>
+      </header>
+
+      <form id="avatar-form" class="glam-salon-form">
+        <!-- Accessible Single-Row Scrolling Tablist with CSS Scroll Fades -->
+        <div class="glam-tablist" id="glam-tablist" focusgroup="tablist nomemory" role="tablist" aria-label="Wardrobe Categories">
+          <button type="button" role="tab" id="glam-tab-looks" aria-controls="glam-panel-looks" aria-selected="true" focusgroupstart>🌟 Cast &amp; Looks</button>
+          <button type="button" role="tab" id="glam-tab-hair" aria-controls="glam-panel-hair" aria-selected="false" tabindex="-1">💇‍♀️ Hair &amp; Glam</button>
+          <button type="button" role="tab" id="glam-tab-tops" aria-controls="glam-panel-tops" aria-selected="false" tabindex="-1">👗 Tops &amp; Gowns</button>
+          <button type="button" role="tab" id="glam-tab-bottoms" aria-controls="glam-panel-bottoms" aria-selected="false" tabindex="-1">🩰 Skirts &amp; Shoes</button>
+          <button type="button" role="tab" id="glam-tab-acc" aria-controls="glam-panel-acc" aria-selected="false" tabindex="-1">👑 Crowns &amp; Bags</button>
+        </div>
+
+        <!-- Stacked Tab Panels (Zero outer padding/border/margin on [role="tabpanel"] per modern-web-guidance) -->
+        <div class="glam-panels-stack">
+          <!-- TAB 1: Forensics Cast & Signature DTI Presets -->
+          <div role="tabpanel" id="glam-panel-looks" aria-labelledby="glam-tab-looks">
+            <div class="glam-panel-inner">
+              <div class="glam-section-label">Ella Forensics Cast &amp; Runway Signature Looks</div>
+              <div class="glam-card-grid" id="preset-cards-grid">
+                <button type="button" class="glam-item-card" data-preset-id="ella_idol">
+                  <span class="glam-card-emoji">👑</span>
+                  <strong>Ella Starlight</strong>
+                  <small>Satin Gown &amp; Tiara</small>
+                </button>
+                <button type="button" class="glam-item-card" data-preset-id="katey">
+                  <span class="glam-card-emoji">🕵️‍♀️</span>
+                  <strong>Katey</strong>
+                  <small>Forensics Sweater &amp; Jeans</small>
+                </button>
+                <button type="button" class="glam-item-card" data-preset-id="lizzy">
+                  <span class="glam-card-emoji">🎧</span>
+                  <strong>Lizzy</strong>
+                  <small>Y2K Puff Top &amp; Cargos</small>
+                </button>
+                <button type="button" class="glam-item-card" data-preset-id="amy">
+                  <span class="glam-card-emoji">🛹</span>
+                  <strong>Amy</strong>
+                  <small>3D Star Tee &amp; Skater Skirt</small>
+                </button>
+                <button type="button" class="glam-item-card" data-preset-id="mom">
+                  <span class="glam-card-emoji">🌷</span>
+                  <strong>Katey's Mom</strong>
+                  <small>Denim Overalls &amp; Pearls</small>
+                </button>
+                <button type="button" class="glam-item-card" data-preset-id="fairy_queen">
+                  <span class="glam-card-emoji">🧚‍♀️</span>
+                  <strong>Crystal Fairy</strong>
+                  <small>Glitter Gown &amp; Wings</small>
+                </button>
+                <button type="button" class="glam-item-card" data-preset-id="y2k_skater">
+                  <span class="glam-card-emoji">🎀</span>
+                  <strong>Coquette Pop</strong>
+                  <small>Ruffle Mini &amp; Boots</small>
+                </button>
+                <button type="button" class="glam-item-card" data-preset-id="runway_gala">
+                  <span class="glam-card-emoji">🌟</span>
+                  <strong>VIP Gala Star</strong>
+                  <small>Gold Gown &amp; Star Bag</small>
+                </button>
+              </div>
+
+              <div class="glam-section-label">Character Style Mode</div>
+              <div class="segmented-row" role="group" aria-label="Character Model Type">
+                <button type="button" class="seg-btn active" data-field="avatarMode" data-val="stylized">✨ 3D Stylized Character</button>
+                <button type="button" class="seg-btn" data-field="avatarMode" data-val="blocky">🧱 Classic Retro Blocky</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 2: Hair, Skin & Eye Glam -->
+          <div role="tabpanel" id="glam-panel-hair" aria-labelledby="glam-tab-hair" hidden="until-found">
+            <div class="glam-panel-inner">
+              <div class="glam-section-label">3D Hairstyle</div>
+              <div class="glam-card-grid compact-cards">
+                <button type="button" class="glam-item-card" data-field="hairStyle" data-val="twin_pigtails">
+                  <span class="glam-card-emoji">🎀</span>
+                  <strong>Pop Pigtails</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="hairStyle" data-val="glam_ponytail">
+                  <span class="glam-card-emoji">💫</span>
+                  <strong>High Ponytail</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="hairStyle" data-val="katey_long">
+                  <span class="glam-card-emoji">🌊</span>
+                  <strong>Katey Long</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="hairStyle" data-val="amy_waves">
+                  <span class="glam-card-emoji">🌸</span>
+                  <strong>Glam Waves</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="hairStyle" data-val="lizzy_bob">
+                  <span class="glam-card-emoji">🖤</span>
+                  <strong>Y2K Sleek Bob</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="hairStyle" data-val="mom_bun">
+                  <span class="glam-card-emoji">👑</span>
+                  <strong>Royal Updo Bun</strong>
+                </button>
+              </div>
+
+              <div class="color-picker-row">
+                <label for="avatar-hair-color">Hair Dye</label>
+                <div class="quick-swatches" data-target-input="avatar-hair-color">
+                  <button type="button" class="mini-swatch" style="background:#fde047" data-hex="#fde047" aria-label="Blonde"></button>
+                  <button type="button" class="mini-swatch" style="background:#78350f" data-hex="#78350f" aria-label="Chestnut"></button>
+                  <button type="button" class="mini-swatch" style="background:#1e1b4b" data-hex="#1e1b4b" aria-label="Midnight"></button>
+                  <button type="button" class="mini-swatch" style="background:#f472b6" data-hex="#f472b6" aria-label="Bubblegum Pink"></button>
+                  <button type="button" class="mini-swatch" style="background:#c084fc" data-hex="#c084fc" aria-label="Pastel Lilac"></button>
+                  <button type="button" class="mini-swatch" style="background:#dc2626" data-hex="#dc2626" aria-label="Cherry Red"></button>
+                  <button type="button" class="mini-swatch" style="background:#38bdf8" data-hex="#38bdf8" aria-label="Ice Blue"></button>
+                </div>
+                <input type="color" id="avatar-hair-color" value="#fde047" />
+              </div>
+
+              <div class="color-picker-row">
+                <label for="avatar-skin-color">Skin Tone</label>
+                <div class="quick-swatches" data-target-input="avatar-skin-color">
+                  <button type="button" class="mini-swatch" style="background:#ffe4d0" data-hex="#ffe4d0" aria-label="Porcelain"></button>
+                  <button type="button" class="mini-swatch" style="background:#ffdfc4" data-hex="#ffdfc4" aria-label="Warm Peach"></button>
+                  <button type="button" class="mini-swatch" style="background:#f3c6a5" data-hex="#f3c6a5" aria-label="Sand"></button>
+                  <button type="button" class="mini-swatch" style="background:#e5b887" data-hex="#e5b887" aria-label="Honey Tan"></button>
+                  <button type="button" class="mini-swatch" style="background:#c68652" data-hex="#c68652" aria-label="Caramel"></button>
+                  <button type="button" class="mini-swatch" style="background:#8d5524" data-hex="#8d5524" aria-label="Rich Espresso"></button>
+                </div>
+                <input type="color" id="avatar-skin-color" value="#ffdfc4" />
+              </div>
+
+              <div class="color-picker-row">
+                <label for="avatar-eye-color">Eye Glam</label>
+                <div class="quick-swatches" data-target-input="avatar-eye-color">
+                  <button type="button" class="mini-swatch" style="background:#60a5fa" data-hex="#60a5fa" aria-label="Sapphire"></button>
+                  <button type="button" class="mini-swatch" style="background:#34d399" data-hex="#34d399" aria-label="Emerald"></button>
+                  <button type="button" class="mini-swatch" style="background:#8b5cf6" data-hex="#8b5cf6" aria-label="Violet"></button>
+                  <button type="button" class="mini-swatch" style="background:#92400e" data-hex="#92400e" aria-label="Hazel Brown"></button>
+                  <button type="button" class="mini-swatch" style="background:#ec4899" data-hex="#ec4899" aria-label="Rose Pink"></button>
+                </div>
+                <input type="color" id="avatar-eye-color" value="#60a5fa" />
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 3: Tops, Gowns & Fabric Finish -->
+          <div role="tabpanel" id="glam-panel-tops" aria-labelledby="glam-tab-tops" hidden="until-found">
+            <div class="glam-panel-inner">
+              <div class="glam-section-label">Tops &amp; Runway Gowns</div>
+              <div class="glam-card-grid compact-cards">
+                <button type="button" class="glam-item-card" data-field="topStyle" data-val="glam_gown">
+                  <span class="glam-card-emoji">👗</span>
+                  <strong>Starlight Gown</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="topStyle" data-val="puff_blouse">
+                  <span class="glam-card-emoji">👚</span>
+                  <strong>Puff Blouse</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="topStyle" data-val="star_tee">
+                  <span class="glam-card-emoji">⭐</span>
+                  <strong>3D Star Tee</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="topStyle" data-val="sweater">
+                  <span class="glam-card-emoji">🧶</span>
+                  <strong>Cozy Sweater</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="topStyle" data-val="crop_top">
+                  <span class="glam-card-emoji">💖</span>
+                  <strong>Y2K Crop Top</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="topStyle" data-val="crew_tee">
+                  <span class="glam-card-emoji">👕</span>
+                  <strong>Classic Tee</strong>
+                </button>
+              </div>
+
+              <div class="glam-section-label">Fabric Texture &amp; Shimmer</div>
+              <div class="segmented-row" role="group" aria-label="Outfit Fabric Finish">
+                <button type="button" class="seg-btn" data-field="fabricFinish" data-val="matte">🧵 Matte</button>
+                <button type="button" class="seg-btn active" data-field="fabricFinish" data-val="satin">✨ Satin</button>
+                <button type="button" class="seg-btn" data-field="fabricFinish" data-val="glitter">💎 Glitter</button>
+              </div>
+
+              <div class="color-picker-row">
+                <label for="avatar-top-color">Top / Gown Color</label>
+                <div class="quick-swatches" data-target-input="avatar-top-color">
+                  <button type="button" class="mini-swatch" style="background:#f472b6" data-hex="#f472b6" aria-label="Pink"></button>
+                  <button type="button" class="mini-swatch" style="background:#c084fc" data-hex="#c084fc" aria-label="Lavender"></button>
+                  <button type="button" class="mini-swatch" style="background:#38bdf8" data-hex="#38bdf8" aria-label="Sky Blue"></button>
+                  <button type="button" class="mini-swatch" style="background:#34d399" data-hex="#34d399" aria-label="Mint"></button>
+                  <button type="button" class="mini-swatch" style="background:#fbbf24" data-hex="#fbbf24" aria-label="Gold"></button>
+                  <button type="button" class="mini-swatch" style="background:#f8fafc" data-hex="#f8fafc" aria-label="Pearl White"></button>
+                  <button type="button" class="mini-swatch" style="background:#1e1b4b" data-hex="#1e1b4b" aria-label="Velvet Night"></button>
+                </div>
+                <input type="color" id="avatar-top-color" value="#f472b6" />
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 4: Skirts, Pants & Footwear -->
+          <div role="tabpanel" id="glam-panel-bottoms" aria-labelledby="glam-tab-bottoms" hidden="until-found">
+            <div class="glam-panel-inner">
+              <div class="glam-section-label">Skirts, Jeans &amp; Overalls</div>
+              <p id="gown-override-hint" class="glam-inline-hint" hidden>
+                💡 Wearing full-length <strong>Starlight Gown</strong> — pick a top in <em>Tops &amp; Gowns</em> to show skirts or pants!
+              </p>
+              <div class="glam-card-grid compact-cards">
+                <button type="button" class="glam-item-card" data-field="bottomStyle" data-val="pleated_skirt">
+                  <span class="glam-card-emoji">🩰</span>
+                  <strong>Pleated Skirt</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="bottomStyle" data-val="ruffle_mini">
+                  <span class="glam-card-emoji">🌸</span>
+                  <strong>Ruffle Mini</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="bottomStyle" data-val="jeans">
+                  <span class="glam-card-emoji">👖</span>
+                  <strong>Denim Jeans</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="bottomStyle" data-val="cargo_pants">
+                  <span class="glam-card-emoji">🛹</span>
+                  <strong>Y2K Cargos</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="bottomStyle" data-val="overalls">
+                  <span class="glam-card-emoji">🌻</span>
+                  <strong>Overalls</strong>
+                </button>
+              </div>
+
+              <div class="color-picker-row">
+                <label for="avatar-bottom-color">Bottom Color</label>
+                <div class="quick-swatches" data-target-input="avatar-bottom-color">
+                  <button type="button" class="mini-swatch" style="background:#f8fafc" data-hex="#f8fafc" aria-label="White"></button>
+                  <button type="button" class="mini-swatch" style="background:#f472b6" data-hex="#f472b6" aria-label="Pink"></button>
+                  <button type="button" class="mini-swatch" style="background:#3b82f6" data-hex="#3b82f6" aria-label="Denim Blue"></button>
+                  <button type="button" class="mini-swatch" style="background:#6366f1" data-hex="#6366f1" aria-label="Indigo"></button>
+                  <button type="button" class="mini-swatch" style="background:#475569" data-hex="#475569" aria-label="Slate"></button>
+                  <button type="button" class="mini-swatch" style="background:#1e293b" data-hex="#1e293b" aria-label="Obsidian"></button>
+                </div>
+                <input type="color" id="avatar-bottom-color" value="#6366f1" />
+              </div>
+
+              <div class="glam-section-label">Runway Heels, Boots &amp; Sneakers</div>
+              <div class="glam-card-grid three-cols">
+                <button type="button" class="glam-item-card" data-field="shoeStyle" data-val="runway_heels">
+                  <span class="glam-card-emoji">👠</span>
+                  <strong>Glam Heels</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="shoeStyle" data-val="platform_boots">
+                  <span class="glam-card-emoji">👢</span>
+                  <strong>Platform Boots</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="shoeStyle" data-val="sneakers">
+                  <span class="glam-card-emoji">👟</span>
+                  <strong>Sneakers</strong>
+                </button>
+              </div>
+
+              <div class="color-picker-row">
+                <label for="avatar-shoe-color">Shoe Color</label>
+                <div class="quick-swatches" data-target-input="avatar-shoe-color">
+                  <button type="button" class="mini-swatch" style="background:#f472b6" data-hex="#f472b6" aria-label="Pink"></button>
+                  <button type="button" class="mini-swatch" style="background:#fbbf24" data-hex="#fbbf24" aria-label="Gold"></button>
+                  <button type="button" class="mini-swatch" style="background:#f8fafc" data-hex="#f8fafc" aria-label="White"></button>
+                  <button type="button" class="mini-swatch" style="background:#a855f7" data-hex="#a855f7" aria-label="Violet"></button>
+                  <button type="button" class="mini-swatch" style="background:#1e293b" data-hex="#1e293b" aria-label="Midnight"></button>
+                </div>
+                <input type="color" id="avatar-shoe-color" value="#f472b6" />
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 5: Tiara, Bows, Bags & Wings -->
+          <div role="tabpanel" id="glam-panel-acc" aria-labelledby="glam-tab-acc" hidden="until-found">
+            <div class="glam-panel-inner">
+              <div class="glam-section-label">Crowns, Bows &amp; Hats</div>
+              <div class="glam-card-grid compact-cards">
+                <button type="button" class="glam-item-card" data-field="hat" data-val="crown">
+                  <span class="glam-card-emoji">👑</span>
+                  <strong>Tiara Crown</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="hat" data-val="hair_bow">
+                  <span class="glam-card-emoji">🎀</span>
+                  <strong>Satin Bow</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="hat" data-val="catears">
+                  <span class="glam-card-emoji">🐱</span>
+                  <strong>Cat Ears</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="hat" data-val="beret">
+                  <span class="glam-card-emoji">🎨</span>
+                  <strong>Paris Beret</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="hat" data-val="wizard">
+                  <span class="glam-card-emoji">🧙‍♀️</span>
+                  <strong>Witch Hat</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="hat" data-val="astronaut">
+                  <span class="glam-card-emoji">👩‍🚀</span>
+                  <strong>Space Visor</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="hat" data-val="tophat">
+                  <span class="glam-card-emoji">🎩</span>
+                  <strong>Top Hat</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="hat" data-val="none">
+                  <span class="glam-card-emoji">✨</span>
+                  <strong>No Hat</strong>
+                </button>
+              </div>
+
+              <div class="color-picker-row">
+                <label for="avatar-hat-color">Hat / Tiara Tint</label>
+                <input type="color" id="avatar-hat-color" value="#fbbf24" />
+              </div>
+
+              <div class="glam-section-label">Glam Bags, Shades, Jewelry &amp; Wings</div>
+              <div class="glam-card-grid compact-cards">
+                <button type="button" class="glam-item-card" data-field="accessory" data-val="star_purse">
+                  <span class="glam-card-emoji">👜</span>
+                  <strong>3D Star Bag</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="accessory" data-val="wings">
+                  <span class="glam-card-emoji">🧚‍♀️</span>
+                  <strong>Fairy Wings</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="accessory" data-val="sunglasses">
+                  <span class="glam-card-emoji">🕶️</span>
+                  <strong>Cat-Eye Shades</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="accessory" data-val="choker">
+                  <span class="glam-card-emoji">💎</span>
+                  <strong>Gem Choker</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="accessory" data-val="pearls">
+                  <span class="glam-card-emoji">🦪</span>
+                  <strong>Pearl Earrings</strong>
+                </button>
+                <button type="button" class="glam-item-card" data-field="accessory" data-val="none">
+                  <span class="glam-card-emoji">✨</span>
+                  <strong>None</strong>
+                </button>
+              </div>
+
+              <div class="color-picker-row">
+                <label for="avatar-acc-color">Accessory / Bag Tint</label>
+                <input type="color" id="avatar-acc-color" value="#f472b6" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <footer class="glam-salon-footer">
+          <button type="button" id="cancel-salon-btn" class="secondary-outline-btn" title="Revert back to the outfit you wore before opening Glam Salon">↩️ Undo Changes</button>
+          <button type="submit" class="primary-cta-btn">💖 Wear &amp; Save Look!</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- MODAL 2: Microphone & Audio Setup Dialog -->
+  <dialog id="audio-dialog" closedby="any" aria-labelledby="audio-dialog-title">
+    <div class="modal-shell">
+      <header class="modal-header">
+        <h2 id="audio-dialog-title">🎧 Microphone &amp; Voice Chat Setup</h2>
+        <button type="button" class="modal-close-btn" data-close-dialog="audio-dialog" aria-label="Close Audio Setup">✕</button>
+      </header>
+      <div class="modal-body">
+        <div class="field-group">
+          <label for="mic-device-select">Select Microphone Input</label>
+          <select id="mic-device-select" autofocus></select>
+        </div>
+
+        <div class="mic-test-box">
+          <div class="mic-test-header">
+            <strong>Live Microphone Level</strong>
+            <span id="mic-permission-status" class="status-tag">Checking mic...</span>
+          </div>
+          <div class="mic-meter-track">
+            <div id="mic-dialog-meter-fill" class="mic-meter-fill"></div>
+          </div>
+          <p class="small-note">
+            Speak into your microphone — the green bar moves when your voice is detected!
+          </p>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" id="retry-mic-btn" class="secondary-outline-btn">🔄 Reconnect Microphone</button>
+          <button type="button" class="primary-cta-btn" data-close-dialog="audio-dialog">Done</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- MODAL 3: Controls & Help Guide -->
+  <dialog id="help-dialog" closedby="any" aria-labelledby="help-dialog-title">
+    <div class="modal-shell">
+      <header class="modal-header">
+        <h2 id="help-dialog-title">🎮 How to Play &amp; Keyboard Shortcuts</h2>
+        <button type="button" class="modal-close-btn" data-close-dialog="help-dialog" aria-label="Close Help">✕</button>
+      </header>
+      <div class="modal-body">
+        <ul class="help-list">
+          <li><strong>Walk &amp; Sprint:</strong> Press <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or <kbd>Arrow Keys</kbd> for your runway walk, and hold <kbd>Shift</kbd> to sprint!</li>
+          <li><strong>Glam Salon Closet:</strong> Press <kbd>C</kbd> or click <strong>👗 Glam Closet</strong> to mix &amp; match Ella Forensics characters, hairstyles, satin/glitter gowns, skirts, boots, and star bags live in the 3D mirror!</li>
+          <li><strong>Dress to Impress Runway:</strong> Press <kbd>F</kbd> or click <strong>💃 Runway</strong> to teleport backstage, strut down the illuminated catwalk, strike poses (<kbd>1</kbd>–<kbd>8</kbd>), and vote 1–5 ⭐ stars!</li>
+          <li><strong>Jump &amp; Sky Obby:</strong> Press <kbd>Spacebar</kbd> to jump, or <kbd>R</kbd> to warp to your Sky Obby checkpoint.</li>
+          <li><strong>Look Around (3D Camera):</strong> Drag anywhere on the 3D view with your mouse and scroll to zoom in/out.</li>
+          <li><strong>Voice Chat:</strong> Press <kbd>M</kbd> to Mute/Unmute your mic, or turn on <strong>Push-to-Talk</strong> and hold <kbd>V</kbd> to speak.</li>
+          <li><strong>Co-Op Block Building:</strong> Press <kbd>B</kbd> to build colorful creations together in real time!</li>
+        </ul>
+        <div class="modal-footer">
+          <button type="button" class="primary-cta-btn" data-close-dialog="help-dialog" autofocus>Got It!</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- MODAL 4: Parent Admin Panel (Add/Remove Friends, Set Passwords, World Settings) -->
+  <dialog id="admin-dialog" closedby="any" aria-labelledby="admin-dialog-title">
+    <div class="modal-shell modal-wide">
+      <header class="modal-header">
+        <h2 id="admin-dialog-title">🔐 Parent Admin Panel — Friend Accounts &amp; World Controls</h2>
+        <button type="button" class="modal-close-btn" data-close-dialog="admin-dialog" aria-label="Close Parent Admin Panel">✕</button>
+      </header>
+
+      <div class="modal-body">
+        <form id="admin-auth-form" class="auth-form">
+          <p class="small-note">
+            Enter the <strong>Parent Master Password</strong> (stored in <code>data/world_users.json</code> on the standalone Rust server) to add friends, reset passwords, or manage the world.
+          </p>
+          <div class="field-group">
+            <div class="label-row">
+              <label for="admin-master-password">Parent Master Password</label>
+              <button type="button" id="toggle-admin-password" class="text-btn" aria-controls="admin-master-password">
+                Show password
+              </button>
+            </div>
+            <input
+              type="password"
+              id="admin-master-password"
+              name="password"
+              autocomplete="current-password"
+              enterkeyhint="done"
+              placeholder="Enter parent master password"
+              required
+              autofocus
+            />
+          </div>
+          <p id="admin-auth-error" class="error-banner" hidden role="alert"></p>
+          <button type="submit" class="primary-cta-btn">Unlock Parent Controls</button>
+        </form>
+
+        <div id="admin-dashboard-content" hidden>
+          <div class="admin-columns">
+            <div class="admin-card">
+              <h3>👧 Whitelisted Friends (<span id="admin-user-count">0</span>)</h3>
+              <p class="small-note">
+                Only friends listed below can sign into the world. Changes automatically sync to <code>data/world_users.json</code> on the Rust server.
+              </p>
+              <div class="table-scroll">
+                <table class="admin-table">
+                  <thead>
+                    <tr>
+                      <th>Username</th>
+                      <th>Display Name</th>
+                      <th>Password</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="admin-users-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="admin-side-stack">
+              <form id="admin-upsert-user-form" class="admin-card">
+                <h3>➕ Add or Update a Friend</h3>
+                <div class="field-group">
+                  <label for="admin-friend-username">Username (login ID)</label>
+                  <input
+                    type="text"
+                    id="admin-friend-username"
+                    name="username"
+                    autocomplete="off"
+                    spellcheck="false"
+                    autocorrect="off"
+                    autocapitalize="none"
+                    placeholder="e.g. emma"
+                    required
+                  />
+                </div>
+                <div class="field-group">
+                  <label for="admin-friend-display">Display Name (shown above avatar)</label>
+                  <input
+                    type="text"
+                    id="admin-friend-display"
+                    name="displayName"
+                    autocomplete="off"
+                    placeholder="e.g. Emma"
+                    required
+                  />
+                </div>
+                <div class="field-group">
+                  <label for="admin-friend-password">Friend's Password</label>
+                  <input
+                    type="text"
+                    id="admin-friend-password"
+                    name="password"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="e.g. sparkle2026"
+                    required
+                  />
+                </div>
+                <div class="field-group">
+                  <label for="admin-friend-hat">Starter Hat / Crown</label>
+                  <select id="admin-friend-hat" name="hat">
+                    <option value="crown">👑 Crystal Tiara</option>
+                    <option value="hair_bow">🎀 Coquette Satin Bow</option>
+                    <option value="catears">🐱 Cat Ears</option>
+                    <option value="beret">🎨 Parisian Beret</option>
+                    <option value="wizard">🧙‍♀️ Starlight Witch Hat</option>
+                    <option value="astronaut">👩‍🚀 Space Visor</option>
+                    <option value="tophat">🎩 Glam Top Hat</option>
+                  </select>
+                </div>
+                <p id="admin-user-feedback" class="feedback-note" hidden role="status"></p>
+                <button type="submit" class="primary-cta-btn">Save Friend Account</button>
+              </form>
+
+              <form id="admin-settings-form" class="admin-card">
+                <h3>🌍 World &amp; Security Settings</h3>
+                <div class="field-group">
+                  <label for="admin-world-name">World Title</label>
+                  <input type="text" id="admin-world-name" name="worldName" required />
+                </div>
+                <div class="field-group">
+                  <label for="admin-default-voice">Default Voice Mode on Join</label>
+                  <select id="admin-default-voice" name="voiceDefaultMode">
+                    <option value="party">Party Voice (Everyone hears everyone anywhere)</option>
+                    <option value="proximity">3D Proximity Voice (Louder when standing close)</option>
+                  </select>
+                </div>
+                <div class="field-group">
+                  <label for="admin-new-master-password">Change Parent Master Password (optional)</label>
+                  <input
+                    type="password"
+                    id="admin-new-master-password"
+                    name="newAdminPassword"
+                    autocomplete="new-password"
+                    placeholder="Leave blank to keep current password"
+                  />
+                </div>
+                <button type="submit" class="secondary-outline-btn">Save World Settings</button>
+
+                <hr class="divider" />
+                <div class="world-reset-row">
+                  <span>Sandbox Blocks (<strong id="admin-block-count">0</strong> placed):</span>
+                  <div class="btn-group">
+                    <button type="button" id="admin-reset-starter-btn" class="small-action-btn">🌈 Restore Rainbow Arch</button>
+                    <button type="button" id="admin-clear-blocks-btn" class="small-action-btn danger-action">🗑️ Clear All Blocks</button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <script type="module" src="/ella-world/js/app.js"></script>
+</body>
+</html>
