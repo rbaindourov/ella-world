@@ -7,12 +7,14 @@ pub mod udp_native;
 pub mod udp_wire;
 pub mod webrtc_sfu;
 pub mod world;
+pub mod ws_spine;
 
 use crate::config::ServerConfig;
 use crate::http_api::{build_router, AppState};
 use crate::udp_native::NativeUdpServer;
 use crate::webrtc_sfu::WebRtcSfu;
 use crate::world::WorldEngine;
+use crate::ws_spine::WsSpineHub;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -25,18 +27,20 @@ pub struct RunningEllaWorld {
     pub world: Arc<WorldEngine>,
     pub sfu: Arc<WebRtcSfu>,
     pub native_udp: Arc<NativeUdpServer>,
+    pub ws_hub: Arc<WsSpineHub>,
     pub http_task: JoinHandle<anyhow::Result<()>>,
 }
 
-/// Starts the complete standalone ELLA World stack:
-/// 1. `WorldEngine` (persistent users + blocks + 20 Hz simulation tick)
-/// 2. `WebRtcSfu` (single-port multiplexed UDP Voice RTP + Binary UDP DataChannels on `webrtc_udp_port`)
+/// Starts the complete standalone ELLA World v0.3.0 Hybrid stack:
+/// 1. `WorldEngine` (persistent users + blocks + 20 Hz simulation tick + 12s grace + stateSeq)
+/// 2. `WebRtcSfu` (single-port multiplexed 8-slot zero-renegotiation UDP Voice + State fast-lane on `webrtc_udp_port`)
 /// 3. `NativeUdpServer` (raw `tokio::net::UdpSocket` `EWLD` v1 voice + state server on `native_udp_addr`)
-/// 4. `axum` HTTP static asset + WebRTC SDP signaling server on `http_addr`
+/// 4. `axum` HTTP + `TCP_NODELAY` Persistent Binary/JSON WebSocket Spine (`/api/ella-world/ws`) on `http_addr`
 pub async fn start_all_servers(mut config: ServerConfig) -> anyhow::Result<RunningEllaWorld> {
     let pre_world = WorldEngine::new(config.clone())?;
     let sfu = WebRtcSfu::bind_and_start(Arc::clone(&pre_world)).await?;
     let native_udp = NativeUdpServer::bind_and_start(Arc::clone(&pre_world)).await?;
+    let ws_hub = WsSpineHub::new();
 
     // Reflect ephemeral port bindings if `0` was passed in integration tests
     config.webrtc_udp_port = sfu.udp_port();
@@ -49,10 +53,11 @@ pub async fn start_all_servers(mut config: ServerConfig) -> anyhow::Result<Runni
         world: Arc::clone(&pre_world),
         sfu: Arc::clone(&sfu),
         native_udp: Arc::clone(&native_udp),
+        ws_hub: Arc::clone(&ws_hub),
     });
 
     let http_task = tokio::spawn(async move {
-        axum::serve(tcp_listener, router).await?;
+        axum::serve(tcp_listener, router).tcp_nodelay(true).await?;
         Ok(())
     });
 
@@ -63,6 +68,7 @@ pub async fn start_all_servers(mut config: ServerConfig) -> anyhow::Result<Runni
         world: pre_world,
         sfu,
         native_udp,
+        ws_hub,
         http_task,
     })
 }

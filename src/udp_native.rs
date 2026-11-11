@@ -104,6 +104,9 @@ impl NativeUdpServer {
         let mut out_event_seq = 1u32;
         tokio::spawn(async move {
             while let Ok(ev) = ev_rx.recv().await {
+                if matches!(ev, crate::world::UdpWorldEvent::VoiceSlotMap { .. }) {
+                    continue;
+                }
                 let Ok(json_bytes) = serde_json::to_vec(&ev) else {
                     continue;
                 };
@@ -192,14 +195,15 @@ impl NativeUdpServer {
                     peer_addr,
                     NativePeerSession {
                         self_id: self_id.clone(),
-                        username,
+                        username: username.clone(),
                         addr: peer_addr,
                         last_seen_ms: now_ms(),
                     },
                 );
                 self.active_count.store(map.len(), Ordering::Relaxed);
             }
-            world.touch_player(&self_id).await;
+            let _ = world.ensure_player_online(&self_id, &username).await;
+            world.touch_player_udp(&self_id).await;
             let blocks_ver = world.blocks_data.read().await.version;
             let welcome = encode_native_welcome(blocks_ver, &self_id);
             let _ = self.socket.send_to(&welcome, peer_addr).await;
@@ -228,7 +232,9 @@ impl NativeUdpServer {
                     decode_c2s_state(&full)
                 };
                 if let Some(st) = decoded {
-                    world.apply_c2s_state(&session.self_id, st).await;
+                    world
+                        .apply_c2s_state_ext(&session.self_id, Some(&session.username), true, st)
+                        .await;
                 }
             }
             OP_C2S_PING => {
@@ -237,7 +243,7 @@ impl NativeUdpServer {
                 } else {
                     0
                 };
-                world.touch_player(&session.self_id).await;
+                world.touch_player_udp(&session.self_id).await;
                 let pong = encode_pong(client_ts, world.current_tick());
                 let framed = wrap_native_packet(OP_S2C_PONG, &pong);
                 let _ = self.socket.send_to(&framed, peer_addr).await;

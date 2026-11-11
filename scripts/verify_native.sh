@@ -17,6 +17,7 @@ cargo clippy --all-targets -- -D warnings
 
 echo "==> [3/4] Checking browser ES module syntax & zero-SSE invariant..."
 node --check public/js/voice.js
+node --check public/js/ws_spine.js
 node --check public/js/app.js
 node --check public/js/world3d.js
 if grep -rnE "EventSource|/api/ella-world/stream|/api/ella-world/sync" public/; then

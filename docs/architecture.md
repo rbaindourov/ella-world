@@ -1,30 +1,34 @@
-# ELLA World — Rust UDP Architecture & Binary Wire Protocol
+# ELLA World — Hybrid WebSocket Spine + Zero-Renegotiation UDP SFU Architecture (`v0.3.0`)
 
 ## 1. System Overview
 
-ELLA World is architected as a self-contained Rust process (`ella-world-server`) with zero runtime dependencies on Node.js, Express, Server-Sent Events (SSE), HTTP `/sync` polling, or external databases.
+ELLA World is architected as a self-contained Rust server (`ella-world-server`) with zero runtime dependencies on Node.js, Express, Server-Sent Events (SSE), HTTP `/sync` polling, or external databases.
+
+In `v0.3.0`, ELLA World pairs a **Persistent Binary + JSON WebSocket Spine (`443/tcp` `TCP_NODELAY`)** with a **Zero-Renegotiation Single-Port Multiplexed UDP Fast-Lane + 8-Slot Opus SFU (`44444/udp`)**:
 
 ```mermaid
 flowchart LR
   subgraph Browser["Browser Client (Three.js + WebAudio)"]
-    UI["3D World + Glam Salon"]
-    VC["VoiceChatManager (WebRTC UDP)"]
+    UI["3D World + Glam Salon\nServer-Synced Clock"]
+    WS["WorldSpineClient (wss:// :443)\nPresence + Digest + Binary Fallback"]
+    VC["VoiceChatManager (:44444/udp)\n1 Mic + 8 Pre-Allocated Voice Slots"]
   end
 
   subgraph Native["Native / Bot UDP Client"]
     NC["tokio::net::UdpSocket (EWLD v1)"]
   end
 
-  subgraph RustServer["ella-world-server (Standalone Rust)"]
-    AX["Axum HTTP (:8097)\nStatic Assets + /rtc/offer"]
-    SFU["WebRtcSfu (:44444/udp)\nUDPMuxDefault\nDTLS-SRTP Opus + SCTP DataChannels"]
+  subgraph RustServer["ella-world-server (Standalone Rust v0.3.0)"]
+    AX["Axum HTTP + WS Spine (:8097)\nTCP_NODELAY + /ws + /rtc/offer"]
+    SFU["WebRtcSfu (:44444/udp)\nUDPMuxDefault\n8-Slot Opus SFU + 20Hz Fast-Lane"]
     RAW["NativeUdpServer (:44445/udp)\nEWLD v1 Binary UDP"]
-    ENG["WorldEngine (20 Hz Tick)\nPlayers + Runway + Atomic JSON Store"]
+    ENG["WorldEngine (20 Hz Tick + 3s Digest)\n12s Reconnect Grace + Atomic JSON Store"]
   end
 
-  UI -- "1. HTTPS Static + Login + SDP Offer" --> AX
-  VC <== "2. 44444/udp: Opus Voice RTP +\n28B Unreliable State (0x10/0x11)" ==> SFU
+  WS <== "1. wss:// :443 Presence, 3s Digest,\nReliable Events & Auto 20Hz Fallback" ==> AX
+  VC <== "2. 44444/udp: Zero-Renegotiation Opus RTP\n+ 28B Unreliable Fast-Lane (0x10/0x11)" ==> SFU
   NC <== "44445/udp: EWLD v1 Binary\nState + Opus Voice" ==> RAW
+  AX <--> ENG
   SFU <--> ENG
   RAW <--> ENG
   SFU <== "Opus Voice Cross-Bridge" ==> RAW
@@ -32,28 +36,31 @@ flowchart LR
 
 ---
 
-## 2. Why Single-Port Multiplexed UDP (`44444/udp`)?
+## 2. Hybrid Dual-Plane Reliability Design
 
-Standard WebRTC servers allocate random ephemeral UDP ports (e.g., `10000–60000/udp`) for every peer and audio track, forcing operators to expose tens of thousands of UDP ports on their router.
+### Plane A — Authoritative Persistent WebSocket Spine (`src/ws_spine.rs`, `wss://<host>/api/ella-world/ws`)
+1. **Exclusive Presence Ownership & 12-Second Reconnect Grace**: WebRTC ICE hiccups never evict a player from `WorldEngine::players`. Only an explicit `/logout` or a WebSocket disconnect exceeding the **12-second grace window** broadcasts `player_leave`. Reconnecting within 12 seconds cancels eviction seamlessly with zero "left/joined" flicker.
+2. **Self-Healing 3-Second `world_sync_digest`**: Every 3 seconds, the server broadcasts a compact authoritative digest (`stateSeq`, `serverTimeMs`, `blocksVersion`, `players` with 16-hex SHA-256 `avatarHash`, and `runway` summary). Any client that missed an outfit change, player join, or voxel block build automatically detects the version/hash delta and heals within ≤3 seconds.
+3. **Instant Automatic 20 Hz Binary Fallback**: Whenever a client's UDP `44444` fast-lane is handshaking, reconnecting, or blocked by strict carrier/guest-Wi-Fi firewalls, the exact same 28-byte `OP_C2S_STATE` (`0x10`) and `OP_S2C_WORLD_STATE` (`0x11`) binary frames flow over the `TCP_NODELAY` WebSocket at 20 Hz—promoting automatically to `44444/udp` the instant live UDP pongs confirm reachability.
+4. **Server-Synchronized World Clock (`serverTimeMs`)**: Clients lock `serverClockOffsetMs` via RTT-compensated `ping`/`pong` frames so moving Sky Obby platforms, disco floor tiles, and runway strip lights are phase-locked across every device.
 
-`src/webrtc_sfu.rs` binds **one `tokio::net::UdpSocket` on `44444/udp`** wrapped in `webrtc::ice::udp_mux::UDPMuxDefault`:
-
-1. **Zero Ephemeral Port Sprawl**: Every browser player's ICE connectivity checks, `DTLS-SRTP` Opus audio packets, and `SCTP/DTLS` binary game-state datagrams multiplex cleanly over `44444/udp`.
-2. **Dual LAN + WAN ICE Candidates & Bridge Filtering**: `SettingEngine::set_interface_filter` excludes virtual container bridges (`docker*`, `br-*`, `veth*`, `virbr*`), while `WebRtcSfu::inject_public_srflx_candidate` appends an RFC 8445 `typ srflx` candidate for `ELLA_PUBLIC_IP` alongside the server's physical LAN `typ host` candidate—enabling sub-millisecond local Wi-Fi play without router NAT hairpinning and seamless remote WAN play over the exact same `UDPMuxDefault` socket (`44444/udp`).
-3. **Zero Head-of-Line Blocking**: Movement, animations, runway poses, and speaking indicators travel over `ella-udp-state` configured with `ordered: false, maxRetransmits: 0`. Dropped packets are never retransmitted—newer 20 Hz frames supersede older ones immediately.
+### Plane B — Zero-Renegotiation Single-Port UDP Fast-Lane + 8-Slot Opus SFU (`src/webrtc_sfu.rs`, `44444/udp`)
+1. **Single-Port `UDPMuxDefault` (`44444/udp`)**: All browser ICE connectivity checks, `DTLS-SRTP` Opus audio packets, and `SCTP/DTLS` binary game-state datagrams multiplex over **one UDP port (`44444/udp`)** with dual LAN `typ host` + WAN `typ srflx` ICE candidates.
+2. **Pre-Allocated 8-Slot Speaker Pool (Zero SDP Renegotiation)**: During the initial `POST /api/ella-world/rtc/offer` handshake, the browser offers 1 `sendonly` Opus mic transceiver plus **8 `recvonly` Opus speaker slot transceivers**, which `WebRtcSfu` binds immediately to `ella_slot_0`..`ella_slot_7` (`TrackLocalStaticRTP`). When friends join, speak, or leave, the Rust SFU dynamically maps active speakers to free slots in user-space RTP memory and emits a lightweight `voice_slot_map` JSON event—**zero mid-game `setRemoteDescription` renegotiations, zero ICE restarts, and zero transceiver envelope errors**.
+3. **Zero Head-of-Line Blocking (`ella-udp-state`)**: Movement, animations, runway poses, and speaking flags travel over `ordered: false, maxRetransmits: 0` SCTP/UDP datagrams when healthy.
 
 ---
 
 ## 3. Binary State Codec (`src/udp_wire.rs`)
 
-Both WebRTC `ella-udp-state` (`44444/udp`) and Native `EWLD` (`44445/udp`) share the exact little-endian binary state frames:
+Shared identically across WebRTC `ella-udp-state` (`44444/udp`), WebSocket Binary Fallback (`443/tcp`), and Native `EWLD` (`44445/udp`):
 
 ### Client-to-Server `OP_C2S_STATE` (`0x10` — Fixed 28 Bytes)
 
 | Byte Offset | Type | Field | Description |
 | :--- | :--- | :--- | :--- |
 | `0` | `u8` | `opcode` | `0x10` (`OP_C2S_STATE`) |
-| `1..5` | `u32 LE` | `seq` | Monotonic sequence number (out-of-order stale packets dropped) |
+| `1..5` | `u32 LE` | `seq` | Shared monotonic sequence number across WS & UDP |
 | `5..9` | `u32 LE` | `client_time_ms` | Client monotonic ms timestamp echoed back for live RTT calculation |
 | `9..13` | `f32 LE` | `x` | World X coordinate (`[-80.0, 80.0]`) |
 | `13..17` | `f32 LE` | `y` | World Y elevation (`[-20.0, 80.0]`) |
@@ -70,12 +77,7 @@ Both WebRTC `ella-udp-state` (`44444/udp`) and Native `EWLD` (`44445/udp`) share
 
 ### Native Raw UDP Envelope (`44445/udp`)
 
-Raw UDP datagrams on `44445/udp` prefix a 6-byte magic header `[b"EWLD"][version = 1][pkt_type]` supporting:
-- `0x01` `OP_HELLO` / `0x02` `OP_WELCOME` (HMAC session authentication)
-- `0x10` `OP_C2S_STATE` / `0x11` `OP_S2C_WORLD_STATE` (20 Hz 3D movement & pose sync)
-- `0x12` `OP_C2S_PING` / `0x13` `OP_S2C_PONG` (NAT pinhole keepalive & RTT probe)
-- `0x20` `OP_VOICE_OPUS` (`[seq: u16 LE][timestamp: u32 LE][opus_frame...]` relayed to native peers & bridged into WebRTC SFU `TrackLocalStaticRTP`)
-- `0x30` `OP_EVENT_JSON` / `0x31` `OP_EVENT_ACK` (reliable acknowledged voxel block, outfit, chat & runway commands)
+Raw UDP datagrams on `44445/udp` prefix a 6-byte magic header `[b"EWLD"][version = 1][pkt_type]` supporting `OP_HELLO` (`0x01`), `OP_WELCOME` (`0x02`), `OP_C2S_STATE` (`0x10`), `OP_S2C_WORLD_STATE` (`0x11`), `OP_C2S_PING` (`0x12`), `OP_S2C_PONG` (`0x13`), `OP_VOICE_OPUS` (`0x20` cross-bridged into the 8-slot WebRTC SFU), and `OP_EVENT_JSON` / `OP_EVENT_ACK` (`0x30`/`0x31`).
 
 ---
 
@@ -85,4 +87,4 @@ All persistent state lives in `ELLA_DATA_DIR` (e.g., `/var/lib/ella-world/`):
 - `world_users.json`: Whitelisted friend accounts, outfits, master admin password, and throttled `lastPos` builder coordinates (`chmod 0600` on Unix).
 - `world_blocks.json`: Monotonically versioned co-op voxel blocks (`blocksVersion` + `blocks[]`).
 
-Writes serialize to `.tmp.<pid>` in the same directory and execute an atomic POSIX `rename()` so power loss or process restarts can never corrupt world files.
+Writes serialize to `.tmp.<pid>` in the same directory and execute an atomic POSIX `rename()` so power loss or process restarts never corrupt world files.

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * Permanent Live HTTP + Static Asset + Dual-Port UDP Verification Client (`verify_live_udp.mjs`)
+ * Permanent Live HTTP + WSS Spine + Static Asset + Dual-Port UDP Verification Client (`verify_live_udp.mjs`)
  *
  * Usage:
  *   node scripts/verify_live_udp.mjs \
  *     --base-url https://your-domain.example.com \
+ *     --secondary-url https://your-second-domain.example.com \
  *     --lan-ip <SERVER_LAN_IP> \
  *     --wan-ip <SERVER_WAN_IP> \
  *     --username ella --password <PASSWORD>
@@ -48,9 +49,6 @@ function crc32(buf) {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-// Build a full RFC 5389 / RFC 8445 ICE STUN Binding Request (`USERNAME`, `PRIORITY`,
-// `ICE-CONTROLLING`, `MESSAGE-INTEGRITY` HMAC-SHA1, and `FINGERPRINT` CRC32) so `webrtc-rs`
-// UDPMuxDefault authenticates and replies with `0x0101` Binding Success Response on 44444/udp!
 function buildMuxedStunBindingRequest(serverUfrag, serverPwd) {
   const usernameVal = Buffer.from(`${serverUfrag}:probeclient`, 'utf8');
   const uPad = (usernameVal.length + 3) & ~3;
@@ -60,19 +58,18 @@ function buildMuxedStunBindingRequest(serverUfrag, serverPwd) {
   usernameVal.copy(attrUsername, 4);
 
   const attrPriority = Buffer.alloc(8);
-  attrPriority.writeUInt16BE(0x0024, 0); // PRIORITY
+  attrPriority.writeUInt16BE(0x0024, 0);
   attrPriority.writeUInt16BE(4, 2);
   attrPriority.writeUInt32BE(0x6e001eff, 4);
 
   const attrControlling = Buffer.alloc(12);
-  attrControlling.writeUInt16BE(0x802a, 0); // ICE-CONTROLLING
+  attrControlling.writeUInt16BE(0x802a, 0);
   attrControlling.writeUInt16BE(8, 2);
   crypto.randomBytes(8).copy(attrControlling, 4);
 
   const baseAttrs = Buffer.concat([attrUsername, attrPriority, attrControlling]);
   const header = Buffer.alloc(20);
-  header.writeUInt16BE(0x0001, 0); // Binding Request
-  // Length up to and including MESSAGE-INTEGRITY (24 bytes)
+  header.writeUInt16BE(0x0001, 0);
   header.writeUInt16BE(baseAttrs.length + 24, 2);
   header.writeUInt32BE(0x2112a442, 4);
   crypto.randomBytes(12).copy(header, 8);
@@ -80,16 +77,15 @@ function buildMuxedStunBindingRequest(serverUfrag, serverPwd) {
   const hmacInput = Buffer.concat([header, baseAttrs]);
   const hmac = crypto.createHmac('sha1', Buffer.from(serverPwd, 'utf8')).update(hmacInput).digest();
   const attrMsgIntegrity = Buffer.alloc(24);
-  attrMsgIntegrity.writeUInt16BE(0x0008, 0); // MESSAGE-INTEGRITY
+  attrMsgIntegrity.writeUInt16BE(0x0008, 0);
   attrMsgIntegrity.writeUInt16BE(20, 2);
   hmac.copy(attrMsgIntegrity, 4);
 
-  // Update header length to also include FINGERPRINT (8 bytes)
   header.writeUInt16BE(baseAttrs.length + 24 + 8, 2);
   const preFp = Buffer.concat([header, baseAttrs, attrMsgIntegrity]);
   const fpVal = (crc32(preFp) ^ 0x5354554e) >>> 0;
   const attrFingerprint = Buffer.alloc(8);
-  attrFingerprint.writeUInt16BE(0x8028, 0); // FINGERPRINT
+  attrFingerprint.writeUInt16BE(0x8028, 0);
   attrFingerprint.writeUInt16BE(4, 2);
   attrFingerprint.writeUInt32BE(fpVal, 4);
 
@@ -127,45 +123,140 @@ function buildNativeEwldHello(token) {
   const tb = Buffer.from(token, 'utf8');
   const out = Buffer.alloc(6 + 2 + tb.length);
   out.write('EWLD', 0, 4, 'ascii');
-  out.writeUInt8(1, 4); // version 1
-  out.writeUInt8(0x01, 5); // OP_HELLO
+  out.writeUInt8(1, 4);
+  out.writeUInt8(0x01, 5);
   out.writeUInt16LE(tb.length, 6);
   tb.copy(out, 8);
   return out;
 }
 
-const VALID_MINIMAL_BROWSER_OFFER_SDP = [
-  'v=0',
-  'o=- 4611731400430051336 2 IN IP4 127.0.0.1',
-  's=-',
-  't=0 0',
-  'a=group:BUNDLE 0 1',
-  'a=msid-semantic: WMS',
-  'm=audio 9 UDP/TLS/RTP/SAVPF 111',
-  'c=IN IP4 0.0.0.0',
-  'a=rtcp:9 IN IP4 0.0.0.0',
-  'a=ice-ufrag:probeclient',
-  'a=ice-pwd:probeclientpassword12345678',
-  'a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF',
-  'a=setup:actpass',
-  'a=mid:0',
-  'a=sendonly',
-  'a=rtcp-mux',
-  'a=rtpmap:111 opus/48000/2',
-  'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
-  'c=IN IP4 0.0.0.0',
-  'a=ice-ufrag:probeclient',
-  'a=ice-pwd:probeclientpassword12345678',
-  'a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF',
-  'a=setup:actpass',
-  'a=mid:1',
-  'a=sctp-port:5000',
-  ''
-].join('\r\n');
+function build8SlotBrowserOfferSdp() {
+  const mids = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+  const lines = [
+    'v=0',
+    'o=- 4611731400430051336 2 IN IP4 127.0.0.1',
+    's=-',
+    't=0 0',
+    `a=group:BUNDLE ${mids.join(' ')}`,
+    'a=msid-semantic: WMS',
+    // mid:0 -> upstream mic (sendonly)
+    'm=audio 9 UDP/TLS/RTP/SAVPF 111',
+    'c=IN IP4 0.0.0.0',
+    'a=rtcp:9 IN IP4 0.0.0.0',
+    'a=ice-ufrag:probeclient',
+    'a=ice-pwd:probeclientpassword12345678',
+    'a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF',
+    'a=setup:actpass',
+    'a=mid:0',
+    'a=sendonly',
+    'a=rtcp-mux',
+    'a=rtpmap:111 opus/48000/2'
+  ];
+  // mid:1..8 -> 8 pre-allocated downlink speaker slots (recvonly)
+  for (let slot = 1; slot <= 8; slot++) {
+    lines.push(
+      'm=audio 9 UDP/TLS/RTP/SAVPF 111',
+      'c=IN IP4 0.0.0.0',
+      'a=rtcp:9 IN IP4 0.0.0.0',
+      'a=ice-ufrag:probeclient',
+      'a=ice-pwd:probeclientpassword12345678',
+      'a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF',
+      'a=setup:actpass',
+      `a=mid:${slot}`,
+      'a=recvonly',
+      'a=rtcp-mux',
+      'a=rtpmap:111 opus/48000/2'
+    );
+  }
+  // mid:9 -> DataChannel SCTP
+  lines.push(
+    'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
+    'c=IN IP4 0.0.0.0',
+    'a=ice-ufrag:probeclient',
+    'a=ice-pwd:probeclientpassword12345678',
+    'a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF',
+    'a=setup:actpass',
+    'a=mid:9',
+    'a=sctp-port:5000',
+    ''
+  );
+  return lines.join('\r\n');
+}
+
+async function probeWebSocketSpine(baseUrl, token, timeoutMs = 3000) {
+  const wsUrl =
+    baseUrl.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:') +
+    `/api/ella-world/ws?token=${encodeURIComponent(token)}`;
+  return new Promise((resolve, reject) => {
+    const started = performance.now();
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+    let gotWelcome = false;
+    let gotBinaryState = false;
+    let gotPong = false;
+    let serverTimeMs = null;
+
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch {}
+      reject(
+        new Error(
+          `WS spine timeout on ${wsUrl} (welcome=${gotWelcome}, binary=${gotBinaryState}, pong=${gotPong})`
+        )
+      );
+    }, timeoutMs);
+
+    const checkComplete = () => {
+      if (gotWelcome && gotBinaryState && gotPong) {
+        clearTimeout(timer);
+        const rttMs = Math.round((performance.now() - started) * 100) / 100;
+        try { ws.close(); } catch {}
+        resolve({ ok: true, wsUrl: wsUrl.split('?')[0], rttMs, serverTimeMs });
+      }
+    };
+
+    ws.addEventListener('open', () => {
+      ws.send(JSON.stringify({ type: 'ping', clientTimeMs: Date.now() }));
+      const pkt = new ArrayBuffer(28);
+      const dv = new DataView(pkt);
+      dv.setUint8(0, 0x10); // OP_C2S_STATE
+      dv.setUint32(1, 1, true);
+      dv.setUint32(5, 12345, true);
+      dv.setFloat32(9, 2.5, true);
+      dv.setFloat32(13, 0.5, true);
+      dv.setFloat32(17, -8.0, true);
+      dv.setFloat32(21, 0.0, true);
+      ws.send(pkt);
+    });
+
+    ws.addEventListener('message', (ev) => {
+      if (ev.data instanceof ArrayBuffer) {
+        const dv = new DataView(ev.data);
+        if (dv.byteLength >= 11 && dv.getUint8(0) === 0x11) {
+          gotBinaryState = true;
+          checkComplete();
+        }
+      } else if (typeof ev.data === 'string') {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'welcome_snapshot') {
+          gotWelcome = true;
+          serverTimeMs = msg.serverTimeMs;
+        } else if (msg.type === 'pong') {
+          gotPong = true;
+        }
+        checkComplete();
+      }
+    });
+
+    ws.addEventListener('error', (err) => {
+      clearTimeout(timer);
+      reject(new Error(`WS error on ${wsUrl}: ${err.message || 'socket error'}`));
+    });
+  });
+}
 
 async function main() {
   const args = parseArgs(process.argv);
-  const report = { ok: true, http: {}, assets: [], udp: {} };
+  const report = { ok: true, http: {}, assets: [], wsSpine: {}, udp: {} };
 
   // 1. Primary & Secondary HTTPS Health Checks
   for (const base of [args.baseUrl, args.secondaryBaseUrl].filter(Boolean)) {
@@ -174,16 +265,22 @@ async function main() {
     });
     const json = await res.json();
     report.http[base] = { status: res.status, health: json };
-    if (res.status !== 200 || json.engine !== 'ella-world-rust-udp' || json.sseEnabled !== false) {
+    if (
+      res.status !== 200 ||
+      json.engine !== 'ella-world-rust-udp' ||
+      json.wsSpineEnabled !== true ||
+      json.sseEnabled !== false
+    ) {
       throw new Error(`Unexpected health payload on ${base}: ${JSON.stringify(json)}`);
     }
   }
 
-  // 2. Static HTML & Critical Asset Verification (CSS, JS, Three.js Vendor, 3D GLB)
+  // 2. Static HTML & Critical Asset Verification (CSS, JS, WS Spine, Three.js Vendor, 3D GLB)
   const assetPaths = [
     '/ella-world/',
     '/ella-world/css/styles.css',
     '/ella-world/js/app.js',
+    '/ella-world/js/ws_spine.js',
     '/ella-world/js/voice.js',
     '/ella-world/js/world3d.js',
     '/ella-world/vendor/three.module.js',
@@ -201,7 +298,7 @@ async function main() {
     }
   }
 
-  // 3. Optional Authenticated UDP Handshake & LAN vs WAN Firewall Probe
+  // 3. Authenticated WSS Spine + 8-Slot Zero-Renegotiation SDP + Dual-Port UDP Verification
   if (args.username && args.password) {
     const loginRes = await fetch(`${args.baseUrl}/api/ella-world/login`, {
       method: 'POST',
@@ -217,17 +314,28 @@ async function main() {
       throw new Error(`Login probe failed: ${JSON.stringify(loginJson)}`);
     }
 
+    for (const base of [args.baseUrl, args.secondaryBaseUrl].filter(Boolean)) {
+      report.wsSpine[base] = await probeWebSocketSpine(base, loginJson.token);
+    }
+
     const offerRes = await fetch(`${args.baseUrl}/api/ella-world/rtc/offer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Cache-Warmup': 'true' },
       body: JSON.stringify({
         token: loginJson.token,
-        sdp: VALID_MINIMAL_BROWSER_OFFER_SDP
+        sdp: build8SlotBrowserOfferSdp()
       })
     });
     const offerJson = await offerRes.json();
     if (!offerRes.ok || !offerJson.sdp) {
       throw new Error(`RTC Offer probe failed: ${JSON.stringify(offerJson)}`);
+    }
+
+    const slotMatches = offerJson.sdp.match(/ella_slot_\d+/g) || [];
+    const uniqueSlots = Array.from(new Set(slotMatches));
+    report.udp.preallocatedVoiceSlots = uniqueSlots;
+    if (uniqueSlots.length !== 8) {
+      throw new Error(`Expected 8 pre-allocated voice slots in Answer SDP, got: ${uniqueSlots.join(',')}`);
     }
 
     const ufragMatch = offerJson.sdp.match(/a=ice-ufrag:([^\r\n]+)/);
@@ -251,7 +359,6 @@ async function main() {
       report.udp.wan_44445_native = await probeUdpPacket(args.wanIp, args.nativePort, ewldHello);
     }
 
-    // Clean up probe player
     await fetch(`${args.baseUrl}/api/ella-world/logout`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Cache-Warmup': 'true' },

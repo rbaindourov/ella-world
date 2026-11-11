@@ -292,6 +292,42 @@ impl AvatarAppearance {
             }
         }
     }
+
+    /// Deterministic 16-hex-character digest of all outfit fields (immune to JS `Number` 53-bit precision limits).
+    pub fn short_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        for field in [
+            &self.avatar_mode,
+            &self.character_preset,
+            &self.skin_color,
+            &self.eye_color,
+            &self.hair_style,
+            &self.hair_color,
+            &self.top_style,
+            &self.top_color,
+            &self.bottom_style,
+            &self.bottom_color,
+            &self.shoe_style,
+            &self.shoe_color,
+            &self.hat,
+            &self.hat_color,
+            &self.accessory,
+            &self.accessory_color,
+            &self.fabric_finish,
+            &self.face,
+        ] {
+            h.update(field.as_bytes());
+            h.update(b"|");
+        }
+        let digest = h.finalize();
+        let mut hex = String::with_capacity(16);
+        for b in &digest[..8] {
+            use std::fmt::Write;
+            let _ = write!(&mut hex, "{b:02x}");
+        }
+        hex
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -513,6 +549,8 @@ pub fn default_starter_blocks() -> Vec<VoxelBlock> {
 pub struct PlayerRuntimeState {
     pub id: String,
     pub user: SanitizedUser,
+    #[serde(default)]
+    pub avatar_hash: String,
     pub x: f32,
     pub y: f32,
     pub z: f32,
@@ -526,6 +564,16 @@ pub struct PlayerRuntimeState {
     pub last_seq: u32,
     #[serde(skip)]
     pub last_client_time_ms: u32,
+    #[serde(skip)]
+    pub conn_epoch: u32,
+    #[serde(skip)]
+    pub ws_connected: bool,
+    #[serde(skip)]
+    pub udp_fastlane_active: bool,
+    #[serde(skip)]
+    pub last_udp_seen_ms: u64,
+    #[serde(skip)]
+    pub disconnected_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

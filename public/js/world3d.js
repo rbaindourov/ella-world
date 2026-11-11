@@ -925,11 +925,15 @@ class WorldAvatar {
     }
 
     if (!isSelf) {
-      this.group.position.lerp(this.targetPos, Math.min(1, dt * 12));
+      if (this.group.position.distanceTo(this.targetPos) > 10.0) {
+        this.group.position.copy(this.targetPos);
+      } else {
+        this.group.position.lerp(this.targetPos, Math.min(1, dt * 14));
+      }
       let diff = this.targetRy - this.group.rotation.y;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      this.group.rotation.y += diff * Math.min(1, dt * 12);
+      this.group.rotation.y += diff * Math.min(1, dt * 14);
     }
 
     if (this.voiceRing) {
@@ -1028,6 +1032,7 @@ export class BlockyWorld3D {
     this.isDraggingCamera = false;
     this.dragMoved = false;
     this.lastPointer = { x: 0, y: 0 };
+    this.serverClockOffsetMs = 0;
 
     this._setupLights();
     this._buildEnvironment();
@@ -1687,12 +1692,18 @@ export class BlockyWorld3D {
     });
   }
 
+  setServerClockOffset(offsetMs) {
+    if (Number.isFinite(offsetMs)) {
+      this.serverClockOffsetMs = offsetMs;
+    }
+  }
+
   _animate(now) {
     requestAnimationFrame(this._animate);
     const dt = Math.min(0.05, (now - this.lastFrameTime) / 1000);
     this.lastFrameTime = now;
 
-    const tSec = now * 0.001;
+    const tSec = (Date.now() + this.serverClockOffsetMs) * 0.001;
     for (const mp of this.movingPlatforms) {
       const prevX = mp.mesh.position.x;
       const prevZ = mp.mesh.position.z;

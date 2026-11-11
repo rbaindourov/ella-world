@@ -1,4 +1,5 @@
 import { VoiceChatManager } from '/ella-world/js/voice.js';
+import { WorldSpineClient } from '/ella-world/js/ws_spine.js';
 import { BlockyWorld3D, BLOCK_COLORS } from '/ella-world/js/world3d.js';
 
 // Signature Ella Forensics Cast & Dress-to-Impress Runway Presets
@@ -184,9 +185,20 @@ let salonOriginalAvatar = null;
 let avatarAutoSaveTimer = null;
 let isSalonOpen = false;
 let udpTimer = null;
-let lastAnnouncedUdpState = '';
+let sharedOutboundSeq = 0;
+let sessionEnteredWallMs = 0;
+let lastAnnouncedTransportState = '';
+let lastRunwayToastKey = '';
+let lastRunwayToastAt = 0;
+let wsTransportState = { state: 'connecting', rttMs: null };
+let udpTransportState = { state: 'connecting', rttMs: null, port: 44444 };
 let lastChatTs = 0;
 const seenChatIds = new Set();
+
+function nextOutboundSeq() {
+  sharedOutboundSeq = (sharedOutboundSeq + 1) >>> 0;
+  return sharedOutboundSeq;
+}
 let currentBlocksVersion = 0;
 let latestMoveState = { x: 0, y: 0, z: 0, ry: 0, anim: 'idle', emote: null };
 let localVoiceMuted = false;
@@ -328,35 +340,114 @@ const world3d = new BlockyWorld3D({
   }
 });
 
-function renderUdpStatusBadge({ state, rttMs, port = 44444 }) {
+function refreshConnectionBadge() {
   if (!udpStatusPill) return;
-  const connected = state === 'connected';
-  udpStatusPill.classList.toggle('is-connecting', state === 'connecting');
-  udpStatusPill.classList.toggle('is-reconnecting', state === 'reconnecting' || state === 'unavailable');
+  const udpHealthy = voiceManager.isUdpStateHealthy();
+  const wsHealthy = spineClient.isConnected();
 
-  if (connected) {
-    const rttSuffix = typeof rttMs === 'number' ? ` • ${rttMs}ms` : '';
+  let badgeMode = 'connecting';
+  if (udpHealthy) {
+    badgeMode = 'udp';
+  } else if (wsHealthy) {
+    badgeMode = 'ws';
+  } else if (
+    wsTransportState.state === 'reconnecting' ||
+    udpTransportState.state === 'reconnecting'
+  ) {
+    badgeMode = 'reconnecting';
+  }
+
+  udpStatusPill.classList.toggle('is-connecting', badgeMode === 'connecting');
+  udpStatusPill.classList.toggle('is-reconnecting', badgeMode === 'reconnecting');
+
+  if (badgeMode === 'udp') {
+    const rtt =
+      typeof udpTransportState.rttMs === 'number'
+        ? udpTransportState.rttMs
+        : wsTransportState.rttMs;
+    const rttSuffix = typeof rtt === 'number' ? ` • ${rtt}ms` : '';
+    const port = udpTransportState.port || voiceManager.udpPort || 44444;
     udpStatusPill.textContent = `🟢 UDP :${port}${rttSuffix}`;
-  } else if (state === 'reconnecting') {
-    udpStatusPill.textContent = `🟡 UDP Reconnecting...`;
+  } else if (badgeMode === 'ws') {
+    const rttSuffix =
+      typeof wsTransportState.rttMs === 'number' ? ` • ${wsTransportState.rttMs}ms` : '';
+    udpStatusPill.textContent = `🟢 WSS Sync${rttSuffix}`;
+  } else if (badgeMode === 'reconnecting') {
+    udpStatusPill.textContent = `🟡 Reconnecting...`;
   } else {
-    udpStatusPill.textContent = `⚡ UDP Connecting...`;
+    udpStatusPill.textContent = `⚡ Connecting...`;
   }
 
   // Only update screen-reader polite live region on discrete connection state transitions
   // (never spam assistive tech on 20Hz RTT ticks — modern-web-guidance: accessibility Live Regions)
-  if (udpStatusSr && state && state !== lastAnnouncedUdpState) {
-    lastAnnouncedUdpState = state;
-    if (connected) {
-      udpStatusSr.textContent = `Connected to world over UDP port ${port}.`;
-    } else if (state === 'reconnecting') {
-      udpStatusSr.textContent = 'Reconnecting UDP game and voice link.';
+  if (udpStatusSr && badgeMode !== lastAnnouncedTransportState) {
+    lastAnnouncedTransportState = badgeMode;
+    if (badgeMode === 'udp') {
+      udpStatusSr.textContent = `Connected to world fast-lane over UDP port ${udpTransportState.port || 44444}.`;
+    } else if (badgeMode === 'ws') {
+      udpStatusSr.textContent = 'Connected to world sync over secure WebSocket.';
+    } else if (badgeMode === 'reconnecting') {
+      udpStatusSr.textContent = 'Reconnecting world sync link.';
     }
   }
 }
 
-// 2. Initialize Pure-UDP WebRTC SFU Voice + Binary State Manager
+function handleBinaryWorldStateSnapshot({ rttMs, transport, players }) {
+  if (transport === 'udp' && typeof rttMs === 'number') {
+    udpTransportState.state = 'connected';
+    udpTransportState.rttMs = rttMs;
+  } else if (transport === 'ws' && typeof rttMs === 'number') {
+    wsTransportState.state = 'connected';
+    wsTransportState.rttMs = rttMs;
+  }
+  refreshConnectionBadge();
+
+  for (const frame of players || []) {
+    if (!frame.id || frame.id === selfId) continue;
+    const existing = playersMap.get(frame.id);
+    if (!existing) {
+      // Unknown peer seen in 20 Hz binary tick — trigger throttled authoritative snapshot resync
+      spineClient.requestResync();
+      continue;
+    }
+    existing.x = frame.x;
+    existing.y = frame.y;
+    existing.z = frame.z;
+    existing.ry = frame.ry;
+    existing.anim = frame.anim;
+    existing.emote = frame.emote;
+    world3d.upsertRemotePlayer(existing);
+    if (existing.muted !== frame.muted || existing.speaking !== frame.speaking) {
+      existing.muted = frame.muted;
+      existing.speaking = frame.speaking;
+      updateFriendCardVoiceIndicator(frame.id, frame.muted, frame.speaking);
+      const av = world3d.remoteAvatars.get(frame.id);
+      if (av) av.setVoiceState({ muted: frame.muted, speaking: frame.speaking });
+    }
+  }
+}
+
+// 2A. Initialize Authoritative Persistent WebSocket Spine (`wss://<host>/api/ella-world/ws`)
+const spineClient = new WorldSpineClient({
+  nextSeq: nextOutboundSeq,
+  onWorldStateSnapshot: (snap) => {
+    handleBinaryWorldStateSnapshot(snap);
+  },
+  onWorldEvent: (ev) => {
+    handleIncomingUdpWorldEvent(ev);
+  },
+  onTransportStatus: (st) => {
+    wsTransportState = { ...wsTransportState, ...st };
+    refreshConnectionBadge();
+  },
+  onClockOffset: (offsetMs) => {
+    world3d.setServerClockOffset(offsetMs);
+  }
+});
+
+// 2B. Initialize Zero-Renegotiation Single-Port UDP Fast-Lane + 8-Slot Opus SFU Manager
 const voiceManager = new VoiceChatManager({
+  nextSeq: nextOutboundSeq,
   onLocalVoiceState: ({ muted, speaking, level }) => {
     localVoiceMuted = muted;
     localVoiceSpeaking = speaking;
@@ -382,39 +473,15 @@ const voiceManager = new VoiceChatManager({
       av.setVoiceState({ muted: p ? p.muted : false, speaking });
     }
   },
-  onWorldStateSnapshot: ({ rttMs, players }) => {
-    if (typeof rttMs === 'number') {
-      renderUdpStatusBadge({
-        state: 'connected',
-        rttMs,
-        port: voiceManager.udpPort
-      });
-    }
-    for (const frame of players) {
-      if (!frame.id || frame.id === selfId) continue;
-      const existing = playersMap.get(frame.id);
-      if (!existing) continue;
-      existing.x = frame.x;
-      existing.y = frame.y;
-      existing.z = frame.z;
-      existing.ry = frame.ry;
-      existing.anim = frame.anim;
-      existing.emote = frame.emote;
-      world3d.upsertRemotePlayer(existing);
-      if (existing.muted !== frame.muted || existing.speaking !== frame.speaking) {
-        existing.muted = frame.muted;
-        existing.speaking = frame.speaking;
-        updateFriendCardVoiceIndicator(frame.id, frame.muted, frame.speaking);
-        const av = world3d.remoteAvatars.get(frame.id);
-        if (av) av.setVoiceState({ muted: frame.muted, speaking: frame.speaking });
-      }
-    }
+  onWorldStateSnapshot: (snap) => {
+    handleBinaryWorldStateSnapshot(snap);
   },
   onWorldEvent: (ev) => {
     handleIncomingUdpWorldEvent(ev);
   },
   onUdpTransportStatus: (status) => {
-    renderUdpStatusBadge(status);
+    udpTransportState = { ...udpTransportState, ...status };
+    refreshConnectionBadge();
   },
   onStatusChange: ({ ok, message }) => {
     voiceConnectionHint.textContent = message;
@@ -581,6 +648,11 @@ friendLoginForm.addEventListener('submit', async (e) => {
 async function enterGameWorld(loginData) {
   loginScreen.hidden = true;
   gameHud.hidden = false;
+  sessionEnteredWallMs = Date.now();
+
+  if (typeof loginData.serverTimeMs === 'number') {
+    world3d.setServerClockOffset(loginData.serverTimeMs - Date.now());
+  }
 
   applyWorldMeta(loginData.worldMeta);
   if (loginData.runway) applyRunwaySummary(loginData.runway);
@@ -608,17 +680,20 @@ async function enterGameWorld(loginData) {
   currentBlocksVersion = loginData.blocksVersion || 1;
   updateBuildSaveStatus((loginData.blocks || []).length, false);
 
+  spineClient.configure({
+    sessionToken,
+    wsUrl: loginData.worldMeta?.wsUrl || '/api/ella-world/ws'
+  });
+
   voiceManager.configure({
     selfId,
     sessionToken,
     rtcOfferUrl: loginData.worldMeta?.rtcOfferUrl || '/api/ella-world/rtc/offer',
     iceServers: loginData.worldMeta?.iceServers,
     webrtcUdpPort: loginData.worldMeta?.webrtcUdpPort || 44444,
+    voiceSlotCount: loginData.worldMeta?.voiceSlotCount || 8,
     defaultMode: defaultProximity ? 'proximity' : 'party'
   });
-
-  await voiceManager.initLocalMicrophone();
-  await populateMicDeviceSelect();
 
   for (const p of loginData.players || []) {
     playersMap.set(p.id, p);
@@ -641,21 +716,40 @@ async function enterGameWorld(loginData) {
     text: `👑 Welcome to ${loginData.worldMeta?.worldName || "Ella's Starlight Glam Plaza"}, ${selfUser.displayName}! Open Glam Closet (C) or warp to the Runway (F)!`
   });
 
-  // Establish single-port UDP WebRTC SFU Voice + 20Hz Binary Game-State link
-  await voiceManager.connectServerUdp();
+  // 1. Immediately connect persistent `:443` WebSocket spine (zero wait on microphone dialog!)
+  spineClient.connect();
 
+  // 2. Start 20 Hz hybrid state loop (uses UDP fast-lane when healthy, instant WSS fallback otherwise)
   if (udpTimer) clearInterval(udpTimer);
   udpTimer = setInterval(() => {
     if (!selfId || !selfUser) return;
-    voiceManager.sendBinaryState({
+    const udpHealthy = voiceManager.isUdpStateHealthy();
+    spineClient.notifyUdpFastLane(udpHealthy);
+    const stateFrame = {
       ...latestMoveState,
       muted: localVoiceMuted,
       speaking: localVoiceSpeaking
-    });
+    };
+    if (udpHealthy) {
+      voiceManager.sendBinaryState(stateFrame);
+    } else {
+      spineClient.sendBinaryState(stateFrame);
+      if (voiceManager.isUdpConnected()) {
+        // Probe newly opened UDP DataChannel so inbound echo promotes UDP fast-lane
+        voiceManager.sendBinaryState(stateFrame);
+      }
+    }
   }, 50);
+
+  // 3. Connect Zero-Renegotiation UDP SFU + initialize microphone in parallel without blocking world sync
+  (async () => {
+    await voiceManager.initLocalMicrophone();
+    await populateMicDeviceSelect();
+  })().catch(() => {});
+  voiceManager.connectServerUdp().catch(() => {});
 }
 
-function upsertIncomingRemotePlayer(p) {
+function upsertIncomingRemotePlayer(p, silentJoin = false) {
   if (!p || !p.id || p.id === selfId) return false;
   const existing = playersMap.get(p.id);
   if (!existing) {
@@ -663,28 +757,34 @@ function upsertIncomingRemotePlayer(p) {
     world3d.upsertRemotePlayer(p);
     voiceManager.ensurePeer(p.id);
     renderFriendsList();
-    showToast(`👋 ${p.user?.displayName || 'A friend'} joined the world!`);
-    appendChatMessage({
-      isSystem: true,
-      text: `🎉 ${p.user?.displayName || 'A friend'} joined the party!`
-    });
+    if (!silentJoin) {
+      showToast(`👋 ${p.user?.displayName || 'A friend'} joined the world!`);
+      appendChatMessage({
+        isSystem: true,
+        text: `🎉 ${p.user?.displayName || 'A friend'} joined the party!`
+      });
+    }
     return true;
   }
 
-  const prevAvatarSig = JSON.stringify(existing.user?.avatar || {});
-  const nextAvatarSig = JSON.stringify(p.user?.avatar || {});
+  const prevHash = existing.avatarHash || '';
+  const nextHash = p.avatarHash || '';
+  const prevAvatarSig = prevHash || JSON.stringify(existing.user?.avatar || {});
+  const nextAvatarSig = nextHash || JSON.stringify(p.user?.avatar || {});
   existing.x = p.x;
   existing.y = p.y;
   existing.z = p.z;
   existing.ry = p.ry;
   existing.anim = p.anim;
   existing.emote = p.emote;
+  if (p.avatarHash) existing.avatarHash = p.avatarHash;
   if (p.user) existing.user = p.user;
   world3d.upsertRemotePlayer(existing);
 
   if (p.user?.avatar && prevAvatarSig !== nextAvatarSig) {
     const av = world3d.remoteAvatars.get(p.id);
     if (av) av.updateAvatarAppearance(p.user.avatar);
+    renderFriendsList();
   }
   if (existing.muted !== p.muted || existing.speaking !== p.speaking) {
     existing.muted = p.muted;
@@ -696,7 +796,34 @@ function upsertIncomingRemotePlayer(p) {
   return false;
 }
 
-function handleIncomingChatEntry(c) {
+function reconcileAuthoritativeRoster(remoteList, silentNewJoins = false) {
+  const liveIds = new Set([selfId]);
+  let rosterChanged = false;
+
+  for (const p of remoteList || []) {
+    if (!p || !p.id) continue;
+    liveIds.add(p.id);
+    if (p.id === selfId) continue;
+    if (upsertIncomingRemotePlayer(p, silentNewJoins)) {
+      rosterChanged = true;
+    }
+  }
+
+  for (const [pid] of Array.from(playersMap.entries())) {
+    if (pid !== selfId && !liveIds.has(pid)) {
+      playersMap.delete(pid);
+      world3d.removeRemotePlayer(pid);
+      voiceManager.removePeer(pid);
+      rosterChanged = true;
+    }
+  }
+
+  if (rosterChanged) {
+    renderFriendsList();
+  }
+}
+
+function handleIncomingChatEntry(c, isHistorical = false) {
   if (!c) return;
   if (c.ts && c.ts > lastChatTs) {
     lastChatTs = c.ts;
@@ -706,6 +833,9 @@ function handleIncomingChatEntry(c) {
   }
   if (c.id) seenChatIds.add(c.id);
   appendChatMessage(c);
+  if (isHistorical || (c.ts && c.ts < sessionEnteredWallMs - 2500)) {
+    return;
+  }
   if (c.isTrophyWin || c.isRunwayEvent) {
     showToast(c.text, 5200);
     if (c.isTrophyWin) {
@@ -727,15 +857,49 @@ function handleIncomingChatEntry(c) {
 function handleIncomingUdpWorldEvent(ev) {
   if (!ev || typeof ev !== 'object') return;
   switch (ev.type) {
+    case 'welcome_snapshot': {
+      reconcileAuthoritativeRoster(ev.players || [], true);
+      if (Array.isArray(ev.blocks) && ev.blocksVersion !== currentBlocksVersion) {
+        currentBlocksVersion = ev.blocksVersion;
+        world3d.loadBlocks(ev.blocks);
+        updateBuildSaveStatus(ev.blocks.length, false);
+      }
+      for (const c of ev.chatHistory || []) {
+        handleIncomingChatEntry(c, true);
+      }
+      if (ev.runway) {
+        applyRunwaySummary(ev.runway);
+      }
+      if (ev.voiceSlots) {
+        voiceManager.applyVoiceSlotMap(ev.voiceSlots);
+      }
+      break;
+    }
+    case 'world_sync_digest': {
+      reconcileAuthoritativeRoster(ev.players || [], false);
+      if (typeof ev.blocksVersion === 'number' && ev.blocksVersion !== currentBlocksVersion) {
+        spineClient.requestResync();
+      }
+      if (ev.runway) {
+        applyRunwaySummary(ev.runway);
+      }
+      break;
+    }
+    case 'voice_slot_map': {
+      if (ev.slots) {
+        voiceManager.applyVoiceSlotMap(ev.slots);
+      }
+      break;
+    }
     case 'roster': {
       for (const p of ev.players || []) {
-        upsertIncomingRemotePlayer(p);
+        upsertIncomingRemotePlayer(p, true);
       }
       break;
     }
     case 'player_join': {
       if (ev.player) {
-        upsertIncomingRemotePlayer(ev.player);
+        upsertIncomingRemotePlayer(ev.player, false);
       }
       break;
     }
@@ -756,8 +920,12 @@ function handleIncomingUdpWorldEvent(ev) {
     case 'avatar_updated': {
       if (ev.selfId && ev.selfId !== selfId && ev.user) {
         const existing = playersMap.get(ev.selfId);
+        if (existing && ev.avatarHash && existing.avatarHash === ev.avatarHash) {
+          break;
+        }
         if (existing) {
           existing.user = ev.user;
+          if (ev.avatarHash) existing.avatarHash = ev.avatarHash;
         }
         const av = world3d.remoteAvatars.get(ev.selfId);
         if (av) av.updateAvatarAppearance(ev.user.avatar);
@@ -767,7 +935,7 @@ function handleIncomingUdpWorldEvent(ev) {
     }
     case 'chat': {
       if (ev.chat) {
-        handleIncomingChatEntry(ev.chat);
+        handleIncomingChatEntry(ev.chat, false);
       }
       break;
     }
@@ -783,6 +951,13 @@ function handleIncomingUdpWorldEvent(ev) {
       if (ev.runway) {
         applyRunwaySummary(ev.runway);
       }
+      const toastKey = `${ev.event || ''}:${ev.runway?.theme || ''}:${ev.voterId || ''}:${ev.targetUsername || ''}:${ev.stars || ''}`;
+      const nowMs = performance.now();
+      if (toastKey === lastRunwayToastKey && nowMs - lastRunwayToastAt < 1800) {
+        break;
+      }
+      lastRunwayToastKey = toastKey;
+      lastRunwayToastAt = nowMs;
       if (ev.event === 'theme' && ev.runway?.theme) {
         showToast(`💃 New Runway Theme: "${ev.runway.theme}"!`);
       } else if (ev.event === 'vote' && ev.voterId !== selfId && ev.stars) {
@@ -1589,8 +1764,11 @@ function leaveWorldToLogin() {
     clearInterval(udpTimer);
     udpTimer = null;
   }
+  spineClient.disconnect();
   voiceManager.disconnectSession();
-  lastAnnouncedUdpState = '';
+  lastAnnouncedTransportState = '';
+  wsTransportState = { state: 'connecting', rttMs: null };
+  udpTransportState = { state: 'connecting', rttMs: null, port: 44444 };
   gameHud.hidden = true;
   loginScreen.hidden = false;
   loadPublicMeta();

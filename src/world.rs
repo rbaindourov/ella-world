@@ -10,33 +10,61 @@ use crate::udp_wire::{encode_s2c_world_state, DecodedC2SState};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
+
+pub const DEFAULT_DISCONNECT_GRACE_MS: u64 = 12_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UdpWorldEvent {
     Roster {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
+        #[serde(rename = "serverTimeMs")]
+        server_time_ms: u64,
         players: Vec<PlayerRuntimeState>,
         #[serde(rename = "blocksVersion")]
         blocks_version: u64,
     },
+    WorldSyncDigest {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
+        #[serde(rename = "serverTimeMs")]
+        server_time_ms: u64,
+        #[serde(rename = "blocksVersion")]
+        blocks_version: u64,
+        runway: RunwayPublicSummary,
+        players: Vec<PlayerRuntimeState>,
+    },
     PlayerJoin {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
         player: PlayerRuntimeState,
     },
     PlayerLeave {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
         id: String,
     },
     AvatarUpdated {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
         #[serde(rename = "selfId")]
         self_id: String,
+        #[serde(rename = "avatarHash")]
+        avatar_hash: String,
         user: SanitizedUser,
     },
     Chat {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
         chat: ChatMessage,
     },
     Block {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
         #[serde(rename = "selfId")]
         self_id: String,
         #[serde(rename = "blocksVersion")]
@@ -44,6 +72,8 @@ pub enum UdpWorldEvent {
         blocks: Vec<VoxelBlock>,
     },
     Runway {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
         event: String,
         #[serde(rename = "actorName", skip_serializing_if = "Option::is_none")]
         actor_name: Option<String>,
@@ -55,6 +85,11 @@ pub enum UdpWorldEvent {
         target_username: Option<String>,
         stars: Option<u8>,
         runway: RunwayPublicSummary,
+    },
+    VoiceSlotMap {
+        #[serde(rename = "targetSelfId")]
+        target_self_id: String,
+        slots: HashMap<String, Option<String>>,
     },
 }
 
@@ -76,6 +111,8 @@ pub struct WorldEngine {
     pub chats: RwLock<VecDeque<ChatMessage>>,
     pub runway: RwLock<RunwayState>,
     pub server_tick: AtomicU32,
+    pub state_seq: AtomicU64,
+    pub disconnect_grace_ms: AtomicU64,
     pub udp_event_tx: broadcast::Sender<UdpWorldEvent>,
     pub opus_bridge_tx: broadcast::Sender<BridgedOpusFrame>,
 }
@@ -85,7 +122,7 @@ impl WorldEngine {
         let store = PersistenceStore::new(&config.data_dir, &config.seed_users_file)?;
         let users_cfg = store.load_or_init_users()?;
         let blocks_data = store.load_or_init_blocks()?;
-        let (udp_event_tx, _) = broadcast::channel(512);
+        let (udp_event_tx, _) = broadcast::channel(1024);
         let (opus_bridge_tx, _) = broadcast::channel(1024);
 
         let engine = Arc::new(Self {
@@ -97,6 +134,8 @@ impl WorldEngine {
             chats: RwLock::new(VecDeque::with_capacity(64)),
             runway: RwLock::new(RunwayState::default()),
             server_tick: AtomicU32::new(1),
+            state_seq: AtomicU64::new(1),
+            disconnect_grace_ms: AtomicU64::new(DEFAULT_DISCONNECT_GRACE_MS),
             udp_event_tx,
             opus_bridge_tx,
         });
@@ -104,12 +143,12 @@ impl WorldEngine {
         let bg = Arc::clone(&engine);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
-            let mut prune_counter = 0u32;
+            let mut tick_counter = 0u32;
             loop {
                 interval.tick().await;
                 bg.server_tick.fetch_add(1, Ordering::Relaxed);
-                prune_counter = prune_counter.wrapping_add(1);
-                if prune_counter.is_multiple_of(60) {
+                tick_counter = tick_counter.wrapping_add(1);
+                if tick_counter.is_multiple_of(10) {
                     bg.prune_stale_players().await;
                 }
             }
@@ -122,6 +161,18 @@ impl WorldEngine {
         self.server_tick.load(Ordering::Relaxed)
     }
 
+    pub fn current_state_seq(&self) -> u64 {
+        self.state_seq.load(Ordering::Relaxed)
+    }
+
+    pub fn next_state_seq(&self) -> u64 {
+        self.state_seq.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub fn set_disconnect_grace_ms(&self, ms: u64) {
+        self.disconnect_grace_ms.store(ms, Ordering::Relaxed);
+    }
+
     pub fn verify_session_token(&self, token: &str) -> Option<TokenClaims> {
         verify_token(token, &self.config.hmac_secret)
     }
@@ -131,12 +182,29 @@ impl WorldEngine {
     }
 
     pub async fn prune_stale_players(&self) {
-        let cutoff = now_ms().saturating_sub(35_000);
+        let now = now_ms();
+        let grace_ms = self.disconnect_grace_ms.load(Ordering::Relaxed);
+        let idle_no_ws_cutoff_ms = grace_ms.max(25_000);
         let mut removed = Vec::new();
         {
             let mut map = self.players.write().await;
             map.retain(|id, p| {
-                if p.last_seen < cutoff {
+                // Refresh UDP fast-lane liveness automatically
+                if p.udp_fastlane_active && now.saturating_sub(p.last_udp_seen_ms) > 2_200 {
+                    p.udp_fastlane_active = false;
+                }
+
+                let should_evict = if p.ws_connected {
+                    now.saturating_sub(p.last_seen) > 45_000
+                } else if let Some(disc_at) = p.disconnected_at_ms {
+                    // Only evict if BOTH grace period elapsed AND no fresh UDP packets arrived since disconnect
+                    now.saturating_sub(disc_at) >= grace_ms
+                        && now.saturating_sub(p.last_seen) >= grace_ms
+                } else {
+                    now.saturating_sub(p.last_seen) > idle_no_ws_cutoff_ms
+                };
+
+                if should_evict {
                     removed.push(id.clone());
                     false
                 } else {
@@ -145,14 +213,19 @@ impl WorldEngine {
             });
         }
         for id in removed {
-            let _ = self.udp_event_tx.send(UdpWorldEvent::PlayerLeave { id });
+            let seq = self.next_state_seq();
+            let _ = self
+                .udp_event_tx
+                .send(UdpWorldEvent::PlayerLeave { state_seq: seq, id });
         }
     }
 
     pub async fn remove_player_immediately(&self, self_id: &str) {
         let existed = self.players.write().await.remove(self_id).is_some();
         if existed {
+            let seq = self.next_state_seq();
             let _ = self.udp_event_tx.send(UdpWorldEvent::PlayerLeave {
+                state_seq: seq,
                 id: self_id.to_string(),
             });
         }
@@ -161,6 +234,137 @@ impl WorldEngine {
     pub async fn active_players_list(&self) -> Vec<PlayerRuntimeState> {
         let map = self.players.read().await;
         map.values().cloned().collect()
+    }
+
+    fn spawn_coords_for_user(
+        active_count: usize,
+        found_user: &UserAccount,
+    ) -> (f32, f32, f32, f32) {
+        let angle = (active_count as f32 * 1.35) % std::f32::consts::TAU;
+        let default_x = (angle.cos() * 2.5 * 10.0).round() / 10.0;
+        let default_z = (angle.sin() * 2.5 * 10.0).round() / 10.0;
+
+        if let Some(pos) = &found_user.last_pos {
+            (
+                pos.x.clamp(-75.0, 75.0),
+                pos.y.clamp(0.0, 75.0),
+                pos.z.clamp(-75.0, 75.0),
+                pos.ry,
+            )
+        } else {
+            (default_x, 0.0, default_z, 0.0)
+        }
+    }
+
+    /// Ensures `self_id` is present in `players` (re-hydrating seamlessly from `users_cfg` if the
+    /// player reconnected after a timeout or server binary restart).
+    pub async fn ensure_player_online(
+        &self,
+        self_id: &str,
+        username: &str,
+    ) -> Option<PlayerRuntimeState> {
+        let found_user = {
+            let cfg = self.users_cfg.read().await;
+            cfg.users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+                .cloned()?
+        };
+        let sanitized = found_user.sanitized();
+        let avatar_hash = sanitized.avatar.short_hash();
+        let now = now_ms();
+
+        let mut map = self.players.write().await;
+        if let Some(existing) = map.get_mut(self_id) {
+            existing.user = sanitized;
+            existing.avatar_hash = avatar_hash;
+            existing.last_seen = now;
+            existing.disconnected_at_ms = None;
+            return Some(existing.clone());
+        }
+
+        let (spawn_x, spawn_y, spawn_z, spawn_ry) =
+            Self::spawn_coords_for_user(map.len(), &found_user);
+        let player_doc = PlayerRuntimeState {
+            id: self_id.to_string(),
+            user: sanitized,
+            avatar_hash,
+            x: spawn_x,
+            y: spawn_y,
+            z: spawn_z,
+            ry: spawn_ry,
+            anim: "idle".into(),
+            emote: None,
+            muted: false,
+            speaking: false,
+            last_seen: now,
+            last_seq: 0,
+            last_client_time_ms: 0,
+            conn_epoch: 1,
+            ws_connected: false,
+            udp_fastlane_active: false,
+            last_udp_seen_ms: 0,
+            disconnected_at_ms: None,
+        };
+        map.insert(self_id.to_string(), player_doc.clone());
+        drop(map);
+
+        let seq = self.next_state_seq();
+        let _ = self.udp_event_tx.send(UdpWorldEvent::PlayerJoin {
+            state_seq: seq,
+            player: player_doc.clone(),
+        });
+
+        Some(player_doc)
+    }
+
+    pub async fn mark_ws_connected(
+        &self,
+        self_id: &str,
+        username: &str,
+    ) -> Option<(u32, PlayerRuntimeState)> {
+        let _ = self.ensure_player_online(self_id, username).await?;
+        let mut map = self.players.write().await;
+        let p = map.get_mut(self_id)?;
+        p.conn_epoch = p.conn_epoch.wrapping_add(1).max(1);
+        p.ws_connected = true;
+        p.disconnected_at_ms = None;
+        p.last_seen = now_ms();
+        p.last_seq = 0;
+        Some((p.conn_epoch, p.clone()))
+    }
+
+    pub async fn mark_ws_disconnected(&self, self_id: &str, epoch: u32) {
+        let mut map = self.players.write().await;
+        if let Some(p) = map.get_mut(self_id) {
+            if p.conn_epoch == epoch {
+                p.ws_connected = false;
+                p.disconnected_at_ms = Some(now_ms());
+            }
+        }
+    }
+
+    pub async fn set_udp_fastlane_active(&self, self_id: &str, active: bool) {
+        let now = now_ms();
+        let mut map = self.players.write().await;
+        if let Some(p) = map.get_mut(self_id) {
+            if active && !p.udp_fastlane_active {
+                p.last_seq = 0;
+            }
+            p.udp_fastlane_active = active;
+            if active {
+                p.last_udp_seen_ms = now;
+                p.last_seen = now;
+            }
+        }
+    }
+
+    pub async fn is_udp_fastlane_healthy(&self, self_id: &str) -> bool {
+        let now = now_ms();
+        let map = self.players.read().await;
+        map.get(self_id)
+            .map(|p| p.udp_fastlane_active && now.saturating_sub(p.last_udp_seen_ms) <= 2_200)
+            .unwrap_or(false)
     }
 
     pub async fn create_or_resume_session(
@@ -189,47 +393,55 @@ impl WorldEngine {
             iat: now_ms(),
         });
 
-        let active_count = self.players.read().await.len();
-        let angle = (active_count as f32 * 1.35) % std::f32::consts::TAU;
-        let default_x = (angle.cos() * 2.5 * 10.0).round() / 10.0;
-        let default_z = (angle.sin() * 2.5 * 10.0).round() / 10.0;
-
-        let (spawn_x, spawn_y, spawn_z, spawn_ry) = if let Some(pos) = &found_user.last_pos {
-            (
-                pos.x.clamp(-75.0, 75.0),
-                pos.y.clamp(0.0, 75.0),
-                pos.z.clamp(-75.0, 75.0),
-                pos.ry,
-            )
-        } else {
-            (default_x, 0.0, default_z, 0.0)
-        };
-
         let sanitized = found_user.sanitized();
-        let player_doc = PlayerRuntimeState {
-            id: self_id.clone(),
-            user: sanitized.clone(),
-            x: spawn_x,
-            y: spawn_y,
-            z: spawn_z,
-            ry: spawn_ry,
-            anim: "idle".into(),
-            emote: None,
-            muted: false,
-            speaking: false,
-            last_seen: now_ms(),
-            last_seq: 0,
-            last_client_time_ms: 0,
+        let avatar_hash = sanitized.avatar.short_hash();
+        let now = now_ms();
+
+        let (player_doc, is_brand_new) = {
+            let mut map = self.players.write().await;
+            if let Some(existing) = map.get_mut(&self_id) {
+                existing.user = sanitized.clone();
+                existing.avatar_hash = avatar_hash;
+                existing.last_seen = now;
+                existing.last_seq = 0;
+                existing.disconnected_at_ms = None;
+                (existing.clone(), false)
+            } else {
+                let (spawn_x, spawn_y, spawn_z, spawn_ry) =
+                    Self::spawn_coords_for_user(map.len(), found_user);
+                let doc = PlayerRuntimeState {
+                    id: self_id.clone(),
+                    user: sanitized.clone(),
+                    avatar_hash,
+                    x: spawn_x,
+                    y: spawn_y,
+                    z: spawn_z,
+                    ry: spawn_ry,
+                    anim: "idle".into(),
+                    emote: None,
+                    muted: false,
+                    speaking: false,
+                    last_seen: now,
+                    last_seq: 0,
+                    last_client_time_ms: 0,
+                    conn_epoch: 1,
+                    ws_connected: false,
+                    udp_fastlane_active: false,
+                    last_udp_seen_ms: 0,
+                    disconnected_at_ms: None,
+                };
+                map.insert(self_id.clone(), doc.clone());
+                (doc, true)
+            }
         };
 
-        {
-            let mut map = self.players.write().await;
-            map.insert(self_id.clone(), player_doc.clone());
+        if is_brand_new {
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::PlayerJoin {
+                state_seq: seq,
+                player: player_doc.clone(),
+            });
         }
-
-        let _ = self.udp_event_tx.send(UdpWorldEvent::PlayerJoin {
-            player: player_doc.clone(),
-        });
 
         let other_players: Vec<PlayerRuntimeState> = self
             .players
@@ -264,30 +476,108 @@ impl WorldEngine {
             "blocksVersion": blocks_snapshot.version,
             "chatHistory": chat_history,
             "runway": runway_summary,
+            "stateSeq": self.current_state_seq(),
+            "serverTimeMs": now,
             "worldMeta": {
                 "worldName": cfg.world_name,
                 "voiceDefaultMode": cfg.voice_default_mode,
                 "iceServers": cfg.ice_servers,
-                "transport": "udp-webrtc-sfu",
+                "transport": "hybrid-ws-spine-plus-udp-sfu",
                 "webrtcUdpPort": self.config.webrtc_udp_port,
                 "nativeUdpPort": self.config.native_udp_addr.port(),
+                "wsUrl": "/api/ella-world/ws",
                 "rtcOfferUrl": "/api/ella-world/rtc/offer"
             }
         })
     }
 
+    pub async fn build_welcome_snapshot(
+        &self,
+        self_id: &str,
+        username: &str,
+    ) -> Option<serde_json::Value> {
+        let me = self.ensure_player_online(self_id, username).await?;
+        let others: Vec<PlayerRuntimeState> = self
+            .players
+            .read()
+            .await
+            .values()
+            .filter(|p| p.id != self_id)
+            .cloned()
+            .collect();
+        let blocks_snapshot = self.blocks_data.read().await.clone();
+        let chat_history: Vec<ChatMessage> = self
+            .chats
+            .read()
+            .await
+            .iter()
+            .rev()
+            .take(25)
+            .rev()
+            .cloned()
+            .collect();
+        let runway_summary = self.runway.read().await.summary();
+
+        Some(serde_json::json!({
+            "type": "welcome_snapshot",
+            "stateSeq": self.current_state_seq(),
+            "serverTimeMs": now_ms(),
+            "selfId": self_id,
+            "self": me,
+            "players": others,
+            "blocks": blocks_snapshot.blocks,
+            "blocksVersion": blocks_snapshot.version,
+            "chatHistory": chat_history,
+            "runway": runway_summary
+        }))
+    }
+
+    pub async fn build_sync_digest(&self) -> UdpWorldEvent {
+        let players = self.active_players_list().await;
+        let blocks_version = self.blocks_data.read().await.version;
+        let runway = self.runway.read().await.summary();
+        UdpWorldEvent::WorldSyncDigest {
+            state_seq: self.current_state_seq(),
+            server_time_ms: now_ms(),
+            blocks_version,
+            runway,
+            players,
+        }
+    }
+
     pub async fn apply_c2s_state(&self, self_id: &str, decoded: DecodedC2SState) {
+        self.apply_c2s_state_ext(self_id, None, false, decoded)
+            .await;
+    }
+
+    pub async fn apply_c2s_state_ext(
+        &self,
+        self_id: &str,
+        username_hint: Option<&str>,
+        from_udp: bool,
+        decoded: DecodedC2SState,
+    ) {
+        let missing = !self.players.read().await.contains_key(self_id);
+        if missing {
+            if let Some(uname) = username_hint {
+                let _ = self.ensure_player_online(self_id, uname).await;
+            }
+        }
+
         let now = now_ms();
         let mut maybe_save_pos: Option<(String, SavedPosition)> = None;
 
         {
             let mut map = self.players.write().await;
             if let Some(p) = map.get_mut(self_id) {
-                // Drop stale out-of-order UDP datagrams (with wrap-around tolerance)
-                if decoded.seq != 0
+                let idle_gap = now.saturating_sub(p.last_seen) > 1_500;
+                // Only drop genuine short-range out-of-order UDP datagrams on an active burst;
+                // never lock out sequence resets after a reconnect, tab reload, or transport switch!
+                if !idle_gap
+                    && decoded.seq != 0
                     && p.last_seq != 0
                     && decoded.seq < p.last_seq
-                    && (p.last_seq - decoded.seq) < 100_000
+                    && (p.last_seq - decoded.seq) < 2_000
                 {
                     return;
                 }
@@ -302,6 +592,11 @@ impl WorldEngine {
                 p.muted = decoded.muted;
                 p.speaking = decoded.speaking;
                 p.last_seen = now;
+                p.disconnected_at_ms = None;
+                if from_udp {
+                    p.udp_fastlane_active = true;
+                    p.last_udp_seen_ms = now;
+                }
 
                 if p.y >= 0.0 {
                     maybe_save_pos = Some((
@@ -349,8 +644,20 @@ impl WorldEngine {
     }
 
     pub async fn touch_player(&self, self_id: &str) {
+        let now = now_ms();
         if let Some(p) = self.players.write().await.get_mut(self_id) {
-            p.last_seen = now_ms();
+            p.last_seen = now;
+            p.disconnected_at_ms = None;
+        }
+    }
+
+    pub async fn touch_player_udp(&self, self_id: &str) {
+        let now = now_ms();
+        if let Some(p) = self.players.write().await.get_mut(self_id) {
+            p.last_seen = now;
+            p.last_udp_seen_ms = now;
+            p.udp_fastlane_active = true;
+            p.disconnected_at_ms = None;
         }
     }
 
@@ -400,7 +707,9 @@ impl WorldEngine {
             (bd.version, bd.blocks.clone())
         };
 
+        let seq = self.next_state_seq();
         let _ = self.udp_event_tx.send(UdpWorldEvent::Block {
+            state_seq: seq,
             self_id: self_id.to_string(),
             blocks_version: next_version,
             blocks: snapshot.clone(),
@@ -426,18 +735,23 @@ impl WorldEngine {
             let _ = self.store.save_users(&cfg);
             s
         };
+        let avatar_hash = sanitized.avatar.short_hash();
 
         {
             let mut map = self.players.write().await;
             for p in map.values_mut() {
                 if p.user.username.eq_ignore_ascii_case(username) {
                     p.user = sanitized.clone();
+                    p.avatar_hash = avatar_hash.clone();
                 }
             }
         }
 
+        let seq = self.next_state_seq();
         let _ = self.udp_event_tx.send(UdpWorldEvent::AvatarUpdated {
+            state_seq: seq,
             self_id: self_id.to_string(),
+            avatar_hash,
             user: sanitized.clone(),
         });
 
@@ -506,7 +820,9 @@ impl WorldEngine {
             chats.push_back(entry.clone());
         }
 
+        let seq = self.next_state_seq();
         let _ = self.udp_event_tx.send(UdpWorldEvent::Chat {
+            state_seq: seq,
             chat: entry.clone(),
         });
 
@@ -539,7 +855,9 @@ impl WorldEngine {
             rw.votes_by_target.clear();
             let summary = rw.summary();
             drop(rw);
+            let seq = self.next_state_seq();
             let _ = self.udp_event_tx.send(UdpWorldEvent::Runway {
+                state_seq: seq,
                 event: "theme".into(),
                 actor_name: Some(username.to_string()),
                 voter_id: None,
@@ -568,7 +886,9 @@ impl WorldEngine {
             rw.updated_at = now_ms();
             let summary = rw.summary();
             drop(rw);
+            let seq = self.next_state_seq();
             let _ = self.udp_event_tx.send(UdpWorldEvent::Runway {
+                state_seq: seq,
                 event: "vote".into(),
                 actor_name: None,
                 voter_id: Some(self_id.to_string()),
@@ -595,7 +915,9 @@ impl WorldEngine {
             let _ = self.store.save_blocks(&bd);
             (bd.version, bd.blocks.clone())
         };
+        let seq = self.next_state_seq();
         let _ = self.udp_event_tx.send(UdpWorldEvent::Block {
+            state_seq: seq,
             self_id: "admin".into(),
             blocks_version: next_ver,
             blocks: next_blocks.clone(),

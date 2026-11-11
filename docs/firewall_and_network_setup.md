@@ -1,6 +1,6 @@
 # Firewall, NAT Port-Forwarding & Reverse Proxy Guide
 
-ELLA World uses **HTTPS (`TCP 443`)** once on page load (so modern browsers permit microphone capture via `navigator.mediaDevices.getUserMedia`) and **UDP (`44444/udp`)** for all continuous voice audio and 20 Hz 3D game state synchronization.
+ELLA World (`v0.3.0`) uses **HTTPS + WebSocket (`TCP 443`)** for static WebGL assets, secure microphone permissions, the authoritative presence/event spine (`wss://<host>/api/ella-world/ws`), and automatic 20 Hz binary fallback—paired with **Single-Port Multiplexed UDP (`44444/udp`)** for zero-renegotiation 8-slot Opus voice audio and sub-millisecond 20 Hz UDP game-state fast-lane datagrams.
 
 ---
 
@@ -8,10 +8,10 @@ ELLA World uses **HTTPS (`TCP 443`)** once on page load (so modern browsers perm
 
 | Port | Protocol | Direction | Required For | Purpose |
 | :--- | :--- | :--- | :--- | :--- |
-| **`443`** | **TCP** | Inbound (WAN & LAN) | **Required** | HTTPS static WebGL client, login, and initial WebRTC SDP offer/answer via Nginx reverse proxy to `127.0.0.1:8097` |
-| **`44444`** | **UDP** | Inbound / Bi-directional | **Required for WAN Friends** | Single-port multiplexed WebRTC UDP socket carrying **both** Opus Voice (`DTLS-SRTP`) and 20 Hz Binary Game State (`SCTP/DTLS`) |
+| **`443`** | **TCP** | Inbound (WAN & LAN) | **Required** | HTTPS static WebGL client, `/api/ella-world/ws` persistent WebSocket spine (`Upgrade: websocket`, `TCP_NODELAY`), 3s self-healing digest, and automatic 20 Hz binary state fallback via Nginx reverse proxy to `127.0.0.1:8097` |
+| **`44444`** | **UDP** | Inbound / Bi-directional | **Required for WAN Voice & UDP Fast-Lane** | Single-port multiplexed WebRTC UDP socket carrying **both** 8-slot Opus Voice (`DTLS-SRTP`) and 20 Hz Unreliable Binary Game State (`SCTP/DTLS`) |
 | **`44445`** | **UDP** | Inbound / Bi-directional | *Optional* | Native raw `EWLD` v1 UDP socket for non-browser desktop/CLI bots |
-| `8097` | TCP | Loopback (`127.0.0.1`) | Internal only | Local HTTP upstream between Nginx and `ella-world-server` (do **not** expose `8097/tcp` to WAN) |
+| `8097` | TCP | Loopback (`127.0.0.1`) | Internal only | Local HTTP + WebSocket upstream between Nginx and `ella-world-server` (do **not** expose `8097/tcp` to WAN) |
 
 ---
 
@@ -68,6 +68,9 @@ curl -s http://127.0.0.1:8097/api/ella-world/health | jq .
 
 Expected fields:
 - `"engine": "ella-world-rust-udp"`
+- `"version": "0.3.0"`
+- `"wsSpineEnabled": true`
+- `"zeroRenegotiationSfu": true`
 - `"sseEnabled": false`
 - `"httpPollingSyncEnabled": false`
 - `"webrtcUdpPort": 44444`

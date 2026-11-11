@@ -3,6 +3,7 @@ use crate::models::{now_ms, AvatarAppearance, UserAccount};
 use crate::udp_native::NativeUdpServer;
 use crate::webrtc_sfu::WebRtcSfu;
 use crate::world::WorldEngine;
+use crate::ws_spine::{ws_upgrade_handler, WsSpineHub};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -20,6 +21,7 @@ pub struct AppState {
     pub world: Arc<WorldEngine>,
     pub sfu: Arc<WebRtcSfu>,
     pub native_udp: Arc<NativeUdpServer>,
+    pub ws_hub: Arc<WsSpineHub>,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -29,6 +31,7 @@ pub fn build_router(state: AppState) -> Router {
     let api_routes = Router::new()
         .route("/health", get(health_handler))
         .route("/meta", get(meta_handler))
+        .route("/ws", get(ws_upgrade_handler))
         .route("/login", post(login_handler))
         .route("/resume", post(resume_handler))
         .route("/logout", post(logout_handler))
@@ -117,20 +120,27 @@ async fn health_handler(State(st): State<AppState>) -> Json<Value> {
         "status": "ok",
         "engine": "ella-world-rust-udp",
         "version": env!("CARGO_PKG_VERSION"),
+        "wsSpineEnabled": true,
+        "zeroRenegotiationSfu": true,
         "sseEnabled": false,
         "httpPollingSyncEnabled": false,
         "transport": {
-            "voice": "udp-webrtc-sfu-opus + native-udp-opus",
-            "gameState": "udp-webrtc-unreliable-datachannel-20hz + native-udp-ewld-v1",
+            "spine": "wss-binary-and-json-nodelay + 3s-self-healing-digest + 12s-grace",
+            "voice": "udp-webrtc-sfu-8slot-zero-renegotiate + native-udp-opus",
+            "gameState": "udp-webrtc-unreliable-datachannel-20hz + wss-binary-20hz-fallback + native-udp-ewld-v1",
+            "wsPath": "/api/ella-world/ws",
             "webrtcUdpPort": st.sfu.udp_port(),
             "nativeUdpPort": st.native_udp.local_addr().port()
         },
         "webrtcUdpPort": st.sfu.udp_port(),
         "nativeUdpPort": st.native_udp.local_addr().port(),
         "activePlayers": active_players,
+        "activeWsSessions": st.ws_hub.active_session_count(),
         "activeWebrtcSessions": st.sfu.active_session_count(),
         "activeNativeUdpSessions": st.native_udp.active_session_count(),
         "blocksVersion": blocks_version,
+        "stateSeq": st.world.current_state_seq(),
+        "serverTimeMs": now_ms(),
         "serverTick": st.world.current_tick()
     }))
 }
@@ -146,8 +156,10 @@ async fn meta_handler(State(st): State<AppState>) -> Json<Value> {
         "voiceDefaultMode": cfg.voice_default_mode,
         "iceServers": cfg.ice_servers,
         "runway": runway,
-        "transport": "udp-webrtc-sfu",
+        "transport": "hybrid-ws-spine-plus-udp-sfu",
+        "wsUrl": "/api/ella-world/ws",
         "sseEnabled": false,
+        "serverTimeMs": now_ms(),
         "webrtcUdpPort": st.sfu.udp_port(),
         "nativeUdpPort": st.native_udp.local_addr().port()
     }))

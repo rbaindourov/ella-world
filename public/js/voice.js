@@ -1,14 +1,18 @@
-// Pure-UDP WebRTC SFU Voice + 20Hz Binary UDP Game State Client
-// Connects to the standalone Rust `ella-world-server` on a single multiplexed UDP port (:44444/udp):
-//   1. Voice Audio: Opus over DTLS-SRTP (UDP) via Rust Selective Forwarding Unit (SFU)
+// Zero-Renegotiation Single-Port UDP Fast-Lane + 8-Slot Opus SFU Voice Client
+// Connects to the standalone Rust `ella-world-server` on multiplexed UDP port (:44444/udp):
+//   1. Voice Audio: 1 upstream Opus mic transceiver + 8 pre-allocated downlink speaker slots
+//      (`ella_slot_0` .. `ella_slot_7`) negotiated ONCE at session start (zero mid-game SDP renegotiation!)
 //   2. Real-Time Movement/Poses/Voice Flags: 28-byte binary datagrams over `ella-udp-state`
 //      (`ordered: false, maxRetransmits: 0` SCTP/DTLS over UDP — zero head-of-line blocking)
-//   3. Discrete World Events & SFU Track Renegotiation: `ella-reliable-events` over UDP
+//   3. Automatic Failover: exposes `isUdpStateHealthy()` verified by live inbound UDP pongs/ticks
+//      so `WorldSpineClient` (`wss://`) seamlessly takes over 20 Hz state sync whenever UDP stalls.
 
 const OP_C2S_STATE = 0x10;
 const OP_S2C_WORLD_STATE = 0x11;
 const OP_C2S_PING = 0x12;
 const OP_S2C_PONG = 0x13;
+
+const DEFAULT_DOWNLINK_VOICE_SLOTS = 8;
 
 const ANIM_TO_CODE = { idle: 0, walk: 1, run: 2, jump: 3 };
 const CODE_TO_ANIM = ['idle', 'walk', 'run', 'jump'];
@@ -93,6 +97,7 @@ export function decodeBinaryS2CWorldState(arrayBuffer) {
 
 export class VoiceChatManager {
   constructor({
+    nextSeq,
     onLocalVoiceState,
     onPeerVoiceState,
     onWorldStateSnapshot,
@@ -100,6 +105,13 @@ export class VoiceChatManager {
     onUdpTransportStatus,
     onStatusChange
   }) {
+    this.outboundSeq = 0;
+    this.nextSeq =
+      nextSeq ||
+      (() => {
+        this.outboundSeq = (this.outboundSeq + 1) >>> 0;
+        return this.outboundSeq;
+      });
     this.onLocalVoiceState = onLocalVoiceState || (() => {});
     this.onPeerVoiceState = onPeerVoiceState || (() => {});
     this.onWorldStateSnapshot = onWorldStateSnapshot || (() => {});
@@ -111,6 +123,7 @@ export class VoiceChatManager {
     this.sessionToken = '';
     this.rtcOfferUrl = '/api/ella-world/rtc/offer';
     this.iceServers = [{ urls: ['stun:stun.l.google.com:19302'] }];
+    this.voiceSlotCount = DEFAULT_DOWNLINK_VOICE_SLOTS;
 
     this.localStream = null;
     this.audioCtx = null;
@@ -129,21 +142,33 @@ export class VoiceChatManager {
     this.audioSender = null;
     this.udpStateChannel = null;
     this.reliableChannel = null;
-    this.outboundSeq = 0;
     this.latestRttMs = null;
+    this.lastUdpRxAt = 0;
     this.udpPort = 44444;
     this.activeSession = false;
     this._reconnectTimer = null;
-    this._renegotiating = Promise.resolve();
+    this._connectingPromise = null;
 
-    // peerId -> { peerId, stream, audioEl, sourceNode, analyser, userVolume, proximityGain, proximityPan, speaking }
+    // peerId -> { peerId, userVolume, proximityGain, proximityPan, speaking }
     this.remoteVoicePeers = new Map();
+    // slotId ("ella_slot_0".."ella_slot_7") -> { slotId, stream, audioEl, sourceNode, analyser, assignedPeerId, speaking }
+    this.slotStreams = new Map();
+    // Latest server-authoritative `{ ella_slot_0: "peer_...", ... }` mapping
+    this.latestSlotAssignments = {};
 
     this._vadTimer = setInterval(() => this._tickVad(), 85);
-    this._pingTimer = setInterval(() => this._tickUdpPingAndStats(), 2000);
+    this._pingTimer = setInterval(() => this._tickUdpPingAndStats(), 1200);
   }
 
-  configure({ selfId, sessionToken, rtcOfferUrl, iceServers, webrtcUdpPort, defaultMode }) {
+  configure({
+    selfId,
+    sessionToken,
+    rtcOfferUrl,
+    iceServers,
+    webrtcUdpPort,
+    voiceSlotCount,
+    defaultMode
+  }) {
     this.selfId = selfId;
     this.sessionToken = sessionToken || '';
     this.rtcOfferUrl = rtcOfferUrl || '/api/ella-world/rtc/offer';
@@ -152,6 +177,9 @@ export class VoiceChatManager {
     }
     if (webrtcUdpPort) {
       this.udpPort = Number(webrtcUdpPort) || 44444;
+    }
+    if (voiceSlotCount && Number(voiceSlotCount) > 0) {
+      this.voiceSlotCount = Math.min(16, Math.max(2, Number(voiceSlotCount)));
     }
     this.proximityMode = defaultMode === 'proximity';
   }
@@ -210,6 +238,11 @@ export class VoiceChatManager {
         for (const t of oldStream.getTracks()) t.stop();
       }
 
+      // Ensure WebAudio analysers for any already-open remote speaker slots are attached
+      for (const slotObj of this.slotStreams.values()) {
+        this._ensureSlotAnalyser(slotObj);
+      }
+
       this.onStatusChange({
         ok: true,
         message: 'UDP Opus voice active! Green ring glows when you or friends talk.'
@@ -225,6 +258,16 @@ export class VoiceChatManager {
   }
 
   async connectServerUdp() {
+    if (this._connectingPromise) {
+      return this._connectingPromise;
+    }
+    this._connectingPromise = this._connectServerUdpInner().finally(() => {
+      this._connectingPromise = null;
+    });
+    return this._connectingPromise;
+  }
+
+  async _connectServerUdpInner() {
     this.activeSession = true;
     clearTimeout(this._reconnectTimer);
     this._closeServerPcOnly();
@@ -249,6 +292,7 @@ export class VoiceChatManager {
     try {
       const pc = new RTCPeerConnection({ iceServers: this.iceServers });
       this.serverPc = pc;
+      let recvSlotIdx = 0;
 
       // 1. Upstream Opus Voice RTP transceiver over UDP (:44444/udp)
       const micTrack = this.localStream ? this.localStream.getAudioTracks()[0] : null;
@@ -263,7 +307,13 @@ export class VoiceChatManager {
         this.audioSender = tx.sender;
       }
 
-      // 2. Unreliable, unordered binary UDP game-state channel (`0x10` / `0x11` at 20 Hz)
+      // 2. Pre-allocate 8 downlink Opus speaker slots ONCE (`ella_slot_0`..`ella_slot_7`)
+      //    so players joining/leaving never trigger mid-game SDP renegotiation or ICE resets!
+      for (let i = 0; i < this.voiceSlotCount; i++) {
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+      }
+
+      // 3. Unreliable, unordered binary UDP game-state channel (`0x10` / `0x11` at 20 Hz)
       const stateDc = pc.createDataChannel('ella-udp-state', {
         ordered: false,
         maxRetransmits: 0
@@ -271,12 +321,6 @@ export class VoiceChatManager {
       stateDc.binaryType = 'arraybuffer';
       stateDc.onopen = () => {
         this._sendUdpPing();
-        this.onUdpTransportStatus({
-          state: 'connected',
-          rttMs: this.latestRttMs,
-          port: this.udpPort,
-          protocol: 'udp'
-        });
       };
       stateDc.onmessage = (ev) => {
         if (!(ev.data instanceof ArrayBuffer) || ev.data.byteLength < 1) return;
@@ -285,6 +329,7 @@ export class VoiceChatManager {
         if (op === OP_S2C_WORLD_STATE) {
           const parsed = decodeBinaryS2CWorldState(ev.data);
           if (!parsed) return;
+          this.lastUdpRxAt = performance.now();
           if (parsed.echoClientTimeMs > 0) {
             const delta = (this.nowRelMs() - parsed.echoClientTimeMs) >>> 0;
             if (delta < 10000) {
@@ -294,9 +339,11 @@ export class VoiceChatManager {
           this.onWorldStateSnapshot({
             serverTick: parsed.serverTick,
             rttMs: this.latestRttMs,
+            transport: 'udp',
             players: parsed.players
           });
         } else if (op === OP_S2C_PONG && ev.data.byteLength >= 9) {
+          this.lastUdpRxAt = performance.now();
           const sentAt = dv.getUint32(1, true);
           const delta = (this.nowRelMs() - sentAt) >>> 0;
           if (delta < 10000) {
@@ -312,7 +359,7 @@ export class VoiceChatManager {
       };
       this.udpStateChannel = stateDc;
 
-      // 3. Reliable UDP channel for discrete world events + SFU remote voice track renegotiation
+      // 4. Ordered UDP DataChannel for `voice_slot_map` & supplementary low-latency events
       const eventsDc = pc.createDataChannel('ella-reliable-events', {
         ordered: true
       });
@@ -325,62 +372,72 @@ export class VoiceChatManager {
           return;
         }
         if (!msg || typeof msg !== 'object') return;
-        if (msg.type === 'rtc_renegotiate' && typeof msg.sdp === 'string') {
-          this._handleServerRenegotiate(pc, eventsDc, msg.sdp);
+        if (msg.type === 'voice_slot_map' && msg.slots) {
+          this.applyVoiceSlotMap(msg.slots);
           return;
         }
         this.onWorldEvent(msg);
       };
       this.reliableChannel = eventsDc;
 
-      // 4. Downlink SFU Opus voice streams from friends in the room
+      // 5. Bind each pre-allocated SFU downlink Opus speaker slot (`ella_slot_0`..`ella_slot_7`)
       pc.ontrack = (event) => {
         const stream =
           event.streams && event.streams[0]
             ? event.streams[0]
             : new MediaStream([event.track]);
-        let peerId = stream.id || '';
-        if (!peerId.startsWith('peer_')) {
-          const tid = event.track.id || '';
-          if (tid.startsWith('voice_')) {
-            peerId = tid.slice(6);
-          }
+        let slotId = '';
+        if (stream.id && stream.id.startsWith('ella_slot_')) {
+          slotId = stream.id;
+        } else if (event.track.id && event.track.id.startsWith('voice_ella_slot_')) {
+          slotId = event.track.id.slice('voice_'.length);
+        } else {
+          slotId = `ella_slot_${recvSlotIdx}`;
         }
-        if (peerId && peerId !== this.selfId) {
-          this._attachRemoteVoiceStream(peerId, stream);
-        }
+        recvSlotIdx += 1;
+        this._attachSpeakerSlotStream(slotId, stream);
       };
 
       pc.onconnectionstatechange = () => {
         if (pc !== this.serverPc) return;
         const st = pc.connectionState;
         if (st === 'connected') {
+          this._sendUdpPing();
           this.onUdpTransportStatus({
             state: 'connected',
             rttMs: this.latestRttMs,
             port: this.udpPort,
             protocol: 'udp'
           });
-        } else if (st === 'failed' || st === 'disconnected') {
+        } else if (st === 'failed' || st === 'closed') {
+          this.lastUdpRxAt = 0;
           this.onUdpTransportStatus({
             state: 'reconnecting',
             rttMs: null,
             port: this.udpPort,
             protocol: 'udp'
           });
-          if (this.activeSession) {
-            clearTimeout(this._reconnectTimer);
-            this._reconnectTimer = setTimeout(() => {
-              if (this.activeSession) this.connectServerUdp();
-            }, 1500);
-          }
+          this._scheduleUdpReconnect(2200);
+        } else if (st === 'disconnected') {
+          // Give WebRTC ICE 3.5 seconds to self-recover before tearing down the PeerConnection
+          clearTimeout(this._reconnectTimer);
+          this._reconnectTimer = setTimeout(() => {
+            if (
+              this.activeSession &&
+              pc === this.serverPc &&
+              (pc.connectionState === 'disconnected' || pc.connectionState === 'failed')
+            ) {
+              this.lastUdpRxAt = 0;
+              this.connectServerUdp();
+            }
+          }, 3500);
         }
       };
 
-      // 5. Gather ICE candidates and complete single-shot SDP offer/answer with Rust server
+      // 6. Gather ICE candidates and complete single-shot SDP offer/answer with Rust SFU
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      await this._waitForIceGathering(pc, 1200);
+      await this._waitForIceGathering(pc, 900);
 
       const res = await fetch(this.rtcOfferUrl, {
         method: 'POST',
@@ -401,48 +458,37 @@ export class VoiceChatManager {
       if (answerData.udpPort) {
         this.udpPort = Number(answerData.udpPort) || this.udpPort;
       }
+      if (pc !== this.serverPc) return false;
       await pc.setRemoteDescription({
         type: 'answer',
         sdp: answerData.sdp
       });
       return true;
     } catch {
+      this.lastUdpRxAt = 0;
       this.onUdpTransportStatus({
         state: 'reconnecting',
         rttMs: null,
         port: this.udpPort,
         protocol: 'udp'
       });
-      if (this.activeSession) {
-        clearTimeout(this._reconnectTimer);
-        this._reconnectTimer = setTimeout(() => {
-          if (this.activeSession) this.connectServerUdp();
-        }, 2000);
-      }
+      this._scheduleUdpReconnect(2500);
       return false;
     }
   }
 
-  _handleServerRenegotiate(pc, eventsDc, offerSdp) {
-    this._renegotiating = this._renegotiating
-      .then(async () => {
-        if (pc !== this.serverPc || pc.connectionState === 'closed') return;
-        await pc.setRemoteDescription({ type: 'offer', sdp: offerSdp });
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        if (eventsDc.readyState === 'open') {
-          eventsDc.send(
-            JSON.stringify({
-              type: 'rtc_answer',
-              sdp: pc.localDescription ? pc.localDescription.sdp : answer.sdp
-            })
-          );
-        }
-      })
-      .catch(() => {});
+  _scheduleUdpReconnect(delayMs = 2200) {
+    if (!this.activeSession) return;
+    clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      if (this.activeSession) {
+        this.connectServerUdp();
+      }
+    }, delayMs);
   }
 
-  _waitForIceGathering(pc, timeoutMs = 1200) {
+  _waitForIceGathering(pc, timeoutMs = 900) {
     if (pc.iceGatheringState === 'complete') {
       return Promise.resolve();
     }
@@ -464,6 +510,15 @@ export class VoiceChatManager {
     return Boolean(this.udpStateChannel && this.udpStateChannel.readyState === 'open');
   }
 
+  isUdpStateHealthy() {
+    return Boolean(
+      this.udpStateChannel &&
+      this.udpStateChannel.readyState === 'open' &&
+      this.lastUdpRxAt > 0 &&
+      performance.now() - this.lastUdpRxAt < 2200
+    );
+  }
+
   sendBinaryState(state) {
     if (!this.udpStateChannel || this.udpStateChannel.readyState !== 'open') {
       return false;
@@ -471,8 +526,8 @@ export class VoiceChatManager {
     if (this.udpStateChannel.bufferedAmount > 65536) {
       return false;
     }
-    this.outboundSeq = (this.outboundSeq + 1) >>> 0;
-    const pkt = encodeBinaryC2SState(this.outboundSeq, this.nowRelMs(), state);
+    const seq = this.nextSeq();
+    const pkt = encodeBinaryC2SState(seq, this.nowRelMs(), state);
     try {
       this.udpStateChannel.send(pkt);
       return true;
@@ -528,7 +583,7 @@ export class VoiceChatManager {
           this.latestRttMs = rttFromIce;
         }
         this.onUdpTransportStatus({
-          state: this.isUdpConnected() ? 'connected' : 'connecting',
+          state: this.isUdpStateHealthy() ? 'connected' : 'connecting',
           rttMs: this.latestRttMs,
           port: (remoteCand && remoteCand.port) || this.udpPort,
           protocol: (remoteCand && remoteCand.protocol) || 'udp',
@@ -554,58 +609,103 @@ export class VoiceChatManager {
     }
   }
 
-  _attachRemoteVoiceStream(peerId, stream) {
-    let peerObj = this.remoteVoicePeers.get(peerId);
-    if (!peerObj) {
-      peerObj = {
-        peerId,
+  _attachSpeakerSlotStream(slotId, stream) {
+    let slotObj = this.slotStreams.get(slotId);
+    if (!slotObj) {
+      slotObj = {
+        slotId,
         stream,
         audioEl: null,
         sourceNode: null,
         analyser: null,
-        userVolume: 1.0,
-        proximityGain: 1.0,
-        proximityPan: 0.0,
+        assignedPeerId: null,
         speaking: false
       };
-      this.remoteVoicePeers.set(peerId, peerObj);
+      this.slotStreams.set(slotId, slotObj);
     } else {
-      peerObj.stream = stream;
+      slotObj.stream = stream;
     }
 
     const container = document.getElementById('remote-audio-container');
-    if (!peerObj.audioEl && container) {
+    if (!slotObj.audioEl && container) {
       const audio = document.createElement('audio');
       audio.autoplay = true;
       audio.playsInline = true;
       audio.muted = false;
+      audio.dataset.voiceSlot = slotId;
       audio.srcObject = stream;
       container.appendChild(audio);
-      peerObj.audioEl = audio;
+      slotObj.audioEl = audio;
       audio.play().catch(() => {});
-    } else if (peerObj.audioEl) {
-      peerObj.audioEl.srcObject = stream;
-      peerObj.audioEl.muted = false;
-      peerObj.audioEl.play().catch(() => {});
+    } else if (slotObj.audioEl) {
+      slotObj.audioEl.srcObject = stream;
+      slotObj.audioEl.muted = false;
+      slotObj.audioEl.play().catch(() => {});
     }
 
-    if (this.audioCtx) {
-      if (this.audioCtx.state === 'suspended') {
-        this.audioCtx.resume().catch(() => {});
-      }
-      try {
-        if (peerObj.sourceNode) peerObj.sourceNode.disconnect();
-        const source = this.audioCtx.createMediaStreamSource(stream);
-        const analyser = this.audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        source.connect(analyser);
-        peerObj.sourceNode = source;
-        peerObj.analyser = analyser;
-      } catch {
-        // Native <audio> element still plays even if WebAudio graph fails
-      }
+    this._ensureSlotAnalyser(slotObj);
+    this._reconcileSlotBindings();
+  }
+
+  _ensureSlotAnalyser(slotObj) {
+    if (!this.audioCtx || !slotObj || !slotObj.stream) return;
+    if (this.audioCtx.state === 'suspended') {
+      this.audioCtx.resume().catch(() => {});
     }
-    this._syncPeerAudioParams(peerObj);
+    try {
+      if (slotObj.sourceNode) slotObj.sourceNode.disconnect();
+      const source = this.audioCtx.createMediaStreamSource(slotObj.stream);
+      const analyser = this.audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      slotObj.sourceNode = source;
+      slotObj.analyser = analyser;
+    } catch {
+      // Native <audio> element still plays even if WebAudio graph fails
+    }
+  }
+
+  applyVoiceSlotMap(slotsObj) {
+    if (!slotsObj || typeof slotsObj !== 'object') return;
+    this.latestSlotAssignments = { ...slotsObj };
+    this._reconcileSlotBindings();
+  }
+
+  _reconcileSlotBindings() {
+    for (const [slotId, slotObj] of this.slotStreams.entries()) {
+      const rawTarget = this.latestSlotAssignments[slotId];
+      const nextPeerId = rawTarget && rawTarget !== this.selfId ? String(rawTarget) : null;
+
+      if (slotObj.assignedPeerId !== nextPeerId) {
+        const prevPeerId = slotObj.assignedPeerId;
+        if (prevPeerId && slotObj.speaking) {
+          this.onPeerVoiceState(prevPeerId, { speaking: false });
+        }
+        slotObj.assignedPeerId = nextPeerId;
+        slotObj.speaking = false;
+        if (nextPeerId) {
+          this.ensurePeer(nextPeerId);
+        }
+      }
+      this._syncSlotVolume(slotObj);
+    }
+  }
+
+  _syncSlotVolume(slotObj) {
+    if (!slotObj || !slotObj.audioEl) return;
+    if (!slotObj.assignedPeerId) {
+      slotObj.audioEl.volume = 0;
+      return;
+    }
+    const peerObj = this.ensurePeer(slotObj.assignedPeerId);
+    const gain = peerObj ? Math.max(0, Math.min(1, peerObj.userVolume * peerObj.proximityGain)) : 1.0;
+    slotObj.audioEl.volume = gain;
+  }
+
+  _syncAllSlotVolumes() {
+    for (const slotObj of this.slotStreams.values()) {
+      this._syncSlotVolume(slotObj);
+    }
   }
 
   ensurePeer(peerId) {
@@ -613,10 +713,6 @@ export class VoiceChatManager {
     if (!this.remoteVoicePeers.has(peerId)) {
       this.remoteVoicePeers.set(peerId, {
         peerId,
-        stream: null,
-        audioEl: null,
-        sourceNode: null,
-        analyser: null,
         userVolume: 1.0,
         proximityGain: 1.0,
         proximityPan: 0.0,
@@ -627,14 +723,13 @@ export class VoiceChatManager {
   }
 
   removePeer(peerId) {
-    const peerObj = this.remoteVoicePeers.get(peerId);
-    if (!peerObj) return;
-    try {
-      if (peerObj.audioEl) peerObj.audioEl.remove();
-      if (peerObj.sourceNode) peerObj.sourceNode.disconnect();
-    } catch {
-      // ignore
+    if (!peerId) return;
+    for (const [slotId, assigned] of Object.entries(this.latestSlotAssignments)) {
+      if (assigned === peerId) {
+        delete this.latestSlotAssignments[slotId];
+      }
     }
+    this._reconcileSlotBindings();
     this.remoteVoicePeers.delete(peerId);
   }
 
@@ -679,6 +774,7 @@ export class VoiceChatManager {
 
   setProximityMode(enabled) {
     this.proximityMode = Boolean(enabled);
+    this._syncAllSlotVolumes();
   }
 
   isEffectivelyMuted() {
@@ -713,7 +809,7 @@ export class VoiceChatManager {
     const peerObj = this.ensurePeer(peerId);
     if (!peerObj) return;
     peerObj.userVolume = Math.max(0, Math.min(1, Number(volumePercent) / 100));
-    this._syncPeerAudioParams(peerObj);
+    this._syncAllSlotVolumes();
   }
 
   updateSpatialPositions(selfPos, cameraYaw, remotePlayersMap) {
@@ -748,15 +844,8 @@ export class VoiceChatManager {
           peerObj.proximityPan = Math.max(-0.85, Math.min(0.85, -Math.sin(relAngle) * 0.75));
         }
       }
-      this._syncPeerAudioParams(peerObj);
     }
-  }
-
-  _syncPeerAudioParams(peerObj) {
-    const finalGain = Math.max(0, Math.min(1, peerObj.userVolume * peerObj.proximityGain));
-    if (peerObj.audioEl) {
-      peerObj.audioEl.volume = finalGain;
-    }
+    this._syncAllSlotVolumes();
   }
 
   _computeAnalyserLevel(analyser) {
@@ -792,19 +881,33 @@ export class VoiceChatManager {
       this._notifyLocalState();
     }
 
-    for (const [peerId, peerObj] of this.remoteVoicePeers.entries()) {
-      if (peerObj.analyser) {
-        const level = this._computeAnalyserLevel(peerObj.analyser);
+    for (const slotObj of this.slotStreams.values()) {
+      if (slotObj.analyser && slotObj.assignedPeerId) {
+        const level = this._computeAnalyserLevel(slotObj.analyser);
         const nowSpeaking = level > 0.04;
-        if (nowSpeaking !== peerObj.speaking) {
-          peerObj.speaking = nowSpeaking;
-          this.onPeerVoiceState(peerId, { speaking: nowSpeaking });
+        if (nowSpeaking !== slotObj.speaking) {
+          slotObj.speaking = nowSpeaking;
+          this.onPeerVoiceState(slotObj.assignedPeerId, { speaking: nowSpeaking });
         }
       }
     }
   }
 
+  _clearSlotStreams() {
+    for (const slotObj of this.slotStreams.values()) {
+      try {
+        if (slotObj.audioEl) slotObj.audioEl.remove();
+        if (slotObj.sourceNode) slotObj.sourceNode.disconnect();
+      } catch {
+        // ignore
+      }
+    }
+    this.slotStreams.clear();
+  }
+
   _closeServerPcOnly() {
+    this.lastUdpRxAt = 0;
+    this._clearSlotStreams();
     try {
       if (this.udpStateChannel) this.udpStateChannel.close();
       if (this.reliableChannel) this.reliableChannel.close();
@@ -821,10 +924,10 @@ export class VoiceChatManager {
   disconnectSession() {
     this.activeSession = false;
     clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = null;
+    this.latestSlotAssignments = {};
     this._closeServerPcOnly();
-    for (const peerId of Array.from(this.remoteVoicePeers.keys())) {
-      this.removePeer(peerId);
-    }
+    this.remoteVoicePeers.clear();
   }
 
   destroy() {

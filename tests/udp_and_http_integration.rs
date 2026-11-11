@@ -7,14 +7,17 @@ use ella_world::udp_wire::{
     OP_S2C_WORLD_STATE, OP_VOICE_OPUS, OP_WELCOME,
 };
 use ella_world::world::WorldEngine;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::Message as TungsMessage;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS};
 use webrtc::api::APIBuilder;
@@ -26,6 +29,8 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
 };
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 
@@ -93,11 +98,14 @@ async fn http_persistence_and_zero_sse_contract() {
 
     let running = start_all_servers(cfg).await.expect("start servers");
 
-    // 1. Verify /api/ella-world/health confirms SSE & HTTP sync polling are permanently disabled
+    // 1. Verify /api/ella-world/health confirms Hybrid WS Spine + Zero-Renegotiation SFU + Zero SSE
     let (status, health) =
         http_json_request(running.http_addr, "GET", "/api/ella-world/health", None).await;
     assert_eq!(status, 200);
     assert_eq!(health["engine"], "ella-world-rust-udp");
+    assert_eq!(health["version"], "0.3.0");
+    assert_eq!(health["wsSpineEnabled"], true);
+    assert_eq!(health["zeroRenegotiationSfu"], true);
     assert_eq!(health["sseEnabled"], false);
     assert_eq!(health["httpPollingSyncEnabled"], false);
     assert_eq!(
@@ -429,10 +437,17 @@ async fn webrtc_sfu_udp_state_and_opus_voice_forwarding_end_to_end() {
         "mic_ella".into(),
         "stream_ella".into(),
     ));
-    let ella_sender = pc_ella
-        .add_track(Arc::clone(&ella_mic_track) as Arc<dyn TrackLocal + Send + Sync>)
+    let ella_tx = pc_ella
+        .add_transceiver_from_track(
+            Arc::clone(&ella_mic_track) as Arc<dyn TrackLocal + Send + Sync>,
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Sendonly,
+                send_encodings: vec![],
+            }),
+        )
         .await
         .unwrap();
+    let ella_sender = ella_tx.sender().await;
     tokio::spawn(async move {
         let mut rtcp = vec![0u8; 1500];
         while ella_sender.read(&mut rtcp).await.is_ok() {}
@@ -482,24 +497,35 @@ async fn webrtc_sfu_udp_state_and_opus_voice_forwarding_end_to_end() {
         .await
         .unwrap();
 
-    // --- Client 2: Maya (receives Ella's 20Hz binary state + renegotiated SFU Opus voice over UDP) ---
+    // --- Client 2: Maya (pre-allocates 8 `Recvonly` Opus speaker slots — ZERO renegotiation!) ---
     let pc_maya = Arc::new(
         client_api
             .new_peer_connection(RTCConfiguration::default())
             .await
             .unwrap(),
     );
-    pc_maya
-        .add_transceiver_from_kind(RTPCodecType::Audio, None)
-        .await
-        .unwrap();
+    for _ in 0..8 {
+        pc_maya
+            .add_transceiver_from_kind(
+                RTPCodecType::Audio,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Recvonly,
+                    send_encodings: vec![],
+                }),
+            )
+            .await
+            .unwrap();
+    }
 
-    let (maya_voice_tx, mut maya_voice_rx) = mpsc::channel::<Vec<u8>>(16);
+    let (maya_voice_tx, mut maya_voice_rx) = mpsc::channel::<(String, Vec<u8>)>(16);
     pc_maya.on_track(Box::new(move |track, _rx, _tx| {
         let vtx = maya_voice_tx.clone();
+        let slot_stream_id = track.stream_id().to_owned();
         Box::pin(async move {
             while let Ok((pkt, _)) = track.read_rtp().await {
-                let _ = vtx.send(pkt.payload.to_vec()).await;
+                let _ = vtx
+                    .send((slot_stream_id.clone(), pkt.payload.to_vec()))
+                    .await;
             }
         })
     }));
@@ -523,26 +549,22 @@ async fn webrtc_sfu_udp_state_and_opus_voice_forwarding_end_to_end() {
         })
     }));
 
+    let reneg_count = Arc::new(AtomicUsize::new(0));
+    let reneg_count_cb = Arc::clone(&reneg_count);
+    let (slot_map_tx, mut slot_map_rx) = mpsc::channel::<Value>(8);
     let maya_events_dc = pc_maya
         .create_data_channel("ella-reliable-events", None)
         .await
         .unwrap();
-    let pc_maya_reneg = Arc::clone(&pc_maya);
-    let dc_maya_reneg = Arc::clone(&maya_events_dc);
     maya_events_dc.on_message(Box::new(move |msg: DataChannelMessage| {
-        let pc_c = Arc::clone(&pc_maya_reneg);
-        let dc_c = Arc::clone(&dc_maya_reneg);
+        let r_cnt = Arc::clone(&reneg_count_cb);
+        let sm_tx = slot_map_tx.clone();
         Box::pin(async move {
             if let Ok(val) = serde_json::from_slice::<Value>(&msg.data) {
                 if val.get("type").and_then(|v| v.as_str()) == Some("rtc_renegotiate") {
-                    if let Some(offer_sdp) = val.get("sdp").and_then(|v| v.as_str()) {
-                        let offer = RTCSessionDescription::offer(offer_sdp.to_string()).unwrap();
-                        pc_c.set_remote_description(offer).await.unwrap();
-                        let ans = pc_c.create_answer(None).await.unwrap();
-                        pc_c.set_local_description(ans.clone()).await.unwrap();
-                        let reply = json!({ "type": "rtc_answer", "sdp": ans.sdp });
-                        let _ = dc_c.send_text(reply.to_string()).await;
-                    }
+                    r_cnt.fetch_add(1, Ordering::Relaxed);
+                } else if val.get("type").and_then(|v| v.as_str()) == Some("voice_slot_map") {
+                    let _ = sm_tx.send(val).await;
                 }
             }
         })
@@ -610,7 +632,7 @@ async fn webrtc_sfu_udp_state_and_opus_voice_forwarding_end_to_end() {
         "Maya's WebRTC UDP DataChannel must receive Ella's binary 3D pose snapshot"
     );
 
-    // 2. Verify Opus RTP voice audio forwarded over single-port UDP SFU (`44444/udp` mux)
+    // 2. Verify Opus RTP voice audio forwarded over pre-allocated `ella_slot_0` with ZERO renegotiation!
     let voice_task_track = Arc::clone(&ella_mic_track);
     let pump = tokio::spawn(async move {
         let mut seq = 1u16;
@@ -632,14 +654,424 @@ async fn webrtc_sfu_udp_state_and_opus_voice_forwarding_end_to_end() {
         }
     });
 
-    let forwarded_payload = tokio::time::timeout(Duration::from_secs(5), maya_voice_rx.recv())
-        .await
-        .expect("Maya SFU UDP voice receive timeout")
-        .expect("Maya voice channel open");
+    let (slot_stream_id, forwarded_payload) =
+        tokio::time::timeout(Duration::from_secs(5), maya_voice_rx.recv())
+            .await
+            .expect("Maya SFU UDP voice receive timeout")
+            .expect("Maya voice channel open");
+    assert_eq!(slot_stream_id, "ella_slot_0");
     assert_eq!(forwarded_payload, b"ELLA_SFU_OPUS_VOICE");
+
+    let slot_map_ev = tokio::time::timeout(Duration::from_secs(2), slot_map_rx.recv())
+        .await
+        .expect("voice_slot_map event")
+        .unwrap();
+    assert_eq!(slot_map_ev["slots"]["ella_slot_0"], "peer_ella_w1");
+    assert_eq!(
+        reneg_count.load(Ordering::Relaxed),
+        0,
+        "Zero-renegotiation SFU must NEVER send rtc_renegotiate"
+    );
 
     pump.abort();
     let _ = pc_ella.close().await;
     let _ = pc_maya.close().await;
+    running.http_task.abort();
+}
+
+#[tokio::test]
+async fn ws_spine_presence_grace_window_and_binary_fallback_end_to_end() {
+    let cfg = make_test_config("ws_spine_grace");
+    let running = start_all_servers(cfg).await.expect("start servers");
+
+    let (_, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "ws1" })),
+    )
+    .await;
+    let (_, maya_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "ws2" })),
+    )
+    .await;
+
+    let ella_token = ella_login["token"].as_str().unwrap();
+    let maya_token = maya_login["token"].as_str().unwrap();
+
+    let url_ella = format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, ella_token
+    );
+    let url_maya = format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, maya_token
+    );
+
+    let (mut ws_ella, _) = tokio_tungstenite::connect_async(&url_ella).await.unwrap();
+    let (mut ws_maya, _) = tokio_tungstenite::connect_async(&url_maya).await.unwrap();
+
+    // 1. Verify immediate `welcome_snapshot` on WebSocket connect
+    let first_ella = tokio::time::timeout(Duration::from_secs(2), ws_ella.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let welcome_json: Value = serde_json::from_str(first_ella.to_text().unwrap()).unwrap();
+    assert_eq!(welcome_json["type"], "welcome_snapshot");
+    assert_eq!(welcome_json["selfId"], "peer_ella_ws1");
+    assert!(welcome_json["serverTimeMs"].as_u64().unwrap() > 0);
+
+    // 2. Verify 20 Hz binary `OP_C2S_STATE` -> `OP_S2C_WORLD_STATE` fallback over WebSocket
+    let move_bytes = encode_c2s_state(&DecodedC2SState {
+        seq: 1,
+        client_time_ms: 9001,
+        x: 19.25,
+        y: 3.5,
+        z: -7.75,
+        ry: 0.5,
+        anim: "run".into(),
+        emote: Some("peace".into()),
+        muted: false,
+        speaking: false,
+    });
+    ws_ella
+        .send(TungsMessage::Binary(move_bytes.to_vec()))
+        .await
+        .unwrap();
+
+    let mut maya_saw_ella_ws_binary = false;
+    let bin_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < bin_deadline {
+        if let Ok(Some(Ok(TungsMessage::Binary(raw)))) =
+            tokio::time::timeout(Duration::from_millis(400), ws_maya.next()).await
+        {
+            if let Some(snap) = decode_s2c_world_state(&raw) {
+                if let Some(p) = snap.players.iter().find(|p| p.id == "peer_ella_ws1") {
+                    if (p.x - 19.25).abs() < 0.01 && p.emote.as_deref() == Some("peace") {
+                        maya_saw_ella_ws_binary = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        maya_saw_ella_ws_binary,
+        "Maya must receive Ella's 20 Hz binary state over WebSocket when UDP fast-lane is inactive"
+    );
+
+    // 3. Simulate brief Wi-Fi drop on Ella's WebSocket -> verify 12s grace window does NOT drop Ella!
+    let _ = ws_ella.close(None).await;
+    drop(ws_ella);
+    tokio::time::sleep(Duration::from_millis(350)).await;
+
+    let (_, health_mid) =
+        http_json_request(running.http_addr, "GET", "/api/ella-world/health", None).await;
+    assert_eq!(
+        health_mid["activePlayers"], 2,
+        "12-second grace window must keep Ella online during transient socket drop"
+    );
+
+    // Ella reconnects within grace window with restarted sequence counter (seq=1 again)
+    let (mut ws_ella_reconn, _) = tokio_tungstenite::connect_async(&url_ella).await.unwrap();
+    let reconn_move = encode_c2s_state(&DecodedC2SState {
+        seq: 1,
+        client_time_ms: 9500,
+        x: -11.0,
+        y: 1.0,
+        z: 15.0,
+        ry: 1.0,
+        anim: "walk".into(),
+        emote: Some("spin".into()),
+        muted: false,
+        speaking: false,
+    });
+    ws_ella_reconn
+        .send(TungsMessage::Binary(reconn_move.to_vec()))
+        .await
+        .unwrap();
+
+    // Verify Maya receives both Ella's post-reconnect movement AND periodic `world_sync_digest` without any `player_leave`!
+    let mut saw_post_reconn_spin = false;
+    let mut saw_sync_digest = false;
+    let mut saw_spurious_leave = false;
+    let digest_deadline = tokio::time::Instant::now() + Duration::from_millis(3800);
+    while tokio::time::Instant::now() < digest_deadline
+        && (!saw_post_reconn_spin || !saw_sync_digest)
+    {
+        if let Ok(Some(Ok(msg))) =
+            tokio::time::timeout(Duration::from_millis(500), ws_maya.next()).await
+        {
+            match msg {
+                TungsMessage::Binary(raw) => {
+                    if let Some(snap) = decode_s2c_world_state(&raw) {
+                        if let Some(p) = snap.players.iter().find(|p| p.id == "peer_ella_ws1") {
+                            if (p.x - (-11.0)).abs() < 0.01 && p.emote.as_deref() == Some("spin") {
+                                saw_post_reconn_spin = true;
+                            }
+                        }
+                    }
+                }
+                TungsMessage::Text(txt) => {
+                    if let Ok(val) = serde_json::from_str::<Value>(&txt) {
+                        if val["type"] == "player_leave" && val["id"] == "peer_ella_ws1" {
+                            saw_spurious_leave = true;
+                        } else if val["type"] == "world_sync_digest" {
+                            let has_ella = val["players"]
+                                .as_array()
+                                .map(|arr| {
+                                    arr.iter().any(|p| {
+                                        p["id"] == "peer_ella_ws1"
+                                            && p["avatarHash"]
+                                                .as_str()
+                                                .map(|h| h.len() == 16)
+                                                .unwrap_or(false)
+                                    })
+                                })
+                                .unwrap_or(false);
+                            if has_ella {
+                                saw_sync_digest = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    assert!(
+        !saw_spurious_leave,
+        "Grace window reconnect must never emit a spurious player_leave"
+    );
+    assert!(
+        saw_post_reconn_spin,
+        "Reset sequence numbers after reconnect must be accepted immediately"
+    );
+    assert!(
+        saw_sync_digest,
+        "3-second world_sync_digest must broadcast authoritative player roster + avatarHash"
+    );
+
+    running.http_task.abort();
+}
+
+#[tokio::test]
+async fn hybrid_ws_plus_zero_renegotiation_sfu_failover_stability() {
+    let cfg = make_test_config("hybrid_failover");
+    let running = start_all_servers(cfg).await.expect("start servers");
+
+    let (_, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "hf1" })),
+    )
+    .await;
+    let (_, maya_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "hf2" })),
+    )
+    .await;
+
+    let ella_token = ella_login["token"].as_str().unwrap().to_string();
+    let maya_token = maya_login["token"].as_str().unwrap().to_string();
+
+    // Both connect WebSocket spines first
+    let (mut ws_ella, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, ella_token
+    ))
+    .await
+    .unwrap();
+    let (mut ws_maya, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, maya_token
+    ))
+    .await
+    .unwrap();
+
+    // Maya also connects WebRTC UDP fast-lane and signals `udp_fastlane: true`
+    let client_api = build_webrtc_test_client_api();
+    let pc_maya = Arc::new(
+        client_api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .unwrap(),
+    );
+    let (maya_open_tx, mut maya_open_rx) = mpsc::channel::<()>(2);
+    let (maya_udp_rx_tx, mut maya_udp_rx) = mpsc::channel::<Vec<u8>>(32);
+    let maya_state_dc = pc_maya
+        .create_data_channel(
+            "ella-udp-state",
+            Some(RTCDataChannelInit {
+                ordered: Some(false),
+                max_retransmits: Some(0),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    maya_state_dc.on_open(Box::new(move || {
+        let tx = maya_open_tx.clone();
+        Box::pin(async move {
+            let _ = tx.send(()).await;
+        })
+    }));
+    maya_state_dc.on_message(Box::new(move |msg: DataChannelMessage| {
+        let tx = maya_udp_rx_tx.clone();
+        Box::pin(async move {
+            let _ = tx.send(msg.data.to_vec()).await;
+        })
+    }));
+
+    let mut gather_maya = pc_maya.gathering_complete_promise().await;
+    let offer_maya = pc_maya.create_offer(None).await.unwrap();
+    pc_maya.set_local_description(offer_maya).await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), gather_maya.recv()).await;
+    let sdp_maya = pc_maya.local_description().await.unwrap().sdp;
+
+    let (st_m, ans_m) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/rtc/offer",
+        Some(json!({ "token": maya_token, "sdp": sdp_maya })),
+    )
+    .await;
+    assert_eq!(st_m, 200);
+    pc_maya
+        .set_remote_description(
+            RTCSessionDescription::answer(ans_m["sdp"].as_str().unwrap().into()).unwrap(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), maya_open_rx.recv())
+        .await
+        .expect("Maya UDP DataChannel open");
+
+    // Maya marks UDP fast-lane active and sends a heartbeat over UDP so `last_udp_seen_ms` is fresh
+    let maya_hb = encode_c2s_state(&DecodedC2SState {
+        seq: 1,
+        client_time_ms: 1000,
+        x: 0.0,
+        y: 0.5,
+        z: 0.0,
+        ry: 0.0,
+        anim: "idle".into(),
+        emote: None,
+        muted: false,
+        speaking: false,
+    });
+    maya_state_dc.send(&maya_hb).await.unwrap();
+    ws_maya
+        .send(TungsMessage::Text(
+            json!({ "type": "udp_fastlane", "active": true }).to_string(),
+        ))
+        .await
+        .unwrap();
+
+    // Ella moves; Maya receives over UDP fast-lane (`44444/udp`)
+    let ella_m1 = encode_c2s_state(&DecodedC2SState {
+        seq: 2,
+        client_time_ms: 2000,
+        x: 8.5,
+        y: 1.0,
+        z: -4.0,
+        ry: 0.25,
+        anim: "walk".into(),
+        emote: None,
+        muted: false,
+        speaking: false,
+    });
+    ws_ella
+        .send(TungsMessage::Binary(ella_m1.to_vec()))
+        .await
+        .unwrap();
+
+    let mut saw_over_udp = false;
+    let d1 = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < d1 {
+        if let Ok(Some(raw)) =
+            tokio::time::timeout(Duration::from_millis(400), maya_udp_rx.recv()).await
+        {
+            if let Some(snap) = decode_s2c_world_state(&raw) {
+                if snap
+                    .players
+                    .iter()
+                    .any(|p| p.id == "peer_ella_hf1" && (p.x - 8.5).abs() < 0.01)
+                {
+                    saw_over_udp = true;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(saw_over_udp, "Maya must receive state over UDP fast-lane");
+
+    // Now simulate Maya's UDP connection failing completely (`pc_maya.close()`)!
+    // Verify:
+    //   1) Maya is NOT evicted from `WorldEngine::players` (`onlinePlayers == 2`)
+    //   2) Maya's WebSocket immediately resumes 20 Hz binary `0x11` state delivery!
+    let _ = pc_maya.close().await;
+    ws_maya
+        .send(TungsMessage::Text(
+            json!({ "type": "udp_fastlane", "active": false }).to_string(),
+        ))
+        .await
+        .unwrap();
+
+    let (_, health_after_udp_drop) =
+        http_json_request(running.http_addr, "GET", "/api/ella-world/health", None).await;
+    assert_eq!(
+        health_after_udp_drop["activePlayers"], 2,
+        "Closing WebRTC UDP must NEVER evict a player whose WebSocket spine is connected!"
+    );
+
+    let ella_m2 = encode_c2s_state(&DecodedC2SState {
+        seq: 3,
+        client_time_ms: 2500,
+        x: 31.25,
+        y: 4.0,
+        z: 12.0,
+        ry: 1.5,
+        anim: "jump".into(),
+        emote: Some("cheer".into()),
+        muted: false,
+        speaking: false,
+    });
+    ws_ella
+        .send(TungsMessage::Binary(ella_m2.to_vec()))
+        .await
+        .unwrap();
+
+    let mut saw_ws_failover = false;
+    let d2 = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < d2 {
+        if let Ok(Some(Ok(TungsMessage::Binary(raw)))) =
+            tokio::time::timeout(Duration::from_millis(400), ws_maya.next()).await
+        {
+            if let Some(snap) = decode_s2c_world_state(&raw) {
+                if snap.players.iter().any(|p| {
+                    p.id == "peer_ella_hf1"
+                        && (p.x - 31.25).abs() < 0.01
+                        && p.emote.as_deref() == Some("cheer")
+                }) {
+                    saw_ws_failover = true;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(
+        saw_ws_failover,
+        "WebSocket spine must instantaneously take over 20 Hz binary state delivery when UDP drops"
+    );
+
     running.http_task.abort();
 }
