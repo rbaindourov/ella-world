@@ -39,7 +39,7 @@ Standard WebRTC servers allocate random ephemeral UDP ports (e.g., `10000–6000
 `src/webrtc_sfu.rs` binds **one `tokio::net::UdpSocket` on `44444/udp`** wrapped in `webrtc::ice::udp_mux::UDPMuxDefault`:
 
 1. **Zero Ephemeral Port Sprawl**: Every browser player's ICE connectivity checks, `DTLS-SRTP` Opus audio packets, and `SCTP/DTLS` binary game-state datagrams multiplex cleanly over `44444/udp`.
-2. **Dual LAN + WAN ICE Candidates**: When `ELLA_PUBLIC_IP` is configured, `SettingEngine::set_nat_1to1_ips(..., RTCIceCandidateType::Srflx)` advertises **both** the server's private LAN `host` candidate (sub-millisecond local Wi-Fi play without router NAT hairpinning) **and** the public WAN `srflx` candidate (for remote friends over the Internet).
+2. **Dual LAN + WAN ICE Candidates & Bridge Filtering**: `SettingEngine::set_interface_filter` excludes virtual container bridges (`docker*`, `br-*`, `veth*`, `virbr*`), while `WebRtcSfu::inject_public_srflx_candidate` appends an RFC 8445 `typ srflx` candidate for `ELLA_PUBLIC_IP` alongside the server's physical LAN `typ host` candidate—enabling sub-millisecond local Wi-Fi play without router NAT hairpinning and seamless remote WAN play over the exact same `UDPMuxDefault` socket (`44444/udp`).
 3. **Zero Head-of-Line Blocking**: Movement, animations, runway poses, and speaking indicators travel over `ella-udp-state` configured with `ordered: false, maxRetransmits: 0`. Dropped packets are never retransmitted—newer 20 Hz frames supersede older ones immediately.
 
 ---

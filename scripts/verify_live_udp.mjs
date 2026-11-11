@@ -37,22 +37,63 @@ function parseArgs(argv) {
   return out;
 }
 
-// Build a minimal RFC 5389 STUN Binding Request with USERNAME attribute (`serverUfrag:clientUfrag`)
-// so `webrtc-rs` UDPMuxDefault routes the UDP datagram by `serverUfrag` and responds on 44444/udp!
-function buildMuxedStunBindingRequest(serverUfrag) {
-  const usernameAttrVal = Buffer.from(`${serverUfrag}:probeclient`, 'utf8');
-  const paddedLen = (usernameAttrVal.length + 3) & ~3;
-  const attrBuf = Buffer.alloc(4 + paddedLen);
-  attrBuf.writeUInt16BE(0x0006, 0); // ATTR_USERNAME
-  attrBuf.writeUInt16BE(usernameAttrVal.length, 2);
-  usernameAttrVal.copy(attrBuf, 4);
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) {
+    c ^= buf[i];
+    for (let k = 0; k < 8; k++) {
+      c = (c >>> 1) ^ (c & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
 
+// Build a full RFC 5389 / RFC 8445 ICE STUN Binding Request (`USERNAME`, `PRIORITY`,
+// `ICE-CONTROLLING`, `MESSAGE-INTEGRITY` HMAC-SHA1, and `FINGERPRINT` CRC32) so `webrtc-rs`
+// UDPMuxDefault authenticates and replies with `0x0101` Binding Success Response on 44444/udp!
+function buildMuxedStunBindingRequest(serverUfrag, serverPwd) {
+  const usernameVal = Buffer.from(`${serverUfrag}:probeclient`, 'utf8');
+  const uPad = (usernameVal.length + 3) & ~3;
+  const attrUsername = Buffer.alloc(4 + uPad);
+  attrUsername.writeUInt16BE(0x0006, 0);
+  attrUsername.writeUInt16BE(usernameVal.length, 2);
+  usernameVal.copy(attrUsername, 4);
+
+  const attrPriority = Buffer.alloc(8);
+  attrPriority.writeUInt16BE(0x0024, 0); // PRIORITY
+  attrPriority.writeUInt16BE(4, 2);
+  attrPriority.writeUInt32BE(0x6e001eff, 4);
+
+  const attrControlling = Buffer.alloc(12);
+  attrControlling.writeUInt16BE(0x802a, 0); // ICE-CONTROLLING
+  attrControlling.writeUInt16BE(8, 2);
+  crypto.randomBytes(8).copy(attrControlling, 4);
+
+  const baseAttrs = Buffer.concat([attrUsername, attrPriority, attrControlling]);
   const header = Buffer.alloc(20);
   header.writeUInt16BE(0x0001, 0); // Binding Request
-  header.writeUInt16BE(attrBuf.length, 2);
-  header.writeUInt32BE(0x2112a442, 4); // Magic Cookie
-  crypto.randomBytes(12).copy(header, 8); // Transaction ID
-  return Buffer.concat([header, attrBuf]);
+  // Length up to and including MESSAGE-INTEGRITY (24 bytes)
+  header.writeUInt16BE(baseAttrs.length + 24, 2);
+  header.writeUInt32BE(0x2112a442, 4);
+  crypto.randomBytes(12).copy(header, 8);
+
+  const hmacInput = Buffer.concat([header, baseAttrs]);
+  const hmac = crypto.createHmac('sha1', Buffer.from(serverPwd, 'utf8')).update(hmacInput).digest();
+  const attrMsgIntegrity = Buffer.alloc(24);
+  attrMsgIntegrity.writeUInt16BE(0x0008, 0); // MESSAGE-INTEGRITY
+  attrMsgIntegrity.writeUInt16BE(20, 2);
+  hmac.copy(attrMsgIntegrity, 4);
+
+  // Update header length to also include FINGERPRINT (8 bytes)
+  header.writeUInt16BE(baseAttrs.length + 24 + 8, 2);
+  const preFp = Buffer.concat([header, baseAttrs, attrMsgIntegrity]);
+  const fpVal = (crc32(preFp) ^ 0x5354554e) >>> 0;
+  const attrFingerprint = Buffer.alloc(8);
+  attrFingerprint.writeUInt16BE(0x8028, 0); // FINGERPRINT
+  attrFingerprint.writeUInt16BE(4, 2);
+  attrFingerprint.writeUInt32BE(fpVal, 4);
+
+  return Buffer.concat([preFp, attrFingerprint]);
 }
 
 function probeUdpPacket(host, port, payload, timeoutMs = 1800) {
@@ -190,13 +231,15 @@ async function main() {
     }
 
     const ufragMatch = offerJson.sdp.match(/a=ice-ufrag:([^\r\n]+)/);
+    const pwdMatch = offerJson.sdp.match(/a=ice-pwd:([^\r\n]+)/);
     const serverUfrag = ufragMatch ? ufragMatch[1].trim() : '';
+    const serverPwd = pwdMatch ? pwdMatch[1].trim() : '';
     const candidateLines = offerJson.sdp
       .split(/\r?\n/)
       .filter((l) => l.startsWith('a=candidate:'));
     report.udp.advertisedIceCandidates = candidateLines;
 
-    const stunReq = buildMuxedStunBindingRequest(serverUfrag);
+    const stunReq = buildMuxedStunBindingRequest(serverUfrag, serverPwd);
     const ewldHello = buildNativeEwldHello(loginJson.token);
 
     if (args.lanIp) {

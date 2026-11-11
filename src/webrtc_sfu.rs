@@ -23,7 +23,6 @@ use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice::network_type::NetworkType;
 use webrtc::ice::udp_mux::{UDPMuxDefault, UDPMuxParams};
 use webrtc::ice::udp_network::UDPNetwork;
-use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -94,18 +93,24 @@ impl WebRtcSfu {
         setting_engine.set_network_types(vec![NetworkType::Udp4]);
         setting_engine.set_udp_network(UDPNetwork::Muxed(udp_mux));
 
+        // Exclude container virtual bridge interfaces (`docker0`, `br-*`, `veth*`) so browsers
+        // only receive genuine physical LAN & WAN UDP candidates.
+        setting_engine.set_interface_filter(Box::new(|iface_name: &str| {
+            !iface_name.starts_with("docker")
+                && !iface_name.starts_with("br-")
+                && !iface_name.starts_with("veth")
+                && !iface_name.starts_with("virbr")
+        }));
+
         if world.config.webrtc_udp_bind_ip == "127.0.0.1" || world.config.public_ip.is_none() {
             setting_engine.set_include_loopback_candidate(true);
         }
 
-        // Advertise WAN public IP as an additional Server-Reflexive ICE candidate alongside
-        // LAN Host candidates so BOTH home-LAN (<1ms) and Internet players connect over UDP!
         if let Some(pub_ip) = &world.config.public_ip {
             info!(
-                "🌐 [WebRTC SFU] Advertising additional NAT 1:1 Srflx UDP candidate {}:{}",
+                "🌐 [WebRTC SFU] Advertising dual LAN Host + WAN Srflx UDP candidate {}:{}",
                 pub_ip, actual_port
             );
-            setting_engine.set_nat_1to1_ips(vec![pub_ip.clone()], RTCIceCandidateType::Srflx);
         }
 
         let api = APIBuilder::new()
@@ -261,13 +266,46 @@ impl WebRtcSfu {
         let Some(local_desc) = target_sess.pc.local_description().await else {
             return;
         };
+        let sdp = self.inject_public_srflx_candidate(&local_desc.sdp);
         let msg = serde_json::json!({
             "type": "rtc_renegotiate",
-            "sdp": local_desc.sdp
+            "sdp": sdp
         });
         if let Ok(txt) = serde_json::to_string(&msg) {
             let _ = dc.send_text(txt).await;
         }
+    }
+
+    /// Because `webrtc-ice` skips `ServerReflexive` candidate gathering when `UDPNetwork::Muxed`
+    /// is active (and `CandidateType::Host` 1:1 NAT mapping would overwrite the LAN IP needed for
+    /// hairpin-free local Wi-Fi play), we append an RFC 8445 `typ srflx` UDP candidate on our
+    /// multiplexed UDP port whenever `ELLA_PUBLIC_IP` is configured.
+    fn inject_public_srflx_candidate(&self, sdp: &str) -> String {
+        let Some(pub_ip) = &self.world.config.public_ip else {
+            return sdp.to_string();
+        };
+        if sdp.contains(pub_ip) {
+            return sdp.to_string();
+        }
+        let port = self.udp_port;
+        let srflx_c1 = format!(
+            "a=candidate:999999001 1 udp 1694498815 {pub_ip} {port} typ srflx raddr 0.0.0.0 rport {port}"
+        );
+        let mut out = String::with_capacity(sdp.len() + 256);
+        for line in sdp.split_inclusive('\n') {
+            out.push_str(line);
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            // Inject right after the first component-1 host candidate in each media section
+            if trimmed.starts_with("a=candidate:")
+                && trimmed.contains(" 1 udp ")
+                && trimmed.ends_with("typ host")
+            {
+                let eol = if line.ends_with("\r\n") { "\r\n" } else { "\n" };
+                out.push_str(&srflx_c1);
+                out.push_str(eol);
+            }
+        }
+        out
     }
 
     pub async fn cleanup_session(self: &Arc<Self>, self_id: &str) {
@@ -424,7 +462,7 @@ impl WebRtcSfu {
             .await
             .ok_or_else(|| anyhow::anyhow!("Missing local SDP description"))?;
 
-        Ok(local_desc.sdp)
+        Ok(self.inject_public_srflx_candidate(&local_desc.sdp))
     }
 
     async fn wire_unreliable_state_channel(
