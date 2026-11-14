@@ -89,7 +89,9 @@ async fn run_ws_spine_session(
     hub.active_count.fetch_add(1, Ordering::Relaxed);
     let mut ev_rx = world.udp_event_tx.subscribe();
     let (targeted_tx, mut targeted_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    world.register_peer_json_channel(&self_id, targeted_tx).await;
+    world
+        .register_peer_json_channel(&self_id, targeted_tx)
+        .await;
     let mut last_lag_resync_ms = 0u64;
 
     // 1. Push full authoritative welcome snapshot immediately on connect/reconnect
@@ -244,6 +246,13 @@ async fn run_ws_spine_session(
                                 continue;
                             }
                             UdpWorldEvent::PlayerJoin { player, .. } if player.id == self_id => {
+                                continue;
+                            }
+                            UdpWorldEvent::DungeonMobs { .. }
+                            | UdpWorldEvent::DungeonSync { .. }
+                                if world.get_peer_zone(&self_id).await
+                                    != crate::udp_wire::ZONE_DUNGEON =>
+                            {
                                 continue;
                             }
                             _ => {}

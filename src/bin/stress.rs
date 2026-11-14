@@ -32,7 +32,9 @@ use tokio_rustls::rustls::client::danger::{
 };
 use tokio_rustls::rustls::crypto::ring;
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use tokio_rustls::rustls::{ClientConfig, DigitallySignedStruct, Error as RustlsError, SignatureScheme};
+use tokio_rustls::rustls::{
+    ClientConfig, DigitallySignedStruct, Error as RustlsError, SignatureScheme,
+};
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{connect_async_tls_with_config, Connector};
@@ -46,7 +48,9 @@ use webrtc::ice::network_type::NetworkType;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
+use webrtc::rtp_transceiver::rtp_codec::{
+    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
+};
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
@@ -208,11 +212,7 @@ fn build_tls_client_config(insecure: bool) -> Arc<ClientConfig> {
         )
     } else {
         let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
-        root_store.extend(
-            webpki_roots::TLS_SERVER_ROOTS
-                .iter()
-                .cloned(),
-        );
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         Arc::new(
             ClientConfig::builder_with_provider(provider)
                 .with_safe_default_protocol_versions()
@@ -478,6 +478,7 @@ fn build_client_webrtc_api() -> anyhow::Result<API> {
         .build())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_virtual_student(
     bot_idx: usize,
     cfg: StressConfig,
@@ -612,7 +613,10 @@ async fn run_virtual_student(
     let mut pc_holder = None;
 
     if cfg.mode == "hybrid" {
-        match webrtc_api.new_peer_connection(RTCConfiguration::default()).await {
+        match webrtc_api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+        {
             Ok(pc_raw) => {
                 let pc = Arc::new(pc_raw);
                 let mic_track = Arc::new(TrackLocalStaticRTP::new(
@@ -728,7 +732,8 @@ async fn run_virtual_student(
                     let mut gather = pc.gathering_complete_promise().await;
                     if let Ok(offer) = pc.create_offer(None).await {
                         let _ = pc.set_local_description(offer).await;
-                        let _ = tokio::time::timeout(Duration::from_millis(1200), gather.recv()).await;
+                        let _ =
+                            tokio::time::timeout(Duration::from_millis(1200), gather.recv()).await;
                         if let Some(local_sdp) = pc.local_description().await {
                             let t_rtc = Instant::now();
                             match http
@@ -741,7 +746,9 @@ async fn run_virtual_student(
                             {
                                 Ok((200, ans)) => {
                                     if let Some(sdp_str) = ans["sdp"].as_str() {
-                                        if let Ok(desc) = RTCSessionDescription::answer(sdp_str.into()) {
+                                        if let Ok(desc) =
+                                            RTCSessionDescription::answer(sdp_str.into())
+                                        {
                                             if pc.set_remote_description(desc).await.is_ok() {
                                                 metrics
                                                     .rtc_offer_latencies_ms
@@ -824,13 +831,14 @@ async fn run_virtual_student(
                     seq,
                     client_time_ms: client_ms,
                     x: (t * 0.7).cos() * 14.0,
-                    y: if tick_count % 40 == 0 { 1.2 } else { 0.0 },
+                    y: if tick_count.is_multiple_of(40) { 1.2 } else { 0.0 },
                     z: (t * 0.7).sin() * 14.0,
                     ry: t,
                     anim: "run".into(),
                     emote: None,
                     muted: false,
                     speaking: is_speaking,
+                    zone: 0,
                 });
 
                 let mut sent_udp = false;
@@ -881,8 +889,8 @@ async fn run_virtual_student(
 async fn main() -> anyhow::Result<()> {
     let cfg = StressConfig::from_args();
     let tls_cfg = build_tls_client_config(cfg.insecure_tls);
-    let http = HttpTarget::parse(&cfg.base_url, Arc::clone(&tls_cfg))
-        .context("Parse --base-url")?;
+    let http =
+        HttpTarget::parse(&cfg.base_url, Arc::clone(&tls_cfg)).context("Parse --base-url")?;
     let webrtc_api = Arc::new(build_client_webrtc_api()?);
     let metrics = MetricsCollector::new();
     let stop_notify = Arc::new(Notify::new());
@@ -915,7 +923,10 @@ async fn main() -> anyhow::Result<()> {
             continue;
         }
         let delta = target_n - current_bots;
-        println!("\n=== Stage: Ramping {} -> {} concurrent students (+{}) ===", current_bots, target_n, delta);
+        println!(
+            "\n=== Stage: Ramping {} -> {} concurrent students (+{}) ===",
+            current_bots, target_n, delta
+        );
 
         let barrier = Arc::new(tokio::sync::Barrier::new(delta + 1));
         let delay_per_bot = if delta > 1 {

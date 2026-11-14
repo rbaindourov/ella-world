@@ -24,6 +24,26 @@ pub const OP_EVENT_ACK: u8 = 0x31;
 
 pub const VOICE_FLAG_MUTED: u8 = 0b0000_0001;
 pub const VOICE_FLAG_SPEAKING: u8 = 0b0000_0010;
+pub const ZONE_FLAG_SHIFT: u8 = 2;
+pub const ZONE_FLAG_MASK: u8 = 0b1111_1100;
+
+pub const ZONE_PLAZA: u8 = 0;
+pub const ZONE_DUNGEON: u8 = 1;
+
+pub fn pack_state_flags(muted: bool, speaking: bool, zone: u8) -> u8 {
+    let mut flags = (zone << ZONE_FLAG_SHIFT) & ZONE_FLAG_MASK;
+    if muted {
+        flags |= VOICE_FLAG_MUTED;
+    }
+    if speaking {
+        flags |= VOICE_FLAG_SPEAKING;
+    }
+    flags
+}
+
+pub fn unpack_zone_from_flags(flags: u8) -> u8 {
+    (flags & ZONE_FLAG_MASK) >> ZONE_FLAG_SHIFT
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DecodedC2SState {
@@ -37,6 +57,7 @@ pub struct DecodedC2SState {
     pub emote: Option<String>,
     pub muted: bool,
     pub speaking: bool,
+    pub zone: u8,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -50,6 +71,7 @@ pub struct DecodedPlayerFrame {
     pub emote: Option<String>,
     pub muted: bool,
     pub speaking: bool,
+    pub zone: u8,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -117,14 +139,7 @@ pub fn encode_c2s_state(state: &DecodedC2SState) -> Bytes {
     buf.put_f32_le(state.ry);
     buf.put_u8(anim_to_code(&state.anim));
     buf.put_u8(emote_to_code(state.emote.as_deref()));
-    let mut flags = 0u8;
-    if state.muted {
-        flags |= VOICE_FLAG_MUTED;
-    }
-    if state.speaking {
-        flags |= VOICE_FLAG_SPEAKING;
-    }
-    buf.put_u8(flags);
+    buf.put_u8(pack_state_flags(state.muted, state.speaking, state.zone));
     buf.freeze()
 }
 
@@ -145,6 +160,12 @@ pub fn decode_c2s_state(raw: &[u8]) -> Option<DecodedC2SState> {
     let anim = code_to_anim(raw[25]).to_string();
     let emote = code_to_emote(raw[26]).map(str::to_string);
     let flags = raw[27];
+    let raw_zone = unpack_zone_from_flags(flags);
+    let zone = if raw_zone == ZONE_DUNGEON {
+        ZONE_DUNGEON
+    } else {
+        ZONE_PLAZA
+    };
     Some(DecodedC2SState {
         seq,
         client_time_ms,
@@ -156,6 +177,7 @@ pub fn decode_c2s_state(raw: &[u8]) -> Option<DecodedC2SState> {
         emote,
         muted: (flags & VOICE_FLAG_MUTED) != 0,
         speaking: (flags & VOICE_FLAG_SPEAKING) != 0,
+        zone,
     })
 }
 
@@ -174,14 +196,7 @@ pub fn encode_player_binary_entry(p: &PlayerRuntimeState) -> Bytes {
     buf.put_f32_le(p.ry);
     buf.put_u8(anim_to_code(&p.anim));
     buf.put_u8(emote_to_code(p.emote.as_deref()));
-    let mut flags = 0u8;
-    if p.muted {
-        flags |= VOICE_FLAG_MUTED;
-    }
-    if p.speaking {
-        flags |= VOICE_FLAG_SPEAKING;
-    }
-    buf.put_u8(flags);
+    buf.put_u8(pack_state_flags(p.muted, p.speaking, p.zone));
     buf.freeze()
 }
 
@@ -369,6 +384,7 @@ pub fn decode_s2c_world_state(raw: &[u8]) -> Option<DecodedS2CWorldState> {
             emote,
             muted: (flags & VOICE_FLAG_MUTED) != 0,
             speaking: (flags & VOICE_FLAG_SPEAKING) != 0,
+            zone: unpack_zone_from_flags(flags),
         });
     }
 
@@ -458,11 +474,13 @@ mod tests {
             emote: Some("peace".into()),
             muted: false,
             speaking: true,
+            zone: ZONE_DUNGEON,
         };
         let encoded = encode_c2s_state(&input);
         assert_eq!(encoded.len(), 28);
         let decoded = decode_c2s_state(&encoded).expect("valid C2S state");
         assert_eq!(decoded, input);
+        assert_eq!(decoded.zone, ZONE_DUNGEON);
 
         let players = vec![
             PlayerRuntimeState {
@@ -474,6 +492,7 @@ mod tests {
                     avatar: AvatarAppearance::default(),
                 },
                 avatar_hash: AvatarAppearance::default().short_hash(),
+                zone: decoded.zone,
                 x: decoded.x,
                 y: decoded.y,
                 z: decoded.z,
@@ -490,6 +509,8 @@ mod tests {
                 udp_fastlane_active: true,
                 last_udp_seen_ms: 1000,
                 disconnected_at_ms: None,
+                speed_boost_until_ms: 0,
+                jump_boost_until_ms: 0,
             },
             PlayerRuntimeState {
                 id: "peer_maya_tab1".into(),
@@ -500,6 +521,7 @@ mod tests {
                     avatar: AvatarAppearance::default(),
                 },
                 avatar_hash: AvatarAppearance::default().short_hash(),
+                zone: ZONE_PLAZA,
                 x: 0.0,
                 y: 0.0,
                 z: 0.0,
@@ -516,6 +538,8 @@ mod tests {
                 udp_fastlane_active: true,
                 last_udp_seen_ms: 1000,
                 disconnected_at_ms: None,
+                speed_boost_until_ms: 0,
+                jump_boost_until_ms: 0,
             },
         ];
 
@@ -529,6 +553,7 @@ mod tests {
         assert_eq!(parsed.players[0].emote.as_deref(), Some("peace"));
         assert!(parsed.players[0].speaking);
         assert!(!parsed.players[0].muted);
+        assert_eq!(parsed.players[0].zone, ZONE_DUNGEON);
     }
 
     #[test]
@@ -545,6 +570,7 @@ mod tests {
                     avatar: base_av.clone(),
                 },
                 avatar_hash: base_av.short_hash(),
+                zone: ZONE_PLAZA,
                 x: i as f32,
                 y: 0.0,
                 z: -(i as f32),
@@ -561,6 +587,8 @@ mod tests {
                 udp_fastlane_active: true,
                 last_udp_seen_ms: 1000,
                 disconnected_at_ms: None,
+                speed_boost_until_ms: 0,
+                jump_boost_until_ms: 0,
             };
             entries.push((p.id.clone(), encode_player_binary_entry(&p)));
         }

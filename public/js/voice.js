@@ -31,6 +31,9 @@ const CODE_TO_EMOTE = [null, 'pose', 'peace', 'dance', 'spin', 'wave', 'cheer', 
 
 const utf8Decoder = new TextDecoder();
 
+export const ZONE_PLAZA = 0;
+export const ZONE_DUNGEON = 1;
+
 export function encodeBinaryC2SState(seq, clientTimeMs, state) {
   const buf = new ArrayBuffer(28);
   const dv = new DataView(buf);
@@ -43,7 +46,8 @@ export function encodeBinaryC2SState(seq, clientTimeMs, state) {
   dv.setFloat32(21, Number(state.ry) || 0, true);
   dv.setUint8(25, ANIM_TO_CODE[state.anim] || 0);
   dv.setUint8(26, state.emote ? EMOTE_TO_CODE[state.emote] || 0 : 0);
-  const flags = (state.muted ? 1 : 0) | (state.speaking ? 2 : 0);
+  const zoneBits = ((Number(state.zone) || 0) & 0x3f) << 2;
+  const flags = (state.muted ? 1 : 0) | (state.speaking ? 2 : 0) | zoneBits;
   dv.setUint8(27, flags);
   return buf;
 }
@@ -88,7 +92,8 @@ export function decodeBinaryS2CWorldState(arrayBuffer) {
       anim,
       emote,
       muted: (flags & 1) !== 0,
-      speaking: (flags & 2) !== 0
+      speaking: (flags & 2) !== 0,
+      zone: (flags >>> 2) & 0x3f
     });
   }
 
@@ -812,7 +817,7 @@ export class VoiceChatManager {
     this._syncAllSlotVolumes();
   }
 
-  updateSpatialPositions(selfPos, cameraYaw, remotePlayersMap) {
+  updateSpatialPositions(selfPos, cameraYaw, remotePlayersMap, selfZone = 0) {
     for (const [peerId, peerObj] of this.remoteVoicePeers.entries()) {
       if (!this.proximityMode) {
         peerObj.proximityGain = 1.0;
@@ -821,6 +826,9 @@ export class VoiceChatManager {
         const remote = remotePlayersMap.get(peerId);
         if (!remote) {
           peerObj.proximityGain = 1.0;
+          peerObj.proximityPan = 0.0;
+        } else if ((remote.zone || 0) !== selfZone) {
+          peerObj.proximityGain = 0.04;
           peerObj.proximityPan = 0.0;
         } else {
           const dx = remote.x - selfPos.x;

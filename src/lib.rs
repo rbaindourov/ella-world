@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod config;
+pub mod economy;
 pub mod http_api;
 pub mod models;
 pub mod persistence;
@@ -118,13 +119,12 @@ pub fn build_tls_acceptor(cert_path: &Path, key_path: &Path) -> anyhow::Result<T
         .with_context(|| format!("Failed to read TLS private key {}", key_path.display()))?
         .with_context(|| format!("No private key found in {}", key_path.display()))?;
 
-    let mut tls_cfg =
-        RustlsServerConfig::builder_with_provider(Arc::new(ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .context("Failed to initialize TLS protocol versions")?
-            .with_no_client_auth()
-            .with_single_cert(certs, key)
-            .context("Invalid TLS certificate/key pair")?;
+    let mut tls_cfg = RustlsServerConfig::builder_with_provider(Arc::new(ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .context("Failed to initialize TLS protocol versions")?
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .context("Invalid TLS certificate/key pair")?;
 
     // Force HTTP/1.1 ALPN so RFC 6455 `wss://` WebSocket upgrades work natively over TLS
     tls_cfg.alpn_protocols = vec![b"http/1.1".to_vec()];

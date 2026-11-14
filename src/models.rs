@@ -255,6 +255,7 @@ impl AvatarAppearance {
                 "wings",
                 "tophat",
                 "ninja",
+                "obsidian_crown",
             ]
             .contains(&v)
             {
@@ -272,6 +273,8 @@ impl AvatarAppearance {
                 "choker",
                 "pearls",
                 "wings",
+                "crystal_wings",
+                "star_lantern",
             ]
             .contains(&v)
             {
@@ -348,6 +351,13 @@ pub struct IceServerConfig {
     pub credential: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerEconomySnapshot {
+    pub coins: u64,
+    pub inventory: HashMap<String, u32>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserAccount {
@@ -359,6 +369,10 @@ pub struct UserAccount {
     pub role: String,
     #[serde(default)]
     pub avatar: AvatarAppearance,
+    #[serde(default)]
+    pub coins: u64,
+    #[serde(default)]
+    pub inventory: HashMap<String, u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_pos: Option<SavedPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -384,6 +398,13 @@ impl UserAccount {
                 self.role.clone()
             },
             avatar: self.avatar.clone(),
+        }
+    }
+
+    pub fn economy_snapshot(&self) -> PlayerEconomySnapshot {
+        PlayerEconomySnapshot {
+            coins: self.coins,
+            inventory: self.inventory.clone(),
         }
     }
 }
@@ -422,8 +443,8 @@ fn default_true() -> bool {
 
 pub fn default_blocked_words() -> Vec<String> {
     vec![
-        "fuck", "fucking", "shit", "bitch", "asshole", "bastard", "cunt", "dick", "cock",
-        "pussy", "whore", "slut", "nigger", "nigga", "faggot", "fag", "retard", "kys",
+        "fuck", "fucking", "shit", "bitch", "asshole", "bastard", "cunt", "dick", "cock", "pussy",
+        "whore", "slut", "nigger", "nigga", "faggot", "fag", "retard", "kys",
     ]
     .into_iter()
     .map(String::from)
@@ -569,6 +590,8 @@ pub struct PlayerRuntimeState {
     pub user: SanitizedUser,
     #[serde(default)]
     pub avatar_hash: String,
+    #[serde(default)]
+    pub zone: u8,
     pub x: f32,
     pub y: f32,
     pub z: f32,
@@ -592,6 +615,10 @@ pub struct PlayerRuntimeState {
     pub last_udp_seen_ms: u64,
     #[serde(skip)]
     pub disconnected_at_ms: Option<u64>,
+    #[serde(skip)]
+    pub speed_boost_until_ms: u64,
+    #[serde(skip)]
+    pub jump_boost_until_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

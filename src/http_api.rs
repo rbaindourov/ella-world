@@ -1,4 +1,5 @@
 use crate::auth::{constant_time_str_eq, TokenClaims};
+use crate::economy::ITEM_CATALOG;
 use crate::models::{now_ms, AvatarAppearance, UserAccount};
 use crate::udp_native::NativeUdpServer;
 use crate::webrtc_sfu::WebRtcSfu;
@@ -11,7 +12,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
@@ -41,6 +42,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/avatar", post(avatar_handler))
         .route("/chat", post(chat_handler))
         .route("/runway", post(runway_handler))
+        .route("/economy/catalog", get(economy_catalog_handler))
+        .route("/economy/use", post(economy_use_handler))
+        .route("/dungeon/portal", post(dungeon_portal_handler))
+        .route("/dungeon/interact", post(dungeon_interact_handler))
+        .route("/dungeon/attack", post(dungeon_attack_handler))
+        .route("/dungeon/pickup", post(dungeon_pickup_handler))
+        .route("/trade/invite", post(trade_invite_handler))
+        .route("/trade/respond", post(trade_respond_handler))
+        .route("/trade/offer", post(trade_offer_handler))
+        .route("/trade/lock", post(trade_lock_handler))
+        .route("/trade/confirm", post(trade_confirm_handler))
+        .route("/trade/cancel", post(trade_cancel_handler))
         .route("/admin/login", post(admin_login_handler))
         .route("/admin/state", get(admin_state_handler))
         .route("/admin/chats", get(admin_chats_handler))
@@ -101,6 +114,8 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
                 "displayName": if u.display_name.is_empty() { &u.username } else { &u.display_name },
                 "password": u.password,
                 "role": u.role,
+                "coins": u.coins,
+                "itemCount": u.inventory.values().sum::<u32>(),
                 "avatar": u.avatar,
                 "online": online
             })
@@ -561,6 +576,8 @@ async fn admin_upsert_user_handler(
                 password: body.password.trim().to_string(),
                 role: body.role.unwrap_or_else(|| "friend".into()),
                 avatar: av,
+                coins: 0,
+                inventory: HashMap::new(),
                 last_pos: None,
                 last_pos_saved_at: None,
             });
@@ -627,7 +644,10 @@ async fn admin_chats_handler(
     let limit = query.limit.unwrap_or(200).clamp(1, 1000);
     let user_filter = query.user.as_deref();
     let search_filter = query.search.as_deref();
-    let (total, chats) = st.world.store.query_chats(limit, user_filter, search_filter);
+    let (total, chats) = st
+        .world
+        .store
+        .query_chats(limit, user_filter, search_filter);
     let (blocked_total, blocked_chats) = if query.include_blocked {
         st.world
             .store
@@ -728,4 +748,299 @@ async fn admin_reset_world_handler(
     st.world.reset_world_blocks(body.mode == "clear").await;
     let dashboard = build_admin_dashboard(&st.world).await;
     Json(json!({ "ok": true, "dashboard": dashboard })).into_response()
+}
+
+// ============================================================================
+// Crystal Cavern Dungeon, Persistent Economy & Live P2P Trade HTTP Endpoints
+// ============================================================================
+
+async fn economy_catalog_handler(State(st): State<AppState>) -> Json<Value> {
+    let dungeon = st.world.dungeon.read().await.snapshot();
+    Json(json!({
+        "ok": true,
+        "itemCatalog": ITEM_CATALOG,
+        "items": ITEM_CATALOG,
+        "dungeon": dungeon,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EconomyUsePayload {
+    token: String,
+    item_id: String,
+}
+
+async fn economy_use_handler(
+    State(st): State<AppState>,
+    Json(body): Json<EconomyUsePayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
+        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match st
+        .world
+        .use_inventory_item(&self_id, &username, body.item_id.trim())
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DungeonPortalPayload {
+    token: String,
+    #[serde(alias = "targetZone")]
+    zone: u8,
+}
+
+async fn dungeon_portal_handler(
+    State(st): State<AppState>,
+    Json(body): Json<DungeonPortalPayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
+        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match st
+        .world
+        .transition_player_zone(&self_id, &username, body.zone)
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DungeonInteractPayload {
+    token: String,
+    node_id: String,
+}
+
+async fn dungeon_interact_handler(
+    State(st): State<AppState>,
+    Json(body): Json<DungeonInteractPayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
+        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match st
+        .world
+        .dungeon_interact_node(&self_id, &username, body.node_id.trim())
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DungeonAttackPayload {
+    token: String,
+    mob_id: String,
+    #[serde(default = "default_blast_mode")]
+    mode: String,
+}
+
+fn default_blast_mode() -> String {
+    "blast".into()
+}
+
+async fn dungeon_attack_handler(
+    State(st): State<AppState>,
+    Json(body): Json<DungeonAttackPayload>,
+) -> Response {
+    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token) else {
+        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match st
+        .world
+        .dungeon_attack_mob(&self_id, body.mob_id.trim(), body.mode.trim())
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DungeonPickupPayload {
+    token: String,
+    drop_id: String,
+}
+
+async fn dungeon_pickup_handler(
+    State(st): State<AppState>,
+    Json(body): Json<DungeonPickupPayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
+        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match st
+        .world
+        .dungeon_pickup_drop(&self_id, &username, body.drop_id.trim())
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TradeInvitePayload {
+    token: String,
+    target_peer_id: String,
+}
+
+async fn trade_invite_handler(
+    State(st): State<AppState>,
+    Json(body): Json<TradeInvitePayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
+        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match st
+        .world
+        .trade_invite(&self_id, &username, &body.target_peer_id)
+        .await
+    {
+        Ok(trade) => Json(json!({ "ok": true, "trade": trade })).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TradeRespondPayload {
+    token: String,
+    trade_id: String,
+    accept: bool,
+}
+
+async fn trade_respond_handler(
+    State(st): State<AppState>,
+    Json(body): Json<TradeRespondPayload>,
+) -> Response {
+    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token) else {
+        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match st
+        .world
+        .trade_respond(&self_id, body.trade_id.trim(), body.accept)
+        .await
+    {
+        Ok(trade) => {
+            Json(json!({ "ok": true, "accepted": body.accept, "trade": trade })).into_response()
+        }
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TradeOfferPayload {
+    token: String,
+    trade_id: String,
+    #[serde(default)]
+    coins: u64,
+    #[serde(default)]
+    items: HashMap<String, u32>,
+}
+
+async fn trade_offer_handler(
+    State(st): State<AppState>,
+    Json(body): Json<TradeOfferPayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
+        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match st
+        .world
+        .trade_update_offer(
+            &self_id,
+            &username,
+            body.trade_id.trim(),
+            body.coins,
+            &body.items,
+        )
+        .await
+    {
+        Ok(trade) => Json(json!({ "ok": true, "trade": trade })).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TradeLockPayload {
+    token: String,
+    trade_id: String,
+    locked: bool,
+}
+
+async fn trade_lock_handler(
+    State(st): State<AppState>,
+    Json(body): Json<TradeLockPayload>,
+) -> Response {
+    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token) else {
+        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match st
+        .world
+        .trade_set_lock(&self_id, body.trade_id.trim(), body.locked)
+        .await
+    {
+        Ok(trade) => Json(json!({ "ok": true, "trade": trade })).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TradeIdOnlyPayload {
+    token: String,
+    trade_id: String,
+}
+
+async fn trade_confirm_handler(
+    State(st): State<AppState>,
+    Json(body): Json<TradeIdOnlyPayload>,
+) -> Response {
+    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token) else {
+        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match st.world.trade_confirm(&self_id, body.trade_id.trim()).await {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TradeCancelPayload {
+    token: String,
+    trade_id: Option<String>,
+}
+
+async fn trade_cancel_handler(
+    State(st): State<AppState>,
+    Json(body): Json<TradeCancelPayload>,
+) -> Response {
+    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token) else {
+        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match st
+        .world
+        .trade_cancel(&self_id, body.trade_id.as_deref())
+        .await
+    {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
 }

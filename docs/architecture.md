@@ -68,12 +68,13 @@ Shared identically across WebRTC `ella-udp-state` (`44444/udp`), WebSocket Binar
 | `21..25` | `f32 LE` | `ry` | Character yaw rotation in radians |
 | `25` | `u8` | `anim` | `0=idle`, `1=walk`, `2=run`, `3=jump` |
 | `26` | `u8` | `emote` | `0=none`, `1=pose`, `2=peace`, `3=dance`, `4=spin`, `5=wave`, `6=cheer`, `7=flip`, `8=sit` |
-| `27` | `u8` | `voice_flags` | Bit `0`: `muted`, Bit `1`: `speaking` |
+| `27` | `u8` | `flags` | Bit `0`: `muted`, Bit `1`: `speaking`, Bits `2..7`: `zone` (`0 = ZONE_PLAZA`, `1 = ZONE_DUNGEON`) |
 
-### Server-to-Client `OP_S2C_WORLD_STATE` (`0x11` — Variable Compact Snapshot)
+### Server-to-Client `OP_S2C_WORLD_STATE` (`0x11` — Zone-Partitioned Compact Snapshot)
 
 - Header (`11 bytes`): `[0x11][server_tick: u32 LE][echo_client_time_ms: u32 LE][player_count: u16 LE]`
-- Per Remote Player (`1 + id_len + 19 bytes`): `[id_len: u8][id_utf8][x: f32 LE][y: f32 LE][z: f32 LE][ry: f32 LE][anim: u8][emote: u8][voice_flags: u8]`
+- Per Remote Player (`1 + id_len + 19 bytes`): `[id_len: u8][id_utf8][x: f32 LE][y: f32 LE][z: f32 LE][ry: f32 LE][anim: u8][emote: u8][flags: u8]`
+- **Zero-Byte-Overhead Zone Partitioning**: `WorldEngine::rebuild_pre_encoded_tick` buckets pre-encoded player frames into `entries_by_zone` (`ZONE_PLAZA = 0`, `ZONE_DUNGEON = 1`). Peers only receive 20 Hz movement frames for remote players sharing their active zone, while `playersMap` and 8-slot Opus Party Voice remain connected across zones.
 
 ### Native Raw UDP Envelope (`44445/udp`)
 
@@ -81,10 +82,36 @@ Raw UDP datagrams on `44445/udp` prefix a 6-byte magic header `[b"EWLD"][version
 
 ---
 
-## 4. Atomic Disk Persistence (`src/persistence.rs`)
+## 4. Crystal Cavern Dungeon, Persistent Economy & Scam-Proof P2P Trading (`src/economy.rs`)
+
+### 4.1 Multi-Zone Portal & Active-Only 4 Hz Dungeon Simulation
+- **Portals**: Players transition between **Starlight Plaza (`ZONE_PLAZA = 0`)** via the East Plaza portal at `(18, 0, 16)` (or HUD shortcut `G`) and the **Crystal Cavern (`ZONE_DUNGEON = 1`)** return portal at `(0, 0, 28)`. Only Plaza coordinates persist to `UserAccount::last_pos`.
+- **Dungeon Entities (< 128 KiB Server RAM)**:
+  - **6 Crystal Veins** (`crystal_1`..`crystal_6`, 14s respawn) + **2 Wooden Chests** (28s respawn) + **2 Key-Locked Golden Vault Chests** (consume `1x dungeon_key`, 65s respawn).
+  - **8 Patrolling Mobs**: 5 Shadow Slimes (`2 HP`) and 3 Crystal Bats (`3 HP`) defeated via **Jump-Stomp** (`2 dmg` + bounce) or **Sparkle Blast** (`E`, `1 dmg`).
+  - **4 Hz Active-Only Tick (`tick_dungeon_if_occupied`)**: Runs every 250ms (`tick_seq % 5 == 0`) **only** when `>= 1` player occupies `ZONE_DUNGEON`, broadcasting compact `DungeonMobs` / `DungeonSync` updates exclusively to dungeon occupants.
+
+### 4.2 12-Item Catalog & Exclusive Glam Ownership Reconciliation
+- **Materials & Keys**: `star_shard`, `slime_gel`, `moon_opal`, `dungeon_key`, `crown_relic`.
+- **Consumables (`POST /api/ella-world/economy/use`)**: `speed_potion` (`+35%` sprint for 45s), `jump_potion` (`+30%` jump boost for 45s), and `prism_block` (places a glowing `#67e8f9` voxel block at the player's Plaza feet).
+- **Dungeon-Exclusive 3D Glam Relics**:
+  - `cosmetic_hat_shadow_hood` → `hat = "ninja"`
+  - `cosmetic_acc_star_lantern` → `accessory = "star_lantern"`
+  - `cosmetic_hat_obsidian_crown` → `hat = "obsidian_crown"`
+  - `cosmetic_acc_crystal_wings` → `accessory = "crystal_wings"`
+- **Server-Side Ownership Enforcement (`reconcile_equipped_cosmetics`)**: Verified on both `POST /api/ella-world/avatar` and P2P trade completion. Trading away the last copy of an equipped dungeon relic automatically unequips it back to `"crown"` / `"none"` and broadcasts `avatar_updated`.
+
+### 4.3 Scam-Proof Two-Sided Atomic Live P2P Trading
+- **No NPC Shop / Pure Player Economy**: Friends exchange farmed Coins, Keys, Potions, Relics, and Exclusive Cosmetics directly via live P2P trade invites (`/api/ella-world/trade/invite`, `/respond`, `/offer`, `/lock`, `/confirm`, `/cancel`).
+- **Anti-Bait Lock Reset**: Modifying coins or item stacks on either side increments `offer_revision` and resets `locked = false` and `confirmed = false` on **both** sides so neither player can confirm an altered offer without re-inspecting and re-locking.
+- **Single-Guard Atomic Swap**: When the second party confirms, `WorldEngine::trade_confirm` acquires a single `users_cfg.write().await` guard, locates both accounts via disjoint mutable slice splits (`split_at_mut`), re-verifies exact coin balances, item stack quantities, and `MAX_ITEM_STACK` (`999`) bounds, transfers assets with zero duplication or loss, reconciles equipped cosmetics, and persists atomically to `world_users.json`.
+
+---
+
+## 5. Atomic Disk Persistence (`src/persistence.rs`)
 
 All persistent state lives in `ELLA_DATA_DIR` (e.g., `/var/lib/ella-world/`):
-- `world_users.json`: Whitelisted friend accounts, outfits, master admin password, chat filter settings (`chatFilterEnabled`, `blockedWords`), and throttled `lastPos` builder coordinates (`chmod 0600` on Unix).
+- `world_users.json`: Whitelisted friend accounts, outfits, persistent `coins` & `inventory` stacks, master admin password, chat filter settings (`chatFilterEnabled`, `blockedWords`), and throttled Plaza `lastPos` coordinates (`chmod 0600` on Unix).
 - `world_blocks.json`: Monotonically versioned co-op voxel blocks (`blocksVersion` + `blocks[]`).
 - `world_chat.jsonl`: Append-only newline-delimited JSON history of delivered in-world chat messages; the most recent 60 messages hydrate on startup so chat survives restarts and feeds the Parent Admin Chat Viewer (`GET /api/ella-world/admin/chats`).
 - `world_chat_blocked.jsonl`: Append-only audit trail of rejected chat attempts (profanity/blocked-word matches and anti-flood rate blocks) inspectable in the Parent Admin Dashboard.
@@ -93,6 +120,6 @@ JSON state writes serialize to `.tmp.<pid>` in the same directory and execute an
 
 ---
 
-## 5. Native Rust TLS (`ELLA_TLS_CERT` / `ELLA_TLS_KEY`)
+## 6. Native Rust TLS (`ELLA_TLS_CERT` / `ELLA_TLS_KEY`)
 
 When `ELLA_TLS_CERT` and `ELLA_TLS_KEY` are configured (e.g., for dedicated deployment on `192.168.11.24:4444`), `start_all_servers` wraps the TCP accept loop in `tokio_rustls::TlsAcceptor` (`ring` crypto provider, `http/1.1` ALPN + `TCP_NODELAY`) and `hyper::server::conn::http1` with `.with_upgrades()` so HTTPS static assets, REST APIs, and `wss://<host>:4444/api/ella-world/ws` run natively without Nginx or port `443`.

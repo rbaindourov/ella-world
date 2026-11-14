@@ -195,15 +195,42 @@ let udpTransportState = { state: 'connecting', rttMs: null, port: 44444 };
 let lastChatTs = 0;
 const seenChatIds = new Set();
 
+const ZONE_PLAZA = 0;
+const ZONE_DUNGEON = 1;
+
 function nextOutboundSeq() {
   sharedOutboundSeq = (sharedOutboundSeq + 1) >>> 0;
   return sharedOutboundSeq;
 }
 let currentBlocksVersion = 0;
-let latestMoveState = { x: 0, y: 0, z: 0, ry: 0, anim: 'idle', emote: null };
+let currentZone = ZONE_PLAZA;
+let latestMoveState = {
+  x: 0,
+  y: 0,
+  z: 0,
+  ry: 0,
+  anim: 'idle',
+  emote: null,
+  zone: ZONE_PLAZA
+};
 let localVoiceMuted = false;
 let localVoiceSpeaking = false;
 let toastTimer = null;
+
+// Crystal Cavern Dungeon, Persistent Economy & Live P2P Trade State
+let playerEconomy = { coins: 0, inventory: {} };
+let itemCatalog = [];
+const catalogById = new Map();
+let activeSpeedBoostUntilMs = 0;
+let activeJumpBoostUntilMs = 0;
+let pendingInviteTrade = null;
+let activeTrade = null;
+let draftTradeCoins = 0;
+let draftTradeItems = {};
+let tradeOfferDebounceTimer = null;
+let zonePortalInFlight = false;
+let pendingPostPortalWarp = null;
+const pickupInFlightIds = new Set();
 
 // Map of peerId -> player state object
 const playersMap = new Map();
@@ -226,10 +253,18 @@ const loginErrorEl = document.getElementById('login-error');
 
 const hudWorldTitle = document.getElementById('hud-world-title');
 const hudPlayerBadge = document.getElementById('hud-player-badge');
+const hudZonePill = document.getElementById('hud-zone-pill');
+const hudCoinsCount = document.getElementById('hud-coins-count');
+const hudBuffPill = document.getElementById('hud-buff-pill');
+const hudItemCount = document.getElementById('hud-item-count');
+const hudInteractPrompt = document.getElementById('hud-interact-prompt');
 const udpStatusPill = document.getElementById('udp-status-pill');
 const udpStatusSr = document.getElementById('udp-status-sr');
 const hudToast = document.getElementById('hud-toast');
 const hudChatPanel = document.querySelector('.hud-chat-panel');
+const warpDungeonBtn = document.getElementById('warp-dungeon-btn');
+const openBackpackBtn = document.getElementById('open-backpack-btn');
+const touchActionBtn = document.getElementById('touch-action-btn');
 
 const runwayHudBar = document.getElementById('runway-hud-bar');
 const runwayThemeLabel = document.getElementById('runway-theme-label');
@@ -275,12 +310,40 @@ const avatarDialog = document.getElementById('avatar-dialog');
 const audioDialog = document.getElementById('audio-dialog');
 const helpDialog = document.getElementById('help-dialog');
 const adminDialog = document.getElementById('admin-dialog');
+const backpackDialog = document.getElementById('backpack-dialog');
+const backpackCoinsValue = document.getElementById('backpack-coins-value');
+const backpackItemsGrid = document.getElementById('backpack-items-grid');
+const backpackEnterDungeonBtn = document.getElementById('backpack-enter-dungeon-btn');
+const tradeInvitePopover = document.getElementById('trade-invite-popover');
+const tradeInviteText = document.getElementById('trade-invite-text');
+const tradeInviteAcceptBtn = document.getElementById('trade-invite-accept-btn');
+const tradeInviteDeclineBtn = document.getElementById('trade-invite-decline-btn');
+const tradeDialog = document.getElementById('trade-dialog');
+const tradeStatusNote = document.getElementById('trade-status-note');
+const tradeCloseCancelBtn = document.getElementById('trade-close-cancel-btn');
+const tradeSelfHeading = document.getElementById('trade-self-heading');
+const tradeSelfStatePill = document.getElementById('trade-self-state-pill');
+const tradeSelfWallet = document.getElementById('trade-self-wallet');
+const tradeCoinsInput = document.getElementById('trade-coins-input');
+const tradeSelfOfferList = document.getElementById('trade-self-offer-list');
+const tradeInventoryPicker = document.getElementById('trade-inventory-picker');
+const tradePartnerHeading = document.getElementById('trade-partner-heading');
+const tradePartnerStatePill = document.getElementById('trade-partner-state-pill');
+const tradePartnerCoins = document.getElementById('trade-partner-coins');
+const tradePartnerOfferList = document.getElementById('trade-partner-offer-list');
+const tradeCancelBtn = document.getElementById('trade-cancel-btn');
+const tradeLockBtn = document.getElementById('trade-lock-btn');
+const tradeConfirmBtn = document.getElementById('trade-confirm-btn');
 
 // 1. Initialize 3D World
 const world3d = new BlockyWorld3D({
   container: document.getElementById('canvas-container'),
   onMove: (movePayload) => {
-    latestMoveState = { ...latestMoveState, ...movePayload };
+    latestMoveState = {
+      ...latestMoveState,
+      ...movePayload,
+      zone: typeof movePayload.zone === 'number' ? movePayload.zone : currentZone
+    };
     if (selfId && playersMap.has(selfId)) {
       const me = playersMap.get(selfId);
       me.x = movePayload.x;
@@ -289,6 +352,7 @@ const world3d = new BlockyWorld3D({
       me.ry = movePayload.ry;
       me.anim = movePayload.anim;
       me.emote = movePayload.emote;
+      me.zone = latestMoveState.zone;
     }
   },
   onPlaceBlock: async (block) => {
@@ -336,6 +400,27 @@ const world3d = new BlockyWorld3D({
     }
     if (isNear) {
       showToast('💃 Welcome to the Fashion Runway! Strike a pose (1–8) & rate outfits 1–5 ⭐!');
+    }
+  },
+  onRequestZonePortal: (targetZone) => {
+    requestZoneTransition(targetZone);
+  },
+  onInteractNode: (nodeId) => {
+    interactDungeonNode(nodeId);
+  },
+  onAttackMob: (mobId, mode) => {
+    attackDungeonMob(mobId, mode);
+  },
+  onPickupDrop: (dropId) => {
+    pickupDungeonDrop(dropId);
+  },
+  onInteractionHint: (hintText) => {
+    if (!hudInteractPrompt) return;
+    if (hintText) {
+      hudInteractPrompt.textContent = hintText;
+      hudInteractPrompt.hidden = false;
+    } else {
+      hudInteractPrompt.hidden = true;
     }
   }
 });
@@ -410,13 +495,19 @@ function handleBinaryWorldStateSnapshot({ rttMs, transport, players }) {
       spineClient.requestResync();
       continue;
     }
+    const prevZone = existing.zone || ZONE_PLAZA;
+    const nextZone = typeof frame.zone === 'number' ? frame.zone : prevZone;
     existing.x = frame.x;
     existing.y = frame.y;
     existing.z = frame.z;
     existing.ry = frame.ry;
     existing.anim = frame.anim;
     existing.emote = frame.emote;
+    existing.zone = nextZone;
     world3d.upsertRemotePlayer(existing);
+    if (prevZone !== nextZone) {
+      renderFriendsList();
+    }
     if (existing.muted !== frame.muted || existing.speaking !== frame.speaking) {
       existing.muted = frame.muted;
       existing.speaking = frame.speaking;
@@ -498,26 +589,66 @@ setInterval(() => {
     voiceManager.updateSpatialPositions(
       world3d.selfAvatar.group.position,
       world3d.cameraYaw,
-      playersMap
+      playersMap,
+      currentZone
     );
   }
 }, 50);
 
-// 3. Modern Web Guidance: Dialog Light-Dismiss Fallback for modal dialogs without native `closedby`
+// Update active Swiftness / Cloud Leap potion timers at 4Hz
+setInterval(() => {
+  if (!hudBuffPill) return;
+  const serverNow = Date.now() + (world3d.serverClockOffsetMs || 0);
+  const speedRem = Math.ceil((activeSpeedBoostUntilMs - serverNow) / 1000);
+  const jumpRem = Math.ceil((activeJumpBoostUntilMs - serverNow) / 1000);
+  const parts = [];
+  if (speedRem > 0) parts.push(`⚡ Swift ${speedRem}s`);
+  if (jumpRem > 0) parts.push(`🪽 Leap ${jumpRem}s`);
+  if (parts.length > 0) {
+    hudBuffPill.textContent = parts.join(' • ');
+    hudBuffPill.hidden = false;
+  } else {
+    hudBuffPill.hidden = true;
+  }
+}, 250);
+
+// 3. Modern Web Guidance: Dialog Light-Dismiss Fallback (`pointerdown` + `pointerup` outside rect)
 if (!('closedBy' in HTMLDialogElement.prototype)) {
+  const outside = (e, dialog) => {
+    const r = dialog.getBoundingClientRect();
+    return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+  };
   for (const dialog of document.querySelectorAll('dialog[closedby="any"]')) {
-    dialog.addEventListener('click', (event) => {
-      if (event.target !== dialog) return;
-      const rect = dialog.getBoundingClientRect();
-      const isDialogContent =
-        rect.top <= event.clientY &&
-        event.clientY <= rect.top + rect.height &&
-        rect.left <= event.clientX &&
-        event.clientX <= rect.left + rect.width;
-      if (isDialogContent) return;
-      dialog.close();
+    let pressedOutside = false;
+    dialog.addEventListener('pointerdown', (e) => {
+      pressedOutside = outside(e, dialog);
+    });
+    dialog.addEventListener('pointerup', (e) => {
+      if (pressedOutside && outside(e, dialog)) dialog.close();
     });
   }
+}
+
+for (const dialog of document.querySelectorAll('dialog')) {
+  dialog.addEventListener('close', () => {
+    dialog.returnValue = '';
+  });
+}
+
+if (tradeDialog) {
+  tradeDialog.addEventListener('cancel', (e) => {
+    e.preventDefault();
+    const mySide = getMyTradeSide(activeTrade);
+    if (mySide && (mySide.locked || mySide.confirmed)) {
+      if (tradeStatusNote) {
+        tradeStatusNote.textContent =
+          '🔒 Your trade offer is locked! Click "Unlock Offer" first or click "✕ Cancel Trade" to abort.';
+      }
+      if (tradeLockBtn) tradeLockBtn.focus();
+      return;
+    }
+    cancelActiveTrade();
+  });
 }
 
 for (const btn of document.querySelectorAll('[data-close-dialog]')) {
@@ -666,16 +797,37 @@ async function enterGameWorld(loginData) {
 
   playersMap.clear();
   playersMap.set(selfId, loginData.self);
+  currentZone = typeof loginData.self?.zone === 'number' ? loginData.self.zone : ZONE_PLAZA;
   latestMoveState = {
     x: loginData.self.x || 0,
     y: loginData.self.y || 0,
     z: loginData.self.z || 0,
     ry: loginData.self.ry || 0,
     anim: 'idle',
-    emote: null
+    emote: null,
+    zone: currentZone
   };
 
+  if (Array.isArray(loginData.itemCatalog)) {
+    setItemCatalog(loginData.itemCatalog);
+  } else if (itemCatalog.length === 0) {
+    fetch('/api/ella-world/economy/catalog', { headers: { 'X-Cache-Warmup': 'true' } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        const list = d?.itemCatalog || d?.items;
+        if (Array.isArray(list)) setItemCatalog(list);
+      })
+      .catch(() => {});
+  }
+  if (loginData.economy) {
+    applyEconomySnapshot(loginData.economy);
+  }
+
   world3d.initSelfPlayer(loginData.self);
+  if (loginData.dungeon) {
+    world3d.syncDungeonSnapshot(loginData.dungeon);
+  }
+  renderZoneHud(currentZone);
   world3d.loadBlocks(loginData.blocks || []);
   currentBlocksVersion = loginData.blocksVersion || 1;
   updateBuildSaveStatus((loginData.blocks || []).length, false);
@@ -713,7 +865,7 @@ async function enterGameWorld(loginData) {
   }
   appendChatMessage({
     isSystem: true,
-    text: `👑 Welcome to ${loginData.worldMeta?.worldName || "Ella's Starlight Glam Plaza"}, ${selfUser.displayName}! Open Glam Closet (C) or warp to the Runway (F)!`
+    text: `👑 Welcome to ${loginData.worldMeta?.worldName || "Ella's Starlight Glam Plaza"}, ${selfUser.displayName}! Enter the Crystal Cavern (G), open Backpack (I), Glam Closet (C), or Runway (F)!`
   });
 
   // 1. Immediately connect persistent `:443` WebSocket spine (zero wait on microphone dialog!)
@@ -727,6 +879,7 @@ async function enterGameWorld(loginData) {
     spineClient.notifyUdpFastLane(udpHealthy);
     const stateFrame = {
       ...latestMoveState,
+      zone: currentZone,
       muted: localVoiceMuted,
       speaking: localVoiceSpeaking
     };
@@ -767,6 +920,8 @@ function upsertIncomingRemotePlayer(p, silentJoin = false) {
     return true;
   }
 
+  const prevZone = existing.zone || ZONE_PLAZA;
+  const nextZone = typeof p.zone === 'number' ? p.zone : prevZone;
   const prevHash = existing.avatarHash || '';
   const nextHash = p.avatarHash || '';
   const prevAvatarSig = prevHash || JSON.stringify(existing.user?.avatar || {});
@@ -777,10 +932,14 @@ function upsertIncomingRemotePlayer(p, silentJoin = false) {
   existing.ry = p.ry;
   existing.anim = p.anim;
   existing.emote = p.emote;
+  existing.zone = nextZone;
   if (p.avatarHash) existing.avatarHash = p.avatarHash;
   if (p.user) existing.user = p.user;
   world3d.upsertRemotePlayer(existing);
 
+  if (prevZone !== nextZone) {
+    renderFriendsList();
+  }
   if (p.user?.avatar && prevAvatarSig !== nextAvatarSig) {
     const av = world3d.remoteAvatars.get(p.id);
     if (av) av.updateAvatarAppearance(p.user.avatar);
@@ -858,6 +1017,24 @@ function handleIncomingUdpWorldEvent(ev) {
   if (!ev || typeof ev !== 'object') return;
   switch (ev.type) {
     case 'welcome_snapshot': {
+      if (Array.isArray(ev.itemCatalog)) {
+        setItemCatalog(ev.itemCatalog);
+      }
+      if (ev.economy) {
+        applyEconomySnapshot(ev.economy);
+      }
+      if (ev.dungeon) {
+        world3d.syncDungeonSnapshot(ev.dungeon);
+      }
+      if (ev.self && typeof ev.self.zone === 'number' && ev.self.zone !== currentZone) {
+        applyLocalZoneTransition({
+          zone: ev.self.zone,
+          x: ev.self.x,
+          y: ev.self.y,
+          z: ev.self.z,
+          dungeon: ev.dungeon
+        });
+      }
       reconcileAuthoritativeRoster(ev.players || [], true);
       if (Array.isArray(ev.blocks) && ev.blocksVersion !== currentBlocksVersion) {
         currentBlocksVersion = ev.blocksVersion;
@@ -918,7 +1095,20 @@ function handleIncomingUdpWorldEvent(ev) {
       break;
     }
     case 'avatar_updated': {
-      if (ev.selfId && ev.selfId !== selfId && ev.user) {
+      if (ev.selfId === selfId && ev.user) {
+        selfUser = ev.user;
+        if (playersMap.has(selfId)) {
+          playersMap.get(selfId).user = selfUser;
+        }
+        if (world3d.selfAvatar) {
+          world3d.selfAvatar.updateAvatarAppearance(selfUser.avatar);
+        }
+        if (isSalonOpen && draftAvatar && selfUser.avatar) {
+          draftAvatar.hat = selfUser.avatar.hat;
+          draftAvatar.accessory = selfUser.avatar.accessory;
+          syncSalonControlsFromDraft();
+        }
+      } else if (ev.selfId && ev.selfId !== selfId && ev.user) {
         const existing = playersMap.get(ev.selfId);
         if (existing && ev.avatarHash && existing.avatarHash === ev.avatarHash) {
           break;
@@ -930,6 +1120,140 @@ function handleIncomingUdpWorldEvent(ev) {
         const av = world3d.remoteAvatars.get(ev.selfId);
         if (av) av.updateAvatarAppearance(ev.user.avatar);
         renderFriendsList();
+      }
+      break;
+    }
+    case 'player_zone': {
+      if (ev.id && ev.id !== selfId) {
+        const existing = playersMap.get(ev.id);
+        if (existing) {
+          existing.zone = ev.zone || ZONE_PLAZA;
+          if (typeof ev.x === 'number') existing.x = ev.x;
+          if (typeof ev.y === 'number') existing.y = ev.y;
+          if (typeof ev.z === 'number') existing.z = ev.z;
+        }
+        world3d.setRemotePlayerZone(ev.id, ev.zone || ZONE_PLAZA, ev);
+        renderFriendsList();
+      }
+      break;
+    }
+    case 'zone_transitioned': {
+      applyLocalZoneTransition(ev);
+      break;
+    }
+    case 'dungeon_mobs': {
+      if (Array.isArray(ev.mobs)) {
+        world3d.syncDungeonMobs(ev.mobs);
+      }
+      break;
+    }
+    case 'dungeon_sync': {
+      if (ev.dungeon) {
+        world3d.syncDungeonSnapshot(ev.dungeon);
+      }
+      break;
+    }
+    case 'economy_update': {
+      const prevCoins = playerEconomy.coins || 0;
+      const prevInv = { ...(playerEconomy.inventory || {}) };
+      if (ev.economy) {
+        applyEconomySnapshot(ev.economy);
+      }
+      if (typeof ev.reason === 'string' && ev.reason.startsWith('pickup:') && ev.economy) {
+        const coinGain = Math.max(0, (ev.economy.coins || 0) - prevCoins);
+        const gainedParts = [];
+        if (coinGain > 0) gainedParts.push(`🪙 +${coinGain} Coins`);
+        for (const [iid, qty] of Object.entries(ev.economy.inventory || {})) {
+          const delta = Number(qty) - Number(prevInv[iid] || 0);
+          if (delta > 0) {
+            const def = catalogById.get(iid);
+            gainedParts.push(`${def ? def.icon : '✨'} +${delta}x ${def ? def.name : iid}`);
+          }
+        }
+        if (gainedParts.length > 0) {
+          showToast(`✨ Collected ${gainedParts.join(' • ')}!`, 3200);
+        }
+      }
+      break;
+    }
+    case 'item_used': {
+      if (typeof ev.speedBoostUntilMs === 'number') {
+        activeSpeedBoostUntilMs = ev.speedBoostUntilMs;
+      }
+      if (typeof ev.jumpBoostUntilMs === 'number') {
+        activeJumpBoostUntilMs = ev.jumpBoostUntilMs;
+      }
+      world3d.setBuffTimers({
+        speedBoostUntilMs: activeSpeedBoostUntilMs,
+        jumpBoostUntilMs: activeJumpBoostUntilMs
+      });
+      if (ev.economy) {
+        applyEconomySnapshot(ev.economy);
+      }
+      showToast(`🧪 Used ${ev.itemName || 'item'}!`, 3600);
+      break;
+    }
+    case 'trade_invite_received': {
+      if (ev.trade) {
+        pendingInviteTrade = ev.trade;
+        showTradeInvitePopover(ev.trade);
+      }
+      break;
+    }
+    case 'trade_invite_sent': {
+      if (ev.trade) {
+        showToast(`🤝 Trade invite sent to ${ev.trade.partnerDisplayName}!`);
+      }
+      break;
+    }
+    case 'trade_updated': {
+      if (ev.trade) {
+        if (pendingInviteTrade && pendingInviteTrade.tradeId === ev.trade.tradeId) {
+          hideTradeInvitePopover();
+          pendingInviteTrade = null;
+        }
+        applyTradeSessionState(ev.trade);
+      }
+      break;
+    }
+    case 'trade_completed': {
+      const partnerName =
+        ev.trade && ev.trade.initiatorId === selfId
+          ? ev.trade.partnerDisplayName
+          : ev.trade?.initiatorDisplayName || 'your friend';
+      activeTrade = null;
+      draftTradeCoins = 0;
+      draftTradeItems = {};
+      if (tradeDialog && tradeDialog.open) {
+        tradeDialog.close('completed');
+      }
+      if (world3d.selfAvatar) {
+        world3d.spawnCelebrationConfetti(world3d.selfAvatar.group.position);
+      }
+      showToast(`🎉 Trade completed with ${partnerName}! Check your Backpack (I)!`, 5200);
+      break;
+    }
+    case 'trade_cancelled': {
+      if (pendingInviteTrade && pendingInviteTrade.tradeId === ev.tradeId) {
+        hideTradeInvitePopover();
+        pendingInviteTrade = null;
+      }
+      if (activeTrade && activeTrade.tradeId === ev.tradeId) {
+        activeTrade = null;
+        draftTradeCoins = 0;
+        draftTradeItems = {};
+        if (tradeDialog && tradeDialog.open) {
+          tradeDialog.close('cancelled');
+        }
+        showToast(`🤝 ${ev.reason || 'Trade cancelled.'}`);
+      } else if (ev.reason && ev.trade?.initiatorId === selfId) {
+        showToast(`🤝 ${ev.reason}`);
+      }
+      break;
+    }
+    case 'action_error': {
+      if (ev.error) {
+        showToast(`⚠️ ${ev.error}`);
       }
       break;
     }
@@ -972,6 +1296,692 @@ function handleIncomingUdpWorldEvent(ev) {
   }
 }
 
+// ============================================================================
+// Crystal Cavern Dungeon, Persistent Economy, Backpack & Live P2P Trade Client
+// ============================================================================
+
+function setItemCatalog(items) {
+  itemCatalog = Array.isArray(items) ? items : [];
+  catalogById.clear();
+  for (const item of itemCatalog) {
+    if (item && item.id) {
+      catalogById.set(item.id, item);
+    }
+  }
+  renderEconomyHud();
+}
+
+function applyEconomySnapshot(econ) {
+  if (!econ || typeof econ !== 'object') return;
+  playerEconomy = {
+    coins: Number(econ.coins || 0),
+    inventory: { ...(econ.inventory || {}) }
+  };
+  renderEconomyHud();
+}
+
+function renderEconomyHud() {
+  const coins = Number(playerEconomy.coins || 0);
+  const inv = playerEconomy.inventory || {};
+  let totalItems = 0;
+  for (const qty of Object.values(inv)) {
+    totalItems += Number(qty || 0);
+  }
+
+  if (hudCoinsCount) hudCoinsCount.textContent = coins.toLocaleString();
+  if (hudItemCount) hudItemCount.textContent = String(totalItems);
+  if (backpackCoinsValue) backpackCoinsValue.textContent = `🪙 ${coins.toLocaleString()}`;
+  if (tradeSelfWallet) tradeSelfWallet.textContent = coins.toLocaleString();
+  if (tradeCoinsInput) tradeCoinsInput.max = String(Math.max(0, coins));
+
+  // Sync Glam Salon exclusive relic lock/unlock badges
+  for (const card of avatarDialog.querySelectorAll('.glam-item-card[data-req-item]')) {
+    const reqId = card.getAttribute('data-req-item');
+    const qty = Number(inv[reqId] || 0);
+    const owned = qty >= 1;
+    card.classList.toggle('is-locked', !owned);
+    const badge = card.querySelector('[data-lock-badge]');
+    if (badge) {
+      badge.classList.toggle('is-owned', owned);
+      badge.textContent = owned ? `✅ Owned (${qty}x)` : '🔒 Farm / Trade';
+    }
+  }
+
+  if (backpackDialog && backpackDialog.open) {
+    renderBackpackGrid();
+  }
+  if (tradeDialog && tradeDialog.open && activeTrade) {
+    renderTradeModal();
+  }
+}
+
+function renderZoneHud(zone) {
+  const inDungeon = zone === ZONE_DUNGEON;
+  if (hudZonePill) {
+    hudZonePill.classList.toggle('is-dungeon', inDungeon);
+    hudZonePill.textContent = inDungeon ? '🏰 Crystal Cavern' : '⛲ Starlight Plaza';
+  }
+  if (warpDungeonBtn) {
+    warpDungeonBtn.textContent = inDungeon ? '⛲ Exit Dungeon' : '🌀 Dungeon';
+  }
+  if (inDungeon && world3d.buildMode) {
+    world3d.buildMode = false;
+    world3d.ghostMesh.visible = false;
+    if (buildToolbar) buildToolbar.hidden = true;
+    if (toggleBuildBtn) toggleBuildBtn.classList.remove('active');
+  }
+  if (inDungeon && runwayHudBar) {
+    runwayHudBar.classList.remove('near-runway');
+  }
+}
+
+function applyLocalZoneTransition(payload) {
+  if (!payload || typeof payload.zone !== 'number') return;
+  const nextZone = payload.zone;
+  const changed = nextZone !== currentZone;
+  currentZone = nextZone;
+  latestMoveState.zone = nextZone;
+  if (typeof payload.x === 'number') latestMoveState.x = payload.x;
+  if (typeof payload.y === 'number') latestMoveState.y = payload.y;
+  if (typeof payload.z === 'number') latestMoveState.z = payload.z;
+
+  if (selfId && playersMap.has(selfId)) {
+    const me = playersMap.get(selfId);
+    me.zone = nextZone;
+    if (typeof payload.x === 'number') me.x = payload.x;
+    if (typeof payload.y === 'number') me.y = payload.y;
+    if (typeof payload.z === 'number') me.z = payload.z;
+  }
+
+  world3d.setZone(nextZone, payload);
+  if (payload.dungeon) {
+    world3d.syncDungeonSnapshot(payload.dungeon);
+  }
+  renderZoneHud(nextZone);
+  renderFriendsList();
+
+  if (nextZone === ZONE_PLAZA && pendingPostPortalWarp) {
+    const target = pendingPostPortalWarp;
+    pendingPostPortalWarp = null;
+    if (target === 'runway') {
+      world3d.warpToRunway();
+      showToast('💃 Returned to Starlight Plaza & teleported to the Fashion Runway!');
+      return;
+    }
+    if (target === 'obby') {
+      world3d.warpToObbyCheckpoint();
+      showToast('🏃‍♀️ Returned to Starlight Plaza & teleported to the Sky Obby!');
+      return;
+    }
+  }
+
+  if (changed) {
+    showToast(
+      nextZone === ZONE_DUNGEON
+        ? '🏰 Entered the Crystal Cavern! Press E or Jump-Stomp Slimes & Crystal Veins for loot!'
+        : '⛲ Returned to Starlight Glam Plaza!'
+    );
+  }
+}
+
+async function requestZoneTransition(targetZone) {
+  if (!sessionToken || zonePortalInFlight) return;
+  zonePortalInFlight = true;
+  try {
+    const res = await fetch('/api/ella-world/dungeon/portal', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, zone: targetZone, targetZone })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && typeof data.zone === 'number') {
+      applyLocalZoneTransition(data);
+    } else if (data.error) {
+      showToast(`⚠️ ${data.error}`);
+    }
+  } catch {
+    // fallback handled on next try
+  } finally {
+    zonePortalInFlight = false;
+  }
+}
+
+async function interactDungeonNode(nodeId) {
+  if (!sessionToken || !nodeId) return;
+  try {
+    const res = await fetch('/api/ella-world/dungeon/interact', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, nodeId })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      if (data.dungeon) world3d.syncDungeonSnapshot(data.dungeon);
+      if (data.economy) applyEconomySnapshot(data.economy);
+    } else if (data.error) {
+      showToast(`🗝️ ${data.error}`);
+    }
+  } catch {
+    // ignore transient network error
+  }
+}
+
+async function attackDungeonMob(mobId, mode = 'blast') {
+  if (!sessionToken || !mobId) return;
+  try {
+    const res = await fetch('/api/ella-world/dungeon/attack', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, mobId, mode })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.dungeon) {
+      world3d.syncDungeonSnapshot(data.dungeon);
+    } else if (!res.ok && data.error) {
+      showToast(`⚔️ ${data.error}`);
+    }
+  } catch {
+    // ignore transient network error
+  }
+}
+
+async function pickupDungeonDrop(dropId) {
+  if (!sessionToken || !dropId || pickupInFlightIds.has(dropId)) return;
+  pickupInFlightIds.add(dropId);
+  try {
+    const res = await fetch('/api/ella-world/dungeon/pickup', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, dropId })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      if (data.dungeon) world3d.syncDungeonSnapshot(data.dungeon);
+    }
+  } catch {
+    // ignore transient network error
+  } finally {
+    setTimeout(() => pickupInFlightIds.delete(dropId), 800);
+  }
+}
+
+async function useInventoryItem(itemId) {
+  if (!sessionToken || !itemId) return;
+  try {
+    const res = await fetch('/api/ella-world/economy/use', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, itemId })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok && data.error) {
+      showToast(`⚠️ ${data.error}`);
+    }
+  } catch {
+    showToast('⚠️ Could not use item right now.');
+  }
+}
+
+function openBackpackModal() {
+  renderBackpackGrid();
+  if (backpackDialog && !backpackDialog.open) {
+    backpackDialog.showModal();
+  }
+}
+
+function renderBackpackGrid() {
+  if (!backpackItemsGrid) return;
+  backpackItemsGrid.innerHTML = '';
+  const inv = playerEconomy.inventory || {};
+
+  // Show owned items first, followed by unowned catalog items as a collection guide
+  const ordered = [...itemCatalog].sort((a, b) => {
+    const qa = Number(inv[a.id] || 0) > 0 ? 1 : 0;
+    const qb = Number(inv[b.id] || 0) > 0 ? 1 : 0;
+    if (qa !== qb) return qb - qa;
+    return (b.suggestedCoins || 0) - (a.suggestedCoins || 0);
+  });
+
+  for (const item of ordered) {
+    const qty = Number(inv[item.id] || 0);
+    const card = document.createElement('article');
+    card.className = `backpack-card rarity-${item.rarity || 'common'}${qty === 0 ? ' is-unowned' : ''}`;
+
+    const top = document.createElement('div');
+    top.className = 'backpack-card-top';
+
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'backpack-icon';
+    iconSpan.textContent = item.icon || '✨';
+
+    const qtyPill = document.createElement('span');
+    qtyPill.className = 'backpack-qty-pill';
+    qtyPill.textContent = qty > 0 ? `${qty}x Owned` : '0x (Unfound)';
+
+    top.append(iconSpan, qtyPill);
+
+    const mid = document.createElement('div');
+    const rarityTag = document.createElement('div');
+    rarityTag.className = 'backpack-rarity-tag';
+    rarityTag.textContent = `${item.rarity || 'common'} • ${item.category || 'material'}`;
+    const titleEl = document.createElement('h3');
+    titleEl.className = 'backpack-card-title';
+    titleEl.textContent = item.name;
+    const descEl = document.createElement('p');
+    descEl.className = 'backpack-desc';
+    descEl.textContent = item.description || '';
+    mid.append(rarityTag, titleEl, descEl);
+
+    const actions = document.createElement('div');
+    actions.className = 'backpack-card-actions';
+
+    const valHint = document.createElement('small');
+    valHint.className = 'trade-wallet-hint';
+    valHint.textContent = `~${item.suggestedCoins || 10} 🪙 value`;
+    actions.appendChild(valHint);
+
+    if (qty > 0 && item.category === 'consumable') {
+      const useBtn = document.createElement('button');
+      useBtn.type = 'button';
+      useBtn.className = 'small-action-btn';
+      useBtn.textContent = item.id === 'prism_block' ? '🌈 Place Block' : '🧪 Drink Potion';
+      useBtn.addEventListener('click', () => useInventoryItem(item.id));
+      actions.appendChild(useBtn);
+    } else if (qty > 0 && item.category === 'cosmetic') {
+      const wearBtn = document.createElement('button');
+      wearBtn.type = 'button';
+      wearBtn.className = 'small-action-btn';
+      wearBtn.textContent = '👗 Equip in Glam';
+      wearBtn.addEventListener('click', () => {
+        if (backpackDialog && backpackDialog.open) backpackDialog.close();
+        openGlamSalon();
+        const accTab = document.getElementById('glam-tab-acc');
+        if (accTab) activateGlamTab(accTab, false);
+        if (draftAvatar && item.cosmeticSlot && item.cosmeticValue) {
+          draftAvatar[item.cosmeticSlot] = item.cosmeticValue;
+          draftAvatar.characterPreset = 'custom';
+          previewDraftInMirror();
+          scheduleAutoSaveAvatar(120);
+        }
+      });
+      actions.appendChild(wearBtn);
+    }
+
+    card.append(top, mid, actions);
+    backpackItemsGrid.appendChild(card);
+  }
+}
+
+function showTradeInvitePopover(trade) {
+  if (!tradeInvitePopover || !trade) return;
+  if (tradeInviteText) {
+    tradeInviteText.textContent = `${trade.initiatorDisplayName} (@${trade.initiatorUsername}) wants to trade items & coins with you!`;
+  }
+  if (typeof tradeInvitePopover.showPopover === 'function') {
+    try {
+      tradeInvitePopover.showPopover();
+    } catch {
+      tradeInvitePopover.setAttribute('open', '');
+    }
+  } else {
+    tradeInvitePopover.setAttribute('open', '');
+  }
+}
+
+function hideTradeInvitePopover() {
+  if (!tradeInvitePopover) return;
+  if (typeof tradeInvitePopover.hidePopover === 'function') {
+    try {
+      tradeInvitePopover.hidePopover();
+    } catch {
+      tradeInvitePopover.removeAttribute('open');
+    }
+  } else {
+    tradeInvitePopover.removeAttribute('open');
+  }
+}
+
+async function sendTradeInviteToPeer(targetPeerId, displayName) {
+  if (!sessionToken || !targetPeerId) return;
+  try {
+    const res = await fetch('/api/ella-world/trade/invite', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, targetPeerId })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(`⚠️ ${data.error || `Could not invite ${displayName}.`}`);
+    }
+  } catch {
+    showToast('⚠️ Could not reach trade server.');
+  }
+}
+
+async function respondToPendingTradeInvite(accept) {
+  if (!pendingInviteTrade || !sessionToken) {
+    hideTradeInvitePopover();
+    return;
+  }
+  const tradeId = pendingInviteTrade.tradeId;
+  hideTradeInvitePopover();
+  pendingInviteTrade = null;
+  try {
+    const res = await fetch('/api/ella-world/trade/respond', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, tradeId, accept: Boolean(accept) })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && accept && data.trade) {
+      applyTradeSessionState(data.trade);
+    } else if (!res.ok && data.error) {
+      showToast(`⚠️ ${data.error}`);
+    }
+  } catch {
+    showToast('⚠️ Could not respond to trade invite.');
+  }
+}
+
+function getMyTradeSide(trade) {
+  if (!trade) return null;
+  return trade.initiatorId === selfId ? trade.initiatorOffer : trade.partnerOffer;
+}
+
+function getPartnerTradeSide(trade) {
+  if (!trade) return null;
+  return trade.initiatorId === selfId ? trade.partnerOffer : trade.initiatorOffer;
+}
+
+function applyTradeSessionState(trade) {
+  if (!trade || trade.status !== 'active') return;
+  const isNewSession = !activeTrade || activeTrade.tradeId !== trade.tradeId;
+  activeTrade = trade;
+
+  const mySide = getMyTradeSide(trade);
+  if (isNewSession || !tradeOfferDebounceTimer) {
+    draftTradeCoins = Number(mySide?.coins || 0);
+    draftTradeItems = { ...(mySide?.items || {}) };
+  }
+
+  if (isSalonOpen) {
+    closeGlamSalon(false);
+  }
+  if (backpackDialog && backpackDialog.open) {
+    backpackDialog.close();
+  }
+  if (tradeDialog && !tradeDialog.open) {
+    tradeDialog.showModal();
+  }
+  renderTradeModal();
+}
+
+function formatStatePill(pillEl, cardEl, side) {
+  if (!pillEl || !side) return;
+  pillEl.classList.remove('locked', 'confirmed');
+  if (cardEl) cardEl.classList.remove('is-locked', 'is-confirmed');
+  if (side.confirmed) {
+    pillEl.classList.add('confirmed');
+    pillEl.textContent = '✅ Confirmed';
+    if (cardEl) cardEl.classList.add('is-confirmed');
+  } else if (side.locked) {
+    pillEl.classList.add('locked');
+    pillEl.textContent = '🔒 Locked In';
+    if (cardEl) cardEl.classList.add('is-locked');
+  } else {
+    pillEl.textContent = '✏️ Editing...';
+  }
+}
+
+function renderTradeModal() {
+  if (!activeTrade || !tradeDialog) return;
+  const isInitiator = activeTrade.initiatorId === selfId;
+  const partnerDisplay = isInitiator
+    ? activeTrade.partnerDisplayName
+    : activeTrade.initiatorDisplayName;
+  const partnerUser = isInitiator ? activeTrade.partnerUsername : activeTrade.initiatorUsername;
+  const mySide = getMyTradeSide(activeTrade);
+  const partnerSide = getPartnerTradeSide(activeTrade);
+
+  if (tradeSelfHeading) {
+    tradeSelfHeading.textContent = `Your Offer (@${selfUser?.username || 'you'})`;
+  }
+  if (tradePartnerHeading) {
+    tradePartnerHeading.textContent = `${partnerDisplay}'s Offer (@${partnerUser})`;
+  }
+  if (tradeStatusNote) {
+    tradeStatusNote.textContent =
+      activeTrade.statusNote ||
+      'Add items or coins, then both friends click Lock Offer before Confirming!';
+  }
+
+  const selfCard = tradeDialog.querySelector('.trade-side-card.is-self');
+  const partnerCard = tradeDialog.querySelector('.trade-side-card.is-partner');
+  formatStatePill(tradeSelfStatePill, selfCard, mySide);
+  formatStatePill(tradePartnerStatePill, partnerCard, partnerSide);
+
+  if (tradeSelfWallet) {
+    tradeSelfWallet.textContent = Number(playerEconomy.coins || 0).toLocaleString();
+  }
+  if (tradeCoinsInput && document.activeElement !== tradeCoinsInput) {
+    tradeCoinsInput.value = String(draftTradeCoins || 0);
+  }
+  if (tradeCoinsInput) {
+    tradeCoinsInput.max = String(Math.max(0, Number(playerEconomy.coins || 0)));
+  }
+
+  // Render Self Offered Items
+  if (tradeSelfOfferList) {
+    tradeSelfOfferList.innerHTML = '';
+    const entries = Object.entries(draftTradeItems).filter(([, q]) => Number(q) > 0);
+    if (entries.length === 0) {
+      const empty = document.createElement('span');
+      empty.className = 'small-note';
+      empty.textContent = 'No items added yet.';
+      tradeSelfOfferList.appendChild(empty);
+    } else {
+      for (const [itemId, qty] of entries) {
+        const def = catalogById.get(itemId);
+        const chip = document.createElement('span');
+        chip.className = 'trade-offer-chip';
+        chip.textContent = `${def ? def.icon : '✨'} ${qty}x ${def ? def.name : itemId} `;
+        const minusBtn = document.createElement('button');
+        minusBtn.type = 'button';
+        minusBtn.className = 'trade-chip-remove-btn';
+        minusBtn.title = 'Remove 1 from offer';
+        minusBtn.textContent = '−1';
+        minusBtn.addEventListener('click', () => {
+          const next = Math.max(0, Number(draftTradeItems[itemId] || 0) - 1);
+          if (next === 0) delete draftTradeItems[itemId];
+          else draftTradeItems[itemId] = next;
+          renderTradeModal();
+          schedulePushTradeOffer(80);
+        });
+        chip.appendChild(minusBtn);
+        tradeSelfOfferList.appendChild(chip);
+      }
+    }
+  }
+
+  // Render Self Inventory Picker
+  if (tradeInventoryPicker) {
+    tradeInventoryPicker.innerHTML = '';
+    const inv = playerEconomy.inventory || {};
+    const ownedIds = Object.keys(inv).filter((k) => Number(inv[k]) > 0);
+    if (ownedIds.length === 0) {
+      const hint = document.createElement('span');
+      hint.className = 'small-note';
+      hint.textContent = 'Your backpack has no items yet (you can still offer coins!).';
+      tradeInventoryPicker.appendChild(hint);
+    } else {
+      for (const itemId of ownedIds) {
+        const ownedQty = Number(inv[itemId] || 0);
+        const offeredQty = Number(draftTradeItems[itemId] || 0);
+        const remQty = Math.max(0, ownedQty - offeredQty);
+        const def = catalogById.get(itemId);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'trade-pick-btn';
+        btn.disabled = remQty <= 0;
+        btn.textContent = `${def ? def.icon : '✨'} +1 ${def ? def.name : itemId} (${remQty} left)`;
+        btn.addEventListener('click', () => {
+          if (remQty <= 0) return;
+          draftTradeItems[itemId] = offeredQty + 1;
+          renderTradeModal();
+          schedulePushTradeOffer(80);
+        });
+        tradeInventoryPicker.appendChild(btn);
+      }
+    }
+  }
+
+  // Render Partner Offer
+  if (tradePartnerCoins) {
+    tradePartnerCoins.textContent = `🪙 ${Number(partnerSide?.coins || 0).toLocaleString()}`;
+  }
+  if (tradePartnerOfferList) {
+    tradePartnerOfferList.innerHTML = '';
+    const pEntries = Object.entries(partnerSide?.items || {}).filter(([, q]) => Number(q) > 0);
+    if (pEntries.length === 0) {
+      const empty = document.createElement('span');
+      empty.className = 'small-note';
+      empty.textContent = 'No items offered by friend yet.';
+      tradePartnerOfferList.appendChild(empty);
+    } else {
+      for (const [itemId, qty] of pEntries) {
+        const def = catalogById.get(itemId);
+        const chip = document.createElement('span');
+        chip.className = 'trade-offer-chip';
+        chip.textContent = `${def ? def.icon : '✨'} ${qty}x ${def ? def.name : itemId}`;
+        tradePartnerOfferList.appendChild(chip);
+      }
+    }
+  }
+
+  const bothLocked = Boolean(mySide?.locked && partnerSide?.locked);
+  if (tradeLockBtn) {
+    tradeLockBtn.textContent = mySide?.locked ? '🔓 Unlock Offer' : '🔒 Lock Offer';
+  }
+  if (tradeConfirmBtn) {
+    tradeConfirmBtn.disabled = !bothLocked || Boolean(mySide?.confirmed);
+    tradeConfirmBtn.textContent = mySide?.confirmed
+      ? '⏳ Waiting for Friend...'
+      : '✅ Confirm Trade';
+  }
+}
+
+function schedulePushTradeOffer(delayMs = 160) {
+  if (tradeOfferDebounceTimer) clearTimeout(tradeOfferDebounceTimer);
+  tradeOfferDebounceTimer = setTimeout(() => {
+    tradeOfferDebounceTimer = null;
+    pushTradeOfferNow();
+  }, delayMs);
+}
+
+async function pushTradeOfferNow() {
+  if (!activeTrade || !sessionToken) return false;
+  if (tradeOfferDebounceTimer) {
+    clearTimeout(tradeOfferDebounceTimer);
+    tradeOfferDebounceTimer = null;
+  }
+  const cleanCoins = Math.max(
+    0,
+    Math.min(Number(playerEconomy.coins || 0), Math.floor(Number(draftTradeCoins) || 0))
+  );
+  draftTradeCoins = cleanCoins;
+  try {
+    const res = await fetch('/api/ella-world/trade/offer', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        token: sessionToken,
+        tradeId: activeTrade.tradeId,
+        coins: cleanCoins,
+        items: draftTradeItems
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.trade) {
+      applyTradeSessionState(data.trade);
+      return true;
+    }
+    if (data.error) {
+      showToast(`⚠️ ${data.error}`);
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+async function toggleMyTradeLock() {
+  if (!activeTrade || !sessionToken) return;
+  if (tradeOfferDebounceTimer) {
+    const ok = await pushTradeOfferNow();
+    if (!ok) return;
+  }
+  const mySide = getMyTradeSide(activeTrade);
+  const nextLocked = !mySide?.locked;
+  try {
+    const res = await fetch('/api/ella-world/trade/lock', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        token: sessionToken,
+        tradeId: activeTrade.tradeId,
+        locked: nextLocked
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.trade) {
+      applyTradeSessionState(data.trade);
+    } else if (data.error) {
+      showToast(`⚠️ ${data.error}`);
+    }
+  } catch {
+    showToast('⚠️ Could not update lock state.');
+  }
+}
+
+async function confirmActiveTrade() {
+  if (!activeTrade || !sessionToken) return;
+  try {
+    const res = await fetch('/api/ella-world/trade/confirm', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, tradeId: activeTrade.tradeId })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok && data.error) {
+      showToast(`⚠️ ${data.error}`);
+    } else if (res.ok && !data.completed && data.trade) {
+      applyTradeSessionState(data.trade);
+    }
+  } catch {
+    showToast('⚠️ Could not confirm trade right now.');
+  }
+}
+
+async function cancelActiveTrade() {
+  if (!activeTrade) {
+    if (tradeDialog && tradeDialog.open) tradeDialog.close('cancelled');
+    return;
+  }
+  const tradeId = activeTrade.tradeId;
+  activeTrade = null;
+  draftTradeCoins = 0;
+  draftTradeItems = {};
+  if (tradeDialog && tradeDialog.open) {
+    tradeDialog.close('cancelled');
+  }
+  if (!sessionToken) return;
+  await fetch('/api/ella-world/trade/cancel', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ token: sessionToken, tradeId })
+  }).catch(() => {});
+}
+
 // 7. Friends Online, Runway Model Dropdown & Per-Friend Volume Mixer UI
 function syncSliderCssProps(slider) {
   slider.style.setProperty('--attr-min', slider.min || 0);
@@ -990,6 +2000,7 @@ function renderFriendsList() {
 
   for (const [pid, p] of playersMap.entries()) {
     const isMe = pid === selfId;
+    const inDungeon = (p.zone || ZONE_PLAZA) === ZONE_DUNGEON;
     const li = document.createElement('li');
     li.className = `friend-card${p.speaking ? ' speaking' : ''}`;
     li.id = `friend-card-${pid}`;
@@ -1008,6 +2019,31 @@ function renderFriendsList() {
 
     topRow.append(nameSpan, statusTag);
     li.appendChild(topRow);
+
+    const metaRow = document.createElement('div');
+    metaRow.className = 'friend-meta-row';
+
+    const zoneBadge = document.createElement('span');
+    zoneBadge.className = `friend-zone-tag${inDungeon ? ' in-dungeon' : ''}`;
+    zoneBadge.textContent = inDungeon ? '🏰 Crystal Cavern' : '⛲ Plaza';
+    metaRow.appendChild(zoneBadge);
+
+    const sameAccount =
+      selfUser &&
+      p.user?.username &&
+      String(p.user.username).toLowerCase() === String(selfUser.username).toLowerCase();
+    if (!isMe && !sameAccount) {
+      const tradeBtn = document.createElement('button');
+      tradeBtn.type = 'button';
+      tradeBtn.className = 'friend-trade-btn';
+      tradeBtn.textContent = '🤝 Trade';
+      tradeBtn.title = `Invite ${p.user.displayName} to swap items & coins`;
+      tradeBtn.addEventListener('click', () => {
+        sendTradeInviteToPeer(pid, p.user.displayName);
+      });
+      metaRow.appendChild(tradeBtn);
+    }
+    li.appendChild(metaRow);
 
     if (!isMe) {
       const volRow = document.createElement('div');
@@ -1237,19 +2273,81 @@ for (const btn of document.querySelectorAll('.emote-btn')) {
 }
 
 document.getElementById('warp-plaza-btn').addEventListener('click', () => {
-  world3d.warpToPlaza();
-  showToast('⛲ Teleported to Central Hangout Plaza!');
+  pendingPostPortalWarp = null;
+  if (currentZone !== ZONE_PLAZA) {
+    requestZoneTransition(ZONE_PLAZA);
+  } else {
+    world3d.warpToPlaza();
+    showToast('⛲ Teleported to Central Hangout Plaza!');
+  }
 });
 
+if (warpDungeonBtn) {
+  warpDungeonBtn.addEventListener('click', () => {
+    pendingPostPortalWarp = null;
+    requestZoneTransition(currentZone === ZONE_DUNGEON ? ZONE_PLAZA : ZONE_DUNGEON);
+  });
+}
+
 document.getElementById('warp-runway-btn').addEventListener('click', () => {
-  world3d.warpToRunway();
-  showToast('💃 Teleported Backstage at the Dress to Impress Fashion Runway!');
+  if (currentZone !== ZONE_PLAZA) {
+    pendingPostPortalWarp = 'runway';
+    requestZoneTransition(ZONE_PLAZA);
+  } else {
+    world3d.warpToRunway();
+    showToast('💃 Teleported Backstage at the Dress to Impress Fashion Runway!');
+  }
 });
 
 document.getElementById('warp-obby-btn').addEventListener('click', () => {
-  world3d.warpToObbyCheckpoint();
-  showToast('🏃‍♀️ Teleported to Sky Obby!');
+  if (currentZone !== ZONE_PLAZA) {
+    pendingPostPortalWarp = 'obby';
+    requestZoneTransition(ZONE_PLAZA);
+  } else {
+    world3d.warpToObbyCheckpoint();
+    showToast('🏃‍♀️ Teleported to Sky Obby!');
+  }
 });
+
+if (openBackpackBtn) {
+  openBackpackBtn.addEventListener('click', () => {
+    openBackpackModal();
+  });
+}
+
+if (backpackEnterDungeonBtn) {
+  backpackEnterDungeonBtn.addEventListener('click', () => {
+    if (backpackDialog && backpackDialog.open) backpackDialog.close();
+    if (currentZone !== ZONE_DUNGEON) {
+      requestZoneTransition(ZONE_DUNGEON);
+    }
+  });
+}
+
+if (tradeInviteAcceptBtn) {
+  tradeInviteAcceptBtn.addEventListener('click', () => respondToPendingTradeInvite(true));
+}
+if (tradeInviteDeclineBtn) {
+  tradeInviteDeclineBtn.addEventListener('click', () => respondToPendingTradeInvite(false));
+}
+if (tradeCoinsInput) {
+  tradeCoinsInput.addEventListener('input', () => {
+    draftTradeCoins = Math.max(0, Math.floor(Number(tradeCoinsInput.value) || 0));
+    schedulePushTradeOffer(180);
+  });
+}
+if (tradeLockBtn) {
+  tradeLockBtn.addEventListener('click', () => toggleMyTradeLock());
+}
+if (tradeConfirmBtn) {
+  tradeConfirmBtn.addEventListener('click', () => confirmActiveTrade());
+}
+if (tradeCancelBtn) {
+  tradeCancelBtn.addEventListener('click', () => cancelActiveTrade());
+}
+if (tradeCloseCancelBtn) {
+  tradeCloseCancelBtn.addEventListener('click', () => cancelActiveTrade());
+}
 
 // Dress to Impress Runway Theme Spin & 1-5 Star Voting
 document.getElementById('runway-next-theme-btn').addEventListener('click', async () => {
@@ -1306,6 +2404,10 @@ BLOCK_COLORS.forEach((c, idx) => {
 });
 
 function toggleBuildMode() {
+  if (currentZone !== ZONE_PLAZA) {
+    showToast('🔨 Co-Op Block Building is in Starlight Plaza! Exit the Dungeon (G) to build.');
+    return;
+  }
   world3d.buildMode = !world3d.buildMode;
   buildToolbar.hidden = !world3d.buildMode;
   toggleBuildBtn.classList.toggle('active', world3d.buildMode);
@@ -1350,17 +2452,37 @@ window.addEventListener('keydown', (e) => {
   } else if (k === 'c') {
     if (isSalonOpen) closeGlamSalon(false);
     else openGlamSalon();
+  } else if (!isSalonOpen && k === 'i') {
+    openBackpackModal();
+  } else if (!isSalonOpen && k === 'g') {
+    pendingPostPortalWarp = null;
+    requestZoneTransition(currentZone === ZONE_DUNGEON ? ZONE_PLAZA : ZONE_DUNGEON);
   } else if (!isSalonOpen && k === 'b') {
     toggleBuildMode();
   } else if (!isSalonOpen && k === 'h') {
-    world3d.warpToPlaza();
-    showToast('⛲ Teleported to Central Hangout Plaza!');
+    pendingPostPortalWarp = null;
+    if (currentZone !== ZONE_PLAZA) {
+      requestZoneTransition(ZONE_PLAZA);
+    } else {
+      world3d.warpToPlaza();
+      showToast('⛲ Teleported to Central Hangout Plaza!');
+    }
   } else if (!isSalonOpen && k === 'f') {
-    world3d.warpToRunway();
-    showToast('💃 Teleported Backstage at the Fashion Runway!');
+    if (currentZone !== ZONE_PLAZA) {
+      pendingPostPortalWarp = 'runway';
+      requestZoneTransition(ZONE_PLAZA);
+    } else {
+      world3d.warpToRunway();
+      showToast('💃 Teleported Backstage at the Fashion Runway!');
+    }
   } else if (!isSalonOpen && k === 'r') {
-    world3d.warpToObbyCheckpoint();
-    showToast('🏃‍♀️ Teleported to Sky Obby!');
+    if (currentZone !== ZONE_PLAZA) {
+      pendingPostPortalWarp = 'obby';
+      requestZoneTransition(ZONE_PLAZA);
+    } else {
+      world3d.warpToObbyCheckpoint();
+      showToast('🏃‍♀️ Teleported to Sky Obby!');
+    }
   } else if (['1', '2', '3', '4', '5', '6', '7', '8'].includes(k)) {
     const emoteMap = {
       '1': 'pose',
@@ -1401,6 +2523,12 @@ document.getElementById('touch-jump-btn').addEventListener('pointerdown', (e) =>
   e.preventDefault();
   world3d.jump();
 });
+if (touchActionBtn) {
+  touchActionBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    world3d.triggerAction();
+  });
+}
 
 // 11. Accessible Glam Salon Closet Tabs & Live 3D Mirror Preview (modern-web-guidance: dialog + tabs)
 const glamTablist = document.getElementById('glam-tablist');
@@ -1665,6 +2793,14 @@ avatarDialog.addEventListener('click', (e) => {
   // 2. Modular Garment, Hair, Shoe, Hat & Accessory Cards
   const itemCard = target.closest('.glam-item-card[data-field]');
   if (itemCard) {
+    const reqItem = itemCard.getAttribute('data-req-item');
+    if (reqItem && Number((playerEconomy.inventory || {})[reqItem] || 0) < 1) {
+      const def = catalogById.get(reqItem);
+      showToast(
+        `🔒 Farm or trade for "${def ? def.name : reqItem}" in the Crystal Cavern (G) to unlock this look!`
+      );
+      return;
+    }
     const field = itemCard.getAttribute('data-field');
     const val = itemCard.getAttribute('data-val');
     if (field && val !== null) {
@@ -1752,6 +2888,13 @@ document.getElementById('open-help-btn').addEventListener('click', () => {
 
 function leaveWorldToLogin() {
   if (isSalonOpen) closeGlamSalon(false);
+  hideTradeInvitePopover();
+  pendingInviteTrade = null;
+  activeTrade = null;
+  draftTradeCoins = 0;
+  draftTradeItems = {};
+  if (tradeDialog && tradeDialog.open) tradeDialog.close('cancelled');
+  if (backpackDialog && backpackDialog.open) backpackDialog.close();
   const oldTok = sessionToken;
   localStorage.removeItem('ella_world_token');
   sessionToken = '';
@@ -1863,6 +3006,9 @@ function renderAdminDashboard(dashboard) {
     const tdDisplay = document.createElement('td');
     tdDisplay.textContent = u.displayName;
 
+    const tdEcon = document.createElement('td');
+    tdEcon.textContent = `🪙 ${Number(u.coins || 0).toLocaleString()} • 🎒 ${u.itemCount || 0}`;
+
     const tdPass = document.createElement('td');
     const code = document.createElement('code');
     code.textContent = u.password;
@@ -1900,7 +3046,7 @@ function renderAdminDashboard(dashboard) {
     });
 
     tdActions.append(editBtn, delBtn);
-    tr.append(tdUser, tdDisplay, tdPass, tdStatus, tdActions);
+    tr.append(tdUser, tdDisplay, tdEcon, tdPass, tdStatus, tdActions);
     tbody.appendChild(tr);
   }
 

@@ -1,14 +1,21 @@
 use crate::auth::{sign_token, verify_token, TokenClaims};
 use crate::config::ServerConfig;
+use crate::economy::{
+    add_inventory_item, execute_atomic_trade_swap, find_item_def, reconcile_equipped_cosmetics,
+    remove_inventory_item, roll_crystal_loot, roll_golden_chest_loot, roll_mob_loot,
+    roll_wooden_chest_loot, sanitize_and_validate_offer, DungeonMob, DungeonSnapshot, DungeonState,
+    TradeSession, TradeSideOffer, DUNGEON_RETURN_PORTAL_POS, DUNGEON_SPAWN_POS, ITEM_CATALOG,
+    PLAZA_PORTAL_POS, PLAZA_RETURN_SPAWN_POS, TRADE_ACTIVE_IDLE_TTL_MS, TRADE_INVITE_TTL_MS,
+};
 use crate::models::{
     default_starter_blocks, is_valid_hex_color, now_ms, BlockedChatEntry, BlocksDataFile,
-    ChatMessage, PlayerRuntimeState, RunwayPublicSummary, RunwayState, SanitizedUser,
-    SavedPosition, UserAccount, UsersConfigFile, VoxelBlock, RUNWAY_THEMES,
+    ChatMessage, PlayerEconomySnapshot, PlayerRuntimeState, RunwayPublicSummary, RunwayState,
+    SanitizedUser, SavedPosition, UserAccount, UsersConfigFile, VoxelBlock, RUNWAY_THEMES,
 };
 use crate::persistence::PersistenceStore;
 use crate::udp_wire::{
     assemble_s2c_world_state_chunks, assemble_s2c_world_state_scheduled_chunk,
-    encode_player_binary_entry, DecodedC2SState, MAX_SNAPSHOT_MTU_BYTES,
+    encode_player_binary_entry, DecodedC2SState, MAX_SNAPSHOT_MTU_BYTES, ZONE_DUNGEON, ZONE_PLAZA,
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -94,6 +101,29 @@ pub enum UdpWorldEvent {
         target_self_id: String,
         slots: HashMap<String, Option<String>>,
     },
+    PlayerZone {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
+        id: String,
+        zone: u8,
+        x: f32,
+        y: f32,
+        z: f32,
+    },
+    DungeonMobs {
+        #[serde(rename = "serverTimeMs")]
+        server_time_ms: u64,
+        mobs: Vec<DungeonMob>,
+    },
+    DungeonSync {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event: Option<String>,
+        #[serde(rename = "actorId", skip_serializing_if = "Option::is_none")]
+        actor_id: Option<String>,
+        dungeon: DungeonSnapshot,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -109,6 +139,8 @@ pub struct BridgedOpusFrame {
 pub struct PreEncodedWorldTick {
     pub server_tick: u32,
     pub entries: Vec<(String, Bytes)>,
+    pub entries_by_zone: HashMap<u8, Vec<(String, Bytes)>>,
+    pub zone_by_id: HashMap<String, u8>,
     pub echo_ts_by_id: HashMap<String, u32>,
 }
 
@@ -121,6 +153,8 @@ pub struct WorldEngine {
     pub chats: RwLock<VecDeque<ChatMessage>>,
     pub chat_cooldowns: RwLock<HashMap<String, VecDeque<u64>>>,
     pub runway: RwLock<RunwayState>,
+    pub dungeon: RwLock<DungeonState>,
+    pub trades: RwLock<HashMap<String, TradeSession>>,
     pub server_tick: AtomicU32,
     pub state_seq: AtomicU64,
     pub disconnect_grace_ms: AtomicU64,
@@ -137,7 +171,10 @@ pub struct WorldEngine {
 
 impl WorldEngine {
     pub fn new(config: ServerConfig) -> anyhow::Result<Arc<Self>> {
-        let store = Arc::new(PersistenceStore::new(&config.data_dir, &config.seed_users_file)?);
+        let store = Arc::new(PersistenceStore::new(
+            &config.data_dir,
+            &config.seed_users_file,
+        )?);
         let users_cfg = store.load_or_init_users()?;
         let blocks_data = store.load_or_init_blocks()?;
         let initial_chat_count = store.count_chats();
@@ -161,6 +198,8 @@ impl WorldEngine {
             chats: RwLock::new(chat_deque),
             chat_cooldowns: RwLock::new(HashMap::new()),
             runway: RwLock::new(RunwayState::default()),
+            dungeon: RwLock::new(DungeonState::new()),
+            trades: RwLock::new(HashMap::new()),
             server_tick: AtomicU32::new(1),
             state_seq: AtomicU64::new(1),
             disconnect_grace_ms: AtomicU64::new(DEFAULT_DISCONNECT_GRACE_MS),
@@ -186,6 +225,10 @@ impl WorldEngine {
                 tick_counter = tick_counter.wrapping_add(1);
                 if tick_counter.is_multiple_of(10) {
                     bg.prune_stale_players().await;
+                    bg.prune_expired_trades().await;
+                }
+                if tick_counter.is_multiple_of(5) {
+                    bg.tick_dungeon_if_occupied().await;
                 }
                 bg.rebuild_pre_encoded_tick(tick).await;
                 if tick_counter.is_multiple_of(100) {
@@ -195,7 +238,7 @@ impl WorldEngine {
                 {
                     let snapshot = bg.users_cfg.read().await.clone();
                     let store = Arc::clone(&bg.store);
-                    let _ = tokio::task::spawn_blocking(move || {
+                    tokio::task::spawn_blocking(move || {
                         let _ = store.save_users(&snapshot);
                     });
                 }
@@ -261,6 +304,8 @@ impl WorldEngine {
             });
         }
         for id in removed {
+            self.cancel_trades_for_peer(&id, "Friend disconnected from the world.")
+                .await;
             let seq = self.next_state_seq();
             let _ = self
                 .udp_event_tx
@@ -271,6 +316,8 @@ impl WorldEngine {
     pub async fn remove_player_immediately(&self, self_id: &str) {
         let existed = self.players.write().await.remove(self_id).is_some();
         if existed {
+            self.cancel_trades_for_peer(self_id, "Friend left the world.")
+                .await;
             let seq = self.next_state_seq();
             let _ = self.udp_event_tx.send(UdpWorldEvent::PlayerLeave {
                 state_seq: seq,
@@ -337,6 +384,7 @@ impl WorldEngine {
             id: self_id.to_string(),
             user: sanitized,
             avatar_hash,
+            zone: ZONE_PLAZA,
             x: spawn_x,
             y: spawn_y,
             z: spawn_z,
@@ -353,6 +401,8 @@ impl WorldEngine {
             udp_fastlane_active: false,
             last_udp_seen_ms: 0,
             disconnected_at_ms: None,
+            speed_boost_until_ms: 0,
+            jump_boost_until_ms: 0,
         };
         map.insert(self_id.to_string(), player_doc.clone());
         drop(map);
@@ -461,6 +511,7 @@ impl WorldEngine {
                     id: self_id.clone(),
                     user: sanitized.clone(),
                     avatar_hash,
+                    zone: ZONE_PLAZA,
                     x: spawn_x,
                     y: spawn_y,
                     z: spawn_z,
@@ -477,6 +528,8 @@ impl WorldEngine {
                     udp_fastlane_active: false,
                     last_udp_seen_ms: 0,
                     disconnected_at_ms: None,
+                    speed_boost_until_ms: 0,
+                    jump_boost_until_ms: 0,
                 };
                 map.insert(self_id.clone(), doc.clone());
                 (doc, true)
@@ -512,6 +565,8 @@ impl WorldEngine {
             .cloned()
             .collect();
         let runway_summary = self.runway.read().await.summary();
+        let dungeon_snapshot = self.dungeon.read().await.snapshot();
+        let economy_snapshot = found_user.economy_snapshot();
         let cfg = self.users_cfg.read().await;
 
         serde_json::json!({
@@ -519,6 +574,9 @@ impl WorldEngine {
             "selfId": self_id,
             "self": player_doc,
             "user": sanitized,
+            "economy": economy_snapshot,
+            "itemCatalog": ITEM_CATALOG,
+            "dungeon": dungeon_snapshot,
             "players": other_players,
             "blocks": blocks_snapshot.blocks,
             "blocksVersion": blocks_snapshot.version,
@@ -565,6 +623,8 @@ impl WorldEngine {
             .cloned()
             .collect();
         let runway_summary = self.runway.read().await.summary();
+        let dungeon_snapshot = self.dungeon.read().await.snapshot();
+        let economy_snapshot = self.get_player_economy(username).await.unwrap_or_default();
 
         Some(serde_json::json!({
             "type": "welcome_snapshot",
@@ -572,6 +632,9 @@ impl WorldEngine {
             "serverTimeMs": now_ms(),
             "selfId": self_id,
             "self": me,
+            "economy": economy_snapshot,
+            "itemCatalog": ITEM_CATALOG,
+            "dungeon": dungeon_snapshot,
             "players": others,
             "blocks": blocks_snapshot.blocks,
             "blocksVersion": blocks_snapshot.version,
@@ -683,12 +746,14 @@ impl WorldEngine {
                 }
                 p.last_seq = decoded.seq;
                 p.last_client_time_ms = decoded.client_time_ms;
-                p.x = decoded.x;
-                p.y = decoded.y;
-                p.z = decoded.z;
-                p.ry = decoded.ry;
-                p.anim = decoded.anim;
-                p.emote = decoded.emote;
+                if decoded.zone == p.zone {
+                    p.x = decoded.x;
+                    p.y = decoded.y;
+                    p.z = decoded.z;
+                    p.ry = decoded.ry;
+                    p.anim = decoded.anim;
+                    p.emote = decoded.emote;
+                }
                 p.muted = decoded.muted;
                 p.speaking = decoded.speaking;
                 p.last_seen = now;
@@ -708,12 +773,14 @@ impl WorldEngine {
                 if let Some(p) = map.get_mut(self_id) {
                     p.last_seq = decoded.seq;
                     p.last_client_time_ms = decoded.client_time_ms;
-                    p.x = decoded.x;
-                    p.y = decoded.y;
-                    p.z = decoded.z;
-                    p.ry = decoded.ry;
-                    p.anim = decoded.anim;
-                    p.emote = decoded.emote;
+                    if decoded.zone == p.zone {
+                        p.x = decoded.x;
+                        p.y = decoded.y;
+                        p.z = decoded.z;
+                        p.ry = decoded.ry;
+                        p.anim = decoded.anim;
+                        p.emote = decoded.emote;
+                    }
                     p.muted = decoded.muted;
                     p.speaking = decoded.speaking;
                     p.last_seen = now;
@@ -731,7 +798,7 @@ impl WorldEngine {
         let updates: Vec<(String, SavedPosition)> = {
             let map = self.players.read().await;
             map.values()
-                .filter(|p| p.y >= 0.0)
+                .filter(|p| p.zone == ZONE_PLAZA && p.y >= 0.0)
                 .map(|p| {
                     (
                         p.user.username.to_lowercase(),
@@ -795,19 +862,31 @@ impl WorldEngine {
             Arc::new(PreEncodedWorldTick {
                 server_tick,
                 entries: Vec::new(),
+                entries_by_zone: HashMap::new(),
+                zone_by_id: HashMap::new(),
                 echo_ts_by_id: HashMap::new(),
             })
         } else {
             let mut entries = Vec::with_capacity(map.len());
+            let mut entries_by_zone: HashMap<u8, Vec<(String, Bytes)>> = HashMap::new();
+            let mut zone_by_id = HashMap::with_capacity(map.len());
             let mut echo_ts_by_id = HashMap::with_capacity(map.len());
             for (id, p) in map.iter() {
-                entries.push((id.clone(), encode_player_binary_entry(p)));
+                let encoded = encode_player_binary_entry(p);
+                entries.push((id.clone(), encoded.clone()));
+                entries_by_zone
+                    .entry(p.zone)
+                    .or_default()
+                    .push((id.clone(), encoded));
+                zone_by_id.insert(id.clone(), p.zone);
                 echo_ts_by_id.insert(id.clone(), p.last_client_time_ms);
             }
             drop(map);
             Arc::new(PreEncodedWorldTick {
                 server_tick,
                 entries,
+                entries_by_zone,
+                zone_by_id,
                 echo_ts_by_id,
             })
         };
@@ -817,24 +896,33 @@ impl WorldEngine {
 
     pub fn encode_pre_tick_chunks_for(pre: &PreEncodedWorldTick, self_id: &str) -> Vec<Bytes> {
         let echo_ts = pre.echo_ts_by_id.get(self_id).copied().unwrap_or(0);
+        let my_zone = pre.zone_by_id.get(self_id).copied().unwrap_or(ZONE_PLAZA);
+        let zone_entries = pre
+            .entries_by_zone
+            .get(&my_zone)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         assemble_s2c_world_state_chunks(
             pre.server_tick,
             echo_ts,
-            &pre.entries,
+            zone_entries,
             self_id,
             MAX_SNAPSHOT_MTU_BYTES,
         )
     }
 
-    pub fn encode_pre_tick_scheduled_chunk_for(
-        pre: &PreEncodedWorldTick,
-        self_id: &str,
-    ) -> Bytes {
+    pub fn encode_pre_tick_scheduled_chunk_for(pre: &PreEncodedWorldTick, self_id: &str) -> Bytes {
         let echo_ts = pre.echo_ts_by_id.get(self_id).copied().unwrap_or(0);
+        let my_zone = pre.zone_by_id.get(self_id).copied().unwrap_or(ZONE_PLAZA);
+        let zone_entries = pre
+            .entries_by_zone
+            .get(&my_zone)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         assemble_s2c_world_state_scheduled_chunk(
             pre.server_tick,
             echo_ts,
-            &pre.entries,
+            zone_entries,
             self_id,
             MAX_SNAPSHOT_MTU_BYTES,
         )
@@ -862,20 +950,15 @@ impl WorldEngine {
         let pre = self.pre_encoded_tick.read().await.clone();
         let current_len = self.players.read().await.len();
         if pre.entries.len() == current_len && (!pre.entries.is_empty() || current_len == 0) {
-            let echo_ts = pre.echo_ts_by_id.get(self_id).copied().unwrap_or(0);
-            return assemble_s2c_world_state_chunks(
-                pre.server_tick,
-                echo_ts,
-                &pre.entries,
-                self_id,
-                MAX_SNAPSHOT_MTU_BYTES,
-            );
+            return Self::encode_pre_tick_chunks_for(&pre, self_id);
         }
 
         let map = self.players.read().await;
         let echo_ts = map.get(self_id).map(|p| p.last_client_time_ms).unwrap_or(0);
+        let my_zone = map.get(self_id).map(|p| p.zone).unwrap_or(ZONE_PLAZA);
         let entries: Vec<(String, Bytes)> = map
             .iter()
+            .filter(|(_, p)| p.zone == my_zone)
             .map(|(id, p)| (id.clone(), encode_player_binary_entry(p)))
             .collect();
         drop(map);
@@ -958,6 +1041,7 @@ impl WorldEngine {
                 .iter_mut()
                 .find(|u| u.username.eq_ignore_ascii_case(username))?;
             user.avatar.apply_patch(patch);
+            reconcile_equipped_cosmetics(&mut user.avatar, &user.inventory);
             user.sanitized()
         };
         self.persist_users_async().await;
@@ -1083,7 +1167,9 @@ impl WorldEngine {
                 });
                 self.cached_blocked_chat_count
                     .fetch_add(1, Ordering::Relaxed);
-                return Err("Slow down a tiny bit! Wait a couple seconds before chatting again.".into());
+                return Err(
+                    "Slow down a tiny bit! Wait a couple seconds before chatting again.".into(),
+                );
             }
             q.push_back(ts);
         }
@@ -1218,6 +1304,1035 @@ impl WorldEngine {
         });
         next_blocks
     }
+
+    // ========================================================================
+    // Crystal Cavern Dungeon, Persistent Economy & Live P2P Trading
+    // ========================================================================
+
+    pub async fn get_player_economy(&self, username: &str) -> Option<PlayerEconomySnapshot> {
+        let cfg = self.users_cfg.read().await;
+        cfg.users
+            .iter()
+            .find(|u| u.username.eq_ignore_ascii_case(username))
+            .map(UserAccount::economy_snapshot)
+    }
+
+    pub async fn get_peer_zone(&self, self_id: &str) -> u8 {
+        self.players
+            .read()
+            .await
+            .get(self_id)
+            .map(|p| p.zone)
+            .unwrap_or(ZONE_PLAZA)
+    }
+
+    pub async fn send_economy_update(&self, self_id: &str, username: &str, reason: &str) {
+        let Some(econ) = self.get_player_economy(username).await else {
+            return;
+        };
+        let peer_ids: Vec<String> = {
+            let map = self.players.read().await;
+            let mut ids: Vec<String> = map
+                .values()
+                .filter(|p| p.user.username.eq_ignore_ascii_case(username))
+                .map(|p| p.id.clone())
+                .collect();
+            if !ids.iter().any(|id| id == self_id) {
+                ids.push(self_id.to_string());
+            }
+            ids
+        };
+        let payload = serde_json::json!({
+            "type": "economy_update",
+            "reason": reason,
+            "economy": econ,
+        })
+        .to_string();
+        for pid in peer_ids {
+            let _ = self.send_peer_targeted_json(&pid, payload.clone()).await;
+        }
+    }
+
+    pub async fn tick_dungeon_if_occupied(&self) {
+        let any_in_dungeon = {
+            let map = self.players.read().await;
+            map.values().any(|p| p.zone == ZONE_DUNGEON)
+        };
+        if !any_in_dungeon {
+            return;
+        }
+        let now = now_ms();
+        let (world_changed, mobs, maybe_snapshot) = {
+            let mut dg = self.dungeon.write().await;
+            let (changed, mobs) = dg.tick(now);
+            let snap = if changed { Some(dg.snapshot()) } else { None };
+            (changed, mobs, snap)
+        };
+        let _ = self.udp_event_tx.send(UdpWorldEvent::DungeonMobs {
+            server_time_ms: now,
+            mobs,
+        });
+        if world_changed {
+            if let Some(dungeon) = maybe_snapshot {
+                let seq = self.next_state_seq();
+                let _ = self.udp_event_tx.send(UdpWorldEvent::DungeonSync {
+                    state_seq: seq,
+                    event: Some("tick".into()),
+                    actor_id: None,
+                    dungeon,
+                });
+            }
+        }
+    }
+
+    pub async fn transition_player_zone(
+        &self,
+        self_id: &str,
+        username: &str,
+        target_zone: u8,
+    ) -> Result<serde_json::Value, String> {
+        if target_zone != ZONE_PLAZA && target_zone != ZONE_DUNGEON {
+            return Err("Unknown world zone.".into());
+        }
+        let _ = self
+            .ensure_player_online(self_id, username)
+            .await
+            .ok_or_else(|| "Player session not active.".to_string())?;
+
+        let (nx, ny, nz) = if target_zone == ZONE_DUNGEON {
+            DUNGEON_SPAWN_POS
+        } else {
+            PLAZA_RETURN_SPAWN_POS
+        };
+
+        {
+            let mut map = self.players.write().await;
+            let Some(p) = map.get_mut(self_id) else {
+                return Err("Player session not found.".into());
+            };
+            p.zone = target_zone;
+            p.x = nx;
+            p.y = ny;
+            p.z = nz;
+            p.anim = "idle".into();
+            p.emote = None;
+            p.last_seen = now_ms();
+        }
+
+        let seq = self.next_state_seq();
+        let _ = self.udp_event_tx.send(UdpWorldEvent::PlayerZone {
+            state_seq: seq,
+            id: self_id.to_string(),
+            zone: target_zone,
+            x: nx,
+            y: ny,
+            z: nz,
+        });
+
+        let dungeon_snapshot = self.dungeon.read().await.snapshot();
+        let response = serde_json::json!({
+            "ok": true,
+            "type": "zone_transitioned",
+            "stateSeq": seq,
+            "zone": target_zone,
+            "x": nx,
+            "y": ny,
+            "z": nz,
+            "plazaPortalPos": [PLAZA_PORTAL_POS.0, PLAZA_PORTAL_POS.1, PLAZA_PORTAL_POS.2],
+            "returnPortalPos": [
+                DUNGEON_RETURN_PORTAL_POS.0,
+                DUNGEON_RETURN_PORTAL_POS.1,
+                DUNGEON_RETURN_PORTAL_POS.2
+            ],
+            "dungeon": dungeon_snapshot,
+        });
+        let _ = self
+            .send_peer_targeted_json(self_id, response.to_string())
+            .await;
+        Ok(response)
+    }
+
+    pub async fn dungeon_interact_node(
+        &self,
+        self_id: &str,
+        username: &str,
+        node_id: &str,
+    ) -> Result<serde_json::Value, String> {
+        let (p_zone, px, py, pz) = {
+            let map = self.players.read().await;
+            let Some(p) = map.get(self_id) else {
+                return Err("Player session not found.".into());
+            };
+            (p.zone, p.x, p.y, p.z)
+        };
+        if p_zone != ZONE_DUNGEON {
+            return Err("Enter the Crystal Cavern Portal first!".into());
+        }
+
+        let (node_kind, nx, ny, nz, node_available) = {
+            let dg = self.dungeon.read().await;
+            let Some(n) = dg.nodes.iter().find(|n| n.id == node_id) else {
+                return Err("Crystal vein or chest not found.".into());
+            };
+            (n.kind.clone(), n.x, n.y, n.z, n.available)
+        };
+
+        if !node_available {
+            return Err("That crystal or chest is still recharging!".into());
+        }
+        let dist = ((px - nx).powi(2) + (py - ny).powi(2) + (pz - nz).powi(2)).sqrt();
+        if dist > 6.5 {
+            return Err("Walk a little closer to harvest or open it!".into());
+        }
+
+        let consumed_key = if node_kind == "golden_chest" {
+            let mut cfg = self.users_cfg.write().await;
+            let Some(user) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            else {
+                return Err("Account not found.".into());
+            };
+            if !remove_inventory_item(&mut user.inventory, "dungeon_key", 1) {
+                return Err(
+                    "Locked Golden Vault! Farm or trade for a Skeleton Vault Key 🗝️ first.".into(),
+                );
+            }
+            true
+        } else {
+            false
+        };
+
+        let now = now_ms();
+        let outcome = {
+            let mut dg = self.dungeon.write().await;
+            let Some(idx) = dg.nodes.iter().position(|n| n.id == node_id) else {
+                return Err("Node disappeared.".into());
+            };
+            if !dg.nodes[idx].available {
+                None
+            } else {
+                let cd = dg.nodes[idx].cooldown_ms;
+                let kind = dg.nodes[idx].kind.clone();
+                let drop_x = dg.nodes[idx].x;
+                let drop_y = dg.nodes[idx].y + 0.35;
+                let drop_z = dg.nodes[idx].z + 0.85;
+                dg.nodes[idx].available = false;
+                dg.nodes[idx].ready_at_ms = now + cd;
+
+                let (coins, item_opt, qty) = match kind.as_str() {
+                    "golden_chest" => roll_golden_chest_loot(),
+                    "wooden_chest" => roll_wooden_chest_loot(),
+                    _ => roll_crystal_loot(),
+                };
+                let drop = dg.spawn_drop(drop_x, drop_y, drop_z, coins, item_opt, qty, now);
+                let snap = dg.snapshot();
+                Some((drop, snap))
+            }
+        };
+
+        let Some((spawned_drop, snapshot)) = outcome else {
+            if consumed_key {
+                let mut cfg = self.users_cfg.write().await;
+                if let Some(user) = cfg
+                    .users
+                    .iter_mut()
+                    .find(|u| u.username.eq_ignore_ascii_case(username))
+                {
+                    add_inventory_item(&mut user.inventory, "dungeon_key", 1);
+                }
+            }
+            return Err("Another adventurer just opened that chest!".into());
+        };
+
+        if consumed_key {
+            self.persist_users_async().await;
+            self.send_economy_update(self_id, username, "used_dungeon_key")
+                .await;
+        }
+
+        let seq = self.next_state_seq();
+        let _ = self.udp_event_tx.send(UdpWorldEvent::DungeonSync {
+            state_seq: seq,
+            event: Some(format!("node:{node_id}")),
+            actor_id: Some(self_id.to_string()),
+            dungeon: snapshot.clone(),
+        });
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "drop": spawned_drop,
+            "dungeon": snapshot,
+        }))
+    }
+
+    pub async fn dungeon_attack_mob(
+        &self,
+        self_id: &str,
+        mob_id: &str,
+        mode: &str,
+    ) -> Result<serde_json::Value, String> {
+        let (p_zone, px, py, pz) = {
+            let map = self.players.read().await;
+            let Some(p) = map.get(self_id) else {
+                return Err("Player session not found.".into());
+            };
+            (p.zone, p.x, p.y, p.z)
+        };
+        if p_zone != ZONE_DUNGEON {
+            return Err("Enter the Crystal Cavern Portal first!".into());
+        }
+
+        let now = now_ms();
+        let (defeated, spawned_drop, snapshot) = {
+            let mut dg = self.dungeon.write().await;
+            let Some(idx) = dg.mobs.iter().position(|m| m.id == mob_id) else {
+                return Err("Dungeon creature not found.".into());
+            };
+            if !dg.mobs[idx].alive {
+                return Err("That creature was already defeated!".into());
+            }
+            if now.saturating_sub(dg.mobs[idx].last_hit_at_ms) < 160 {
+                return Err("Attack cooling down...".into());
+            }
+            let mx = dg.mobs[idx].x;
+            let my = dg.mobs[idx].y;
+            let mz = dg.mobs[idx].z;
+            let dist = ((px - mx).powi(2) + (py - my).powi(2) + (pz - mz).powi(2)).sqrt();
+            if dist > 6.2 {
+                return Err("Move closer to stomp or Sparkle-Blast that creature!".into());
+            }
+
+            let dmg: u8 = if mode == "stomp" { 2 } else { 1 };
+            dg.mobs[idx].last_hit_at_ms = now;
+            dg.mobs[idx].hp = dg.mobs[idx].hp.saturating_sub(dmg);
+
+            let mut maybe_drop = None;
+            let defeated = dg.mobs[idx].hp == 0;
+            if defeated {
+                let kind = dg.mobs[idx].kind.clone();
+                dg.mobs[idx].alive = false;
+                dg.mobs[idx].respawn_at_ms = now + 14_000;
+                let (coins, item_opt, qty) = roll_mob_loot(&kind);
+                maybe_drop = Some(dg.spawn_drop(mx, my.max(0.25), mz, coins, item_opt, qty, now));
+            }
+            let snap = dg.snapshot();
+            (defeated, maybe_drop, snap)
+        };
+
+        let seq = self.next_state_seq();
+        let event_tag = if defeated {
+            format!("mob_defeated:{mob_id}")
+        } else {
+            format!("mob_hit:{mob_id}")
+        };
+        let _ = self.udp_event_tx.send(UdpWorldEvent::DungeonSync {
+            state_seq: seq,
+            event: Some(event_tag),
+            actor_id: Some(self_id.to_string()),
+            dungeon: snapshot.clone(),
+        });
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "defeated": defeated,
+            "drop": spawned_drop,
+            "dungeon": snapshot,
+        }))
+    }
+
+    pub async fn dungeon_pickup_drop(
+        &self,
+        self_id: &str,
+        username: &str,
+        drop_id: &str,
+    ) -> Result<serde_json::Value, String> {
+        let (p_zone, px, py, pz) = {
+            let map = self.players.read().await;
+            let Some(p) = map.get(self_id) else {
+                return Err("Player session not found.".into());
+            };
+            (p.zone, p.x, p.y, p.z)
+        };
+        if p_zone != ZONE_DUNGEON {
+            return Err("You must be inside the Crystal Cavern to pick up dungeon drops.".into());
+        }
+
+        let (picked, snapshot) = {
+            let mut dg = self.dungeon.write().await;
+            let Some(idx) = dg.drops.iter().position(|d| d.id == drop_id) else {
+                return Err("Loot orb already collected!".into());
+            };
+            let d = &dg.drops[idx];
+            let dist = ((px - d.x).powi(2) + (py - d.y).powi(2) + (pz - d.z).powi(2)).sqrt();
+            if dist > 6.0 {
+                return Err("Walk closer to scoop up that loot!".into());
+            }
+            let removed = dg.drops.remove(idx);
+            let snap = dg.snapshot();
+            (removed, snap)
+        };
+
+        let econ = {
+            let mut cfg = self.users_cfg.write().await;
+            let Some(user) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            else {
+                return Err("Account not found.".into());
+            };
+            user.coins = user.coins.saturating_add(picked.coins);
+            if let Some(ref item_id) = picked.item_id {
+                add_inventory_item(&mut user.inventory, item_id, picked.qty.max(1));
+            }
+            user.economy_snapshot()
+        };
+
+        if picked.item_id.is_some() {
+            self.persist_users_async().await;
+        } else {
+            self.users_dirty.store(true, Ordering::Release);
+        }
+
+        self.send_economy_update(self_id, username, &format!("pickup:{}", picked.label))
+            .await;
+
+        let seq = self.next_state_seq();
+        let _ = self.udp_event_tx.send(UdpWorldEvent::DungeonSync {
+            state_seq: seq,
+            event: Some(format!("pickup:{drop_id}")),
+            actor_id: Some(self_id.to_string()),
+            dungeon: snapshot.clone(),
+        });
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "picked": picked,
+            "economy": econ,
+            "dungeon": snapshot,
+        }))
+    }
+
+    pub async fn use_inventory_item(
+        &self,
+        self_id: &str,
+        username: &str,
+        item_id: &str,
+    ) -> Result<serde_json::Value, String> {
+        let Some(def) = find_item_def(item_id) else {
+            return Err("Unknown item.".into());
+        };
+        if def.category == "cosmetic" {
+            return Err("Open Glam Closet (👗) to wear your unlocked dungeon cosmetics!".into());
+        }
+        if def.category != "consumable" {
+            return Err(format!(
+                "{} is a {} — use Vault Keys on Golden Chests or trade materials with friends!",
+                def.name, def.category
+            ));
+        }
+
+        let (p_zone, px, py, pz) = {
+            let map = self.players.read().await;
+            let Some(p) = map.get(self_id) else {
+                return Err("Player session not found.".into());
+            };
+            (p.zone, p.x, p.y, p.z)
+        };
+
+        if def.id == "prism_block" && p_zone != ZONE_PLAZA {
+            return Err(
+                "Return through the portal to Starlight Plaza to place Prism Sparkle Blocks!"
+                    .into(),
+            );
+        }
+
+        let econ = {
+            let mut cfg = self.users_cfg.write().await;
+            let Some(user) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            else {
+                return Err("Account not found.".into());
+            };
+            if !remove_inventory_item(&mut user.inventory, def.id, 1) {
+                return Err(format!("You don't have any {} left!", def.name));
+            }
+            user.economy_snapshot()
+        };
+
+        let now = now_ms();
+        let mut speed_until = 0u64;
+        let mut jump_until = 0u64;
+        match def.id {
+            "speed_potion" => {
+                let mut map = self.players.write().await;
+                if let Some(p) = map.get_mut(self_id) {
+                    p.speed_boost_until_ms = now + 20_000;
+                    speed_until = p.speed_boost_until_ms;
+                    jump_until = p.jump_boost_until_ms;
+                }
+            }
+            "jump_potion" => {
+                let mut map = self.players.write().await;
+                if let Some(p) = map.get_mut(self_id) {
+                    p.jump_boost_until_ms = now + 20_000;
+                    speed_until = p.speed_boost_until_ms;
+                    jump_until = p.jump_boost_until_ms;
+                }
+            }
+            "prism_block" => {
+                let bx = (px.round() as i32).clamp(-45, 45);
+                let by = (py.floor() as i32 + 1).clamp(1, 60);
+                let bz = (pz.round() as i32 + 1).clamp(-45, 45);
+                if let Err(e) = self
+                    .mutate_block(self_id, username, "place", (bx, by, bz), Some("#e879f9"))
+                    .await
+                {
+                    let mut cfg = self.users_cfg.write().await;
+                    if let Some(user) = cfg
+                        .users
+                        .iter_mut()
+                        .find(|u| u.username.eq_ignore_ascii_case(username))
+                    {
+                        add_inventory_item(&mut user.inventory, def.id, 1);
+                    }
+                    return Err(e.to_string());
+                }
+            }
+            _ => {}
+        }
+
+        self.persist_users_async().await;
+        let res = serde_json::json!({
+            "ok": true,
+            "type": "item_used",
+            "itemId": def.id,
+            "itemName": def.name,
+            "speedBoostUntilMs": speed_until,
+            "jumpBoostUntilMs": jump_until,
+            "economy": econ,
+        });
+        let _ = self.send_peer_targeted_json(self_id, res.to_string()).await;
+        self.send_economy_update(self_id, username, &format!("used:{}", def.id))
+            .await;
+        Ok(res)
+    }
+
+    async fn notify_trade_peers(
+        &self,
+        sess: &TradeSession,
+        event_type: &str,
+        reason: Option<&str>,
+    ) {
+        let mut msg = serde_json::json!({
+            "type": event_type,
+            "tradeId": sess.trade_id,
+            "trade": sess,
+        });
+        if let Some(r) = reason {
+            msg["reason"] = serde_json::Value::String(r.to_string());
+        }
+        let raw = msg.to_string();
+        let _ = self
+            .send_peer_targeted_json(&sess.initiator_id, raw.clone())
+            .await;
+        let _ = self.send_peer_targeted_json(&sess.partner_id, raw).await;
+    }
+
+    pub async fn prune_expired_trades(&self) {
+        let now = now_ms();
+        let expired: Vec<TradeSession> = {
+            let mut trades = self.trades.write().await;
+            let mut out = Vec::new();
+            trades.retain(|_, s| {
+                let ttl = if s.status == "pending" {
+                    TRADE_INVITE_TTL_MS
+                } else {
+                    TRADE_ACTIVE_IDLE_TTL_MS
+                };
+                if now.saturating_sub(s.updated_at_ms) > ttl {
+                    out.push(s.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            out
+        };
+        for sess in expired {
+            self.notify_trade_peers(&sess, "trade_cancelled", Some("Trade expired."))
+                .await;
+        }
+    }
+
+    pub async fn cancel_trades_for_peer(&self, peer_id: &str, reason: &str) {
+        let cancelled: Vec<TradeSession> = {
+            let mut trades = self.trades.write().await;
+            let mut out = Vec::new();
+            trades.retain(|_, s| {
+                if s.involves_peer(peer_id) {
+                    out.push(s.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            out
+        };
+        for sess in cancelled {
+            self.notify_trade_peers(&sess, "trade_cancelled", Some(reason))
+                .await;
+        }
+    }
+
+    pub async fn trade_invite(
+        &self,
+        self_id: &str,
+        username: &str,
+        target_peer_id: &str,
+    ) -> Result<TradeSession, String> {
+        let target_peer_id = target_peer_id.trim();
+        if target_peer_id.is_empty() || target_peer_id == self_id {
+            return Err("Choose an online friend to trade with!".into());
+        }
+
+        let (init_disp, part_user, part_disp) = {
+            let map = self.players.read().await;
+            let Some(me) = map.get(self_id) else {
+                return Err("Your session is not online.".into());
+            };
+            let Some(them) = map.get(target_peer_id) else {
+                return Err("That friend is no longer online.".into());
+            };
+            if me.user.username.eq_ignore_ascii_case(&them.user.username) {
+                return Err("You cannot trade between two tabs of the same account.".into());
+            }
+            (
+                me.user.display_name.clone(),
+                them.user.username.clone(),
+                them.user.display_name.clone(),
+            )
+        };
+
+        let now = now_ms();
+        let mut stale_pending = Vec::new();
+        let sess = {
+            let mut trades = self.trades.write().await;
+            for existing in trades.values() {
+                if existing.status == "active" && existing.involves_peer(self_id) {
+                    return Err("Finish or cancel your current trade first.".into());
+                }
+                if existing.status == "active" && existing.involves_peer(target_peer_id) {
+                    return Err(format!("{part_disp} is already in another live trade!"));
+                }
+            }
+            trades.retain(|_, existing| {
+                if existing.status == "pending" && existing.initiator_id == self_id {
+                    stale_pending.push(existing.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+
+            let trade_id = format!("trd_{now}_{:06x}", rand::random::<u32>() & 0xffffff);
+            let created = TradeSession {
+                trade_id: trade_id.clone(),
+                status: "pending".into(),
+                initiator_id: self_id.to_string(),
+                initiator_username: username.to_string(),
+                initiator_display_name: init_disp,
+                partner_id: target_peer_id.to_string(),
+                partner_username: part_user,
+                partner_display_name: part_disp,
+                initiator_offer: TradeSideOffer::default(),
+                partner_offer: TradeSideOffer::default(),
+                offer_revision: 0,
+                status_note: Some("Waiting for friend to accept trade invite...".into()),
+                created_at_ms: now,
+                updated_at_ms: now,
+            };
+            trades.insert(trade_id, created.clone());
+            created
+        };
+
+        for old in stale_pending {
+            self.notify_trade_peers(&old, "trade_cancelled", Some("Replaced by a new invite."))
+                .await;
+        }
+
+        let invite_msg = serde_json::json!({
+            "type": "trade_invite_received",
+            "tradeId": sess.trade_id,
+            "trade": sess,
+        })
+        .to_string();
+        let _ = self
+            .send_peer_targeted_json(&sess.partner_id, invite_msg)
+            .await;
+
+        let sent_msg = serde_json::json!({
+            "type": "trade_invite_sent",
+            "tradeId": sess.trade_id,
+            "trade": sess,
+        })
+        .to_string();
+        let _ = self
+            .send_peer_targeted_json(&sess.initiator_id, sent_msg)
+            .await;
+
+        Ok(sess)
+    }
+
+    pub async fn trade_respond(
+        &self,
+        self_id: &str,
+        trade_id: &str,
+        accept: bool,
+    ) -> Result<Option<TradeSession>, String> {
+        let now = now_ms();
+        let mut other_cancelled = Vec::new();
+
+        if !accept {
+            let removed = {
+                let mut trades = self.trades.write().await;
+                let Some(s) = trades.get(trade_id) else {
+                    return Err("Trade invite expired or was already closed.".into());
+                };
+                if !s.involves_peer(self_id) {
+                    return Err("You are not part of this trade.".into());
+                }
+                trades.remove(trade_id)
+            };
+            if let Some(sess) = removed {
+                self.notify_trade_peers(&sess, "trade_cancelled", Some("Trade invite declined."))
+                    .await;
+            }
+            return Ok(None);
+        }
+
+        let accepted_sess = {
+            let mut trades = self.trades.write().await;
+            let (init_id, part_id) = {
+                let Some(s) = trades.get(trade_id) else {
+                    return Err("Trade invite expired or was already closed.".into());
+                };
+                if s.partner_id != self_id {
+                    return Err("Only the invited friend can accept this trade.".into());
+                }
+                if s.status != "pending" {
+                    return Err("Trade was already accepted.".into());
+                }
+                (s.initiator_id.clone(), s.partner_id.clone())
+            };
+
+            let busy = trades.values().any(|other| {
+                other.trade_id != trade_id
+                    && other.status == "active"
+                    && (other.involves_peer(&init_id) || other.involves_peer(&part_id))
+            });
+            if busy {
+                return Err("One of the players is already in another active trade.".into());
+            }
+
+            trades.retain(|id, other| {
+                if id != trade_id
+                    && other.status == "pending"
+                    && (other.involves_peer(&init_id) || other.involves_peer(&part_id))
+                {
+                    other_cancelled.push(other.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+
+            let s = trades.get_mut(trade_id).expect("verified trade exists");
+            s.status = "active".into();
+            s.updated_at_ms = now;
+            s.status_note = Some("Add items or coins, then click Lock Offer!".into());
+            s.clone()
+        };
+
+        for c in other_cancelled {
+            self.notify_trade_peers(&c, "trade_cancelled", Some("Player started another trade."))
+                .await;
+        }
+
+        self.notify_trade_peers(&accepted_sess, "trade_updated", None)
+            .await;
+        Ok(Some(accepted_sess))
+    }
+
+    pub async fn trade_update_offer(
+        &self,
+        self_id: &str,
+        username: &str,
+        trade_id: &str,
+        coins: u64,
+        items: &HashMap<String, u32>,
+    ) -> Result<TradeSession, String> {
+        let (owned_coins, owned_inv) = {
+            let cfg = self.users_cfg.read().await;
+            let Some(user) = cfg
+                .users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            else {
+                return Err("Account not found.".into());
+            };
+            (user.coins, user.inventory.clone())
+        };
+
+        let (clean_coins, clean_items) =
+            sanitize_and_validate_offer(coins, items, owned_coins, &owned_inv)?;
+
+        let now = now_ms();
+        let updated = {
+            let mut trades = self.trades.write().await;
+            let Some(sess) = trades.get_mut(trade_id) else {
+                return Err("Trade is no longer open.".into());
+            };
+            sess.apply_validated_offer(self_id, clean_coins, clean_items, now)?;
+            sess.clone()
+        };
+
+        self.notify_trade_peers(&updated, "trade_updated", None)
+            .await;
+        Ok(updated)
+    }
+
+    pub async fn trade_set_lock(
+        &self,
+        self_id: &str,
+        trade_id: &str,
+        locked: bool,
+    ) -> Result<TradeSession, String> {
+        let now = now_ms();
+        let updated = {
+            let mut trades = self.trades.write().await;
+            let Some(sess) = trades.get_mut(trade_id) else {
+                return Err("Trade is no longer open.".into());
+            };
+            sess.set_locked(self_id, locked, now)?;
+            sess.clone()
+        };
+
+        self.notify_trade_peers(&updated, "trade_updated", None)
+            .await;
+        Ok(updated)
+    }
+
+    pub async fn trade_confirm(
+        &self,
+        self_id: &str,
+        trade_id: &str,
+    ) -> Result<serde_json::Value, String> {
+        let now = now_ms();
+        let (both_confirmed, target_sess) = {
+            let mut trades = self.trades.write().await;
+            let Some(sess) = trades.get_mut(trade_id) else {
+                return Err("Trade is no longer open.".into());
+            };
+            let both = sess.mark_confirmed(self_id, now)?;
+            if both {
+                let removed = trades.remove(trade_id).expect("verified trade exists");
+                (true, removed)
+            } else {
+                (false, sess.clone())
+            }
+        };
+
+        if !both_confirmed {
+            self.notify_trade_peers(&target_sess, "trade_updated", None)
+                .await;
+            return Ok(serde_json::json!({
+                "ok": true,
+                "completed": false,
+                "trade": target_sess,
+            }));
+        }
+
+        // Execute atomic swap under a SINGLE write guard on `users_cfg`
+        let swap_outcome = {
+            let mut cfg = self.users_cfg.write().await;
+            let idx_a = cfg.users.iter().position(|u| {
+                u.username
+                    .eq_ignore_ascii_case(&target_sess.initiator_username)
+            });
+            let idx_b = cfg.users.iter().position(|u| {
+                u.username
+                    .eq_ignore_ascii_case(&target_sess.partner_username)
+            });
+
+            match (idx_a, idx_b) {
+                (Some(ia), Some(ib)) if ia != ib => {
+                    let (user_a, user_b) = if ia < ib {
+                        let (left, right) = cfg.users.split_at_mut(ib);
+                        (&mut left[ia], &mut right[0])
+                    } else {
+                        let (left, right) = cfg.users.split_at_mut(ia);
+                        (&mut right[0], &mut left[ib])
+                    };
+                    execute_atomic_trade_swap(
+                        user_a,
+                        &target_sess.initiator_offer,
+                        user_b,
+                        &target_sess.partner_offer,
+                    )
+                    .map(|(av_a, av_b)| {
+                        (
+                            av_a,
+                            av_b,
+                            user_a.sanitized(),
+                            user_b.sanitized(),
+                            user_a.economy_snapshot(),
+                            user_b.economy_snapshot(),
+                        )
+                    })
+                }
+                _ => Err("One of the trading accounts could not be found.".into()),
+            }
+        };
+
+        let (av_a_changed, av_b_changed, san_a, san_b, econ_a, econ_b) = match swap_outcome {
+            Ok(vals) => vals,
+            Err(err_msg) => {
+                let mut reopened = target_sess;
+                reopened.initiator_offer.locked = false;
+                reopened.initiator_offer.confirmed = false;
+                reopened.partner_offer.locked = false;
+                reopened.partner_offer.confirmed = false;
+                reopened.status_note = Some(err_msg.clone());
+                reopened.updated_at_ms = now_ms();
+                {
+                    let mut trades = self.trades.write().await;
+                    let busy = trades.values().any(|other| {
+                        other.status == "active"
+                            && (other.involves_peer(&reopened.initiator_id)
+                                || other.involves_peer(&reopened.partner_id))
+                    });
+                    if !busy {
+                        trades.insert(reopened.trade_id.clone(), reopened.clone());
+                    }
+                }
+                self.notify_trade_peers(&reopened, "trade_updated", Some(&err_msg))
+                    .await;
+                return Err(err_msg);
+            }
+        };
+
+        self.persist_users_async().await;
+
+        // Broadcast immediate avatar updates if either player traded away an equipped dungeon item
+        if av_a_changed {
+            let hash_a = san_a.avatar.short_hash();
+            {
+                let mut map = self.players.write().await;
+                for p in map.values_mut() {
+                    if p.user.username.eq_ignore_ascii_case(&san_a.username) {
+                        p.user = san_a.clone();
+                        p.avatar_hash = hash_a.clone();
+                    }
+                }
+            }
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::AvatarUpdated {
+                state_seq: seq,
+                self_id: target_sess.initiator_id.clone(),
+                avatar_hash: hash_a,
+                user: san_a,
+            });
+        }
+        if av_b_changed {
+            let hash_b = san_b.avatar.short_hash();
+            {
+                let mut map = self.players.write().await;
+                for p in map.values_mut() {
+                    if p.user.username.eq_ignore_ascii_case(&san_b.username) {
+                        p.user = san_b.clone();
+                        p.avatar_hash = hash_b.clone();
+                    }
+                }
+            }
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::AvatarUpdated {
+                state_seq: seq,
+                self_id: target_sess.partner_id.clone(),
+                avatar_hash: hash_b,
+                user: san_b,
+            });
+        }
+
+        self.send_economy_update(
+            &target_sess.initiator_id,
+            &target_sess.initiator_username,
+            "trade_completed",
+        )
+        .await;
+        self.send_economy_update(
+            &target_sess.partner_id,
+            &target_sess.partner_username,
+            "trade_completed",
+        )
+        .await;
+
+        let done_a = serde_json::json!({
+            "type": "trade_completed",
+            "tradeId": target_sess.trade_id,
+            "partnerName": target_sess.partner_display_name,
+            "economy": econ_a,
+        })
+        .to_string();
+        let done_b = serde_json::json!({
+            "type": "trade_completed",
+            "tradeId": target_sess.trade_id,
+            "partnerName": target_sess.initiator_display_name,
+            "economy": econ_b,
+        })
+        .to_string();
+        let _ = self
+            .send_peer_targeted_json(&target_sess.initiator_id, done_a)
+            .await;
+        let _ = self
+            .send_peer_targeted_json(&target_sess.partner_id, done_b)
+            .await;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "completed": true,
+            "trade": target_sess,
+            "initiatorEconomy": econ_a,
+            "partnerEconomy": econ_b,
+        }))
+    }
+
+    pub async fn trade_cancel(&self, self_id: &str, trade_id: Option<&str>) -> Result<(), String> {
+        if let Some(tid) = trade_id.filter(|s| !s.trim().is_empty()) {
+            let removed = {
+                let mut trades = self.trades.write().await;
+                let Some(s) = trades.get(tid) else {
+                    return Ok(());
+                };
+                if !s.involves_peer(self_id) {
+                    return Err("You are not part of this trade.".into());
+                }
+                trades.remove(tid)
+            };
+            if let Some(sess) = removed {
+                self.notify_trade_peers(&sess, "trade_cancelled", Some("Trade cancelled."))
+                    .await;
+            }
+        } else {
+            self.cancel_trades_for_peer(self_id, "Trade cancelled.")
+                .await;
+        }
+        Ok(())
+    }
 }
 
 fn normalize_leet_char(c: char) -> Option<char> {
@@ -1262,7 +2377,9 @@ pub fn find_blocked_word(text: &str, blocked_words: &[String]) -> Option<String>
         .filter(|w| !w.is_empty())
         .collect();
 
-    const SAFE_SUBSTRING_ROOTS: &[&str] = &["fuck", "shit", "bitch", "asshole", "nigger", "nigga", "faggot", "cunt", "whore", "slut"];
+    const SAFE_SUBSTRING_ROOTS: &[&str] = &[
+        "fuck", "shit", "bitch", "asshole", "nigger", "nigga", "faggot", "cunt", "whore", "slut",
+    ];
 
     for raw_token in text.split_whitespace() {
         let alnum_token: String = raw_token.chars().filter_map(normalize_leet_char).collect();

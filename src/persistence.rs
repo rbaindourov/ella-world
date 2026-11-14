@@ -81,6 +81,8 @@ impl PersistenceStore {
                     password: "changeme-starlight".into(),
                     role: "host".into(),
                     avatar: AvatarAppearance::default(),
+                    coins: 0,
+                    inventory: std::collections::HashMap::new(),
                     last_pos: None,
                     last_pos_saved_at: None,
                 }],
@@ -137,9 +139,13 @@ impl PersistenceStore {
         user_filter: Option<&str>,
         search: Option<&str>,
     ) -> (usize, Vec<ChatMessage>) {
-        query_jsonl_filtered(&self.chat_log_path, limit, user_filter, search, |c: &ChatMessage| {
-            (&c.username, &c.display_name, &c.text)
-        })
+        query_jsonl_filtered(
+            &self.chat_log_path,
+            limit,
+            user_filter,
+            search,
+            |c: &ChatMessage| (&c.username, &c.display_name, &c.text),
+        )
     }
 
     pub fn query_blocked_chats(
@@ -166,7 +172,7 @@ impl PersistenceStore {
     }
 }
 
-fn query_jsonl_filtered<'a, T, F>(
+fn query_jsonl_filtered<T, F>(
     path: &Path,
     limit: usize,
     user_filter: Option<&str>,
@@ -190,8 +196,7 @@ where
         .filter(|item| {
             let (username, display_name, text) = fields_fn(item);
             if let Some(u) = &user_lc {
-                if !username.to_lowercase().contains(u)
-                    && !display_name.to_lowercase().contains(u)
+                if !username.to_lowercase().contains(u) && !display_name.to_lowercase().contains(u)
                 {
                     return false;
                 }

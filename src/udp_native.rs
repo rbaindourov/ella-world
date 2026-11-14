@@ -10,7 +10,7 @@ use crate::models::now_ms;
 use crate::udp_wire::{
     decode_c2s_state, encode_native_voice_opus, encode_native_welcome, encode_pong,
     unwrap_native_packet, wrap_native_packet, OP_C2S_PING, OP_C2S_STATE, OP_EVENT_ACK,
-    OP_EVENT_JSON, OP_HELLO, OP_S2C_PONG, OP_S2C_WORLD_STATE, OP_VOICE_OPUS,
+    OP_EVENT_JSON, OP_HELLO, OP_S2C_PONG, OP_S2C_WORLD_STATE, OP_VOICE_OPUS, ZONE_DUNGEON,
 };
 use crate::world::{BridgedOpusFrame, WorldEngine};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -84,7 +84,9 @@ impl NativeUdpServer {
                 };
 
                 for sess in &peers {
-                    let chunks = tx_world.encode_world_snapshot_chunks_for(&sess.self_id).await;
+                    let chunks = tx_world
+                        .encode_world_snapshot_chunks_for(&sess.self_id)
+                        .await;
                     for snap in chunks {
                         let framed = wrap_native_packet(OP_S2C_WORLD_STATE, &snap);
                         let _ = tx_srv.socket.send_to(&framed, sess.addr).await;
@@ -102,6 +104,7 @@ impl NativeUdpServer {
 
         // 3. Discrete World Event Push over UDP (`OP_EVENT_JSON`)
         let ev_srv = Arc::clone(&srv);
+        let ev_world = Arc::clone(&world);
         let mut ev_rx = world.udp_event_tx.subscribe();
         let mut out_event_seq = 1u32;
         tokio::spawn(async move {
@@ -109,6 +112,11 @@ impl NativeUdpServer {
                 if matches!(ev, crate::world::UdpWorldEvent::VoiceSlotMap { .. }) {
                     continue;
                 }
+                let dungeon_only = matches!(
+                    ev,
+                    crate::world::UdpWorldEvent::DungeonMobs { .. }
+                        | crate::world::UdpWorldEvent::DungeonSync { .. }
+                );
                 let Ok(json_bytes) = serde_json::to_vec(&ev) else {
                     continue;
                 };
@@ -118,12 +126,15 @@ impl NativeUdpServer {
                 body.put_slice(&json_bytes);
                 let pkt = wrap_native_packet(OP_EVENT_JSON, &body);
 
-                let addrs: Vec<SocketAddr> = {
+                let peers: Vec<NativePeerSession> = {
                     let map = ev_srv.sessions_by_addr.read().await;
-                    map.keys().copied().collect()
+                    map.values().cloned().collect()
                 };
-                for addr in addrs {
-                    let _ = ev_srv.socket.send_to(&pkt, addr).await;
+                for sess in peers {
+                    if dungeon_only && ev_world.get_peer_zone(&sess.self_id).await != ZONE_DUNGEON {
+                        continue;
+                    }
+                    let _ = ev_srv.socket.send_to(&pkt, sess.addr).await;
                 }
             }
         });
@@ -344,6 +355,104 @@ pub async fn handle_client_event_command(
                 .mutate_runway(self_id, username, action, theme, target, stars)
                 .await;
         }
+        "zone_portal" => {
+            let zone = cmd.get("zone").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+            if let Err(err) = world.transition_player_zone(self_id, username, zone).await {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "dungeon_interact" => {
+            let node_id = cmd.get("nodeId").and_then(|v| v.as_str()).unwrap_or("");
+            if let Err(err) = world
+                .dungeon_interact_node(self_id, username, node_id)
+                .await
+            {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "dungeon_attack" => {
+            let mob_id = cmd.get("mobId").and_then(|v| v.as_str()).unwrap_or("");
+            let mode = cmd.get("mode").and_then(|v| v.as_str()).unwrap_or("blast");
+            if let Err(err) = world.dungeon_attack_mob(self_id, mob_id, mode).await {
+                // Suppress rapid cooldown error toasts on fast swings
+                if !err.contains("cooling down") {
+                    emit_action_error(world, self_id, cmd_type, &err).await;
+                }
+            }
+        }
+        "dungeon_pickup" => {
+            let drop_id = cmd.get("dropId").and_then(|v| v.as_str()).unwrap_or("");
+            let _ = world.dungeon_pickup_drop(self_id, username, drop_id).await;
+        }
+        "use_item" => {
+            let item_id = cmd.get("itemId").and_then(|v| v.as_str()).unwrap_or("");
+            if let Err(err) = world.use_inventory_item(self_id, username, item_id).await {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "trade_invite" => {
+            let target_id = cmd
+                .get("targetPeerId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if let Err(err) = world.trade_invite(self_id, username, target_id).await {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "trade_respond" => {
+            let trade_id = cmd.get("tradeId").and_then(|v| v.as_str()).unwrap_or("");
+            let accept = cmd.get("accept").and_then(|v| v.as_bool()).unwrap_or(false);
+            if let Err(err) = world.trade_respond(self_id, trade_id, accept).await {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "trade_offer" => {
+            let trade_id = cmd.get("tradeId").and_then(|v| v.as_str()).unwrap_or("");
+            let coins = cmd.get("coins").and_then(|v| v.as_u64()).unwrap_or(0);
+            let mut items = HashMap::new();
+            if let Some(obj) = cmd.get("items").and_then(|v| v.as_object()) {
+                for (k, v) in obj {
+                    if let Some(q) = v.as_u64() {
+                        items.insert(k.clone(), q.min(u32::MAX as u64) as u32);
+                    }
+                }
+            }
+            if let Err(err) = world
+                .trade_update_offer(self_id, username, trade_id, coins, &items)
+                .await
+            {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "trade_lock" => {
+            let trade_id = cmd.get("tradeId").and_then(|v| v.as_str()).unwrap_or("");
+            let locked = cmd.get("locked").and_then(|v| v.as_bool()).unwrap_or(true);
+            if let Err(err) = world.trade_set_lock(self_id, trade_id, locked).await {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "trade_confirm" => {
+            let trade_id = cmd.get("tradeId").and_then(|v| v.as_str()).unwrap_or("");
+            if let Err(err) = world.trade_confirm(self_id, trade_id).await {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "trade_cancel" => {
+            let trade_id = cmd.get("tradeId").and_then(|v| v.as_str());
+            if let Err(err) = world.trade_cancel(self_id, trade_id).await {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
         _ => {}
     }
+}
+
+async fn emit_action_error(world: &WorldEngine, self_id: &str, action: &str, error: &str) {
+    let payload = serde_json::json!({
+        "type": "action_error",
+        "action": action,
+        "error": error,
+    })
+    .to_string();
+    let _ = world.send_peer_targeted_json(self_id, payload).await;
 }

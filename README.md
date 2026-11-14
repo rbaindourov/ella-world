@@ -19,11 +19,13 @@
 
 ## ✨ Features
 
-- **Stylized 3D Characters & Dress to Impress Glam Salon**: Rigged 20-bone skeletal characters (`ella_dti_wardrobe.glb`), mix-and-match hairstyles, satin/glitter/matte tops & gowns, skirts/jeans/cargos/overalls, heels/platform boots/sneakers, crowns, fairy wings, and 3D star bags with live mirror preview.
+- **Crystal Cavern Dungeon Portal (`G`) & Loot Farming**: Step through the glowing East Plaza portal into a dark-amethyst subterranean cavern to mine 6 Crystal Veins, unlock Wooden & Golden Vault Chests with Dungeon Keys, and Jump-Stomp or Sparkle-Blast (`E`) 8 patrolling Shadow Slimes & Crystal Bats for Starlight Coins, Potions, Relics, and Exclusive Glam Cosmetics.
+- **Persistent Backpack Economy (`I`) & Scam-Proof Live P2P Trading**: 12-item catalog persisted in `data/world_users.json` (Gems, Vault Keys, Swiftness & Cloud Leap Potions, Prism Blocks, and 4 Dungeon-Exclusive 3D Relics: *Shadow Hood*, *Star Lantern*, *Obsidian Crown*, and *Prism Wings*). Friends trade items & coins directly via a two-sided Lock + Confirm window with automatic anti-bait lock resets and single-guard atomic swaps.
+- **Stylized 3D Characters & Dress to Impress Glam Salon**: Rigged 20-bone skeletal characters (`ella_dti_wardrobe.glb`), mix-and-match hairstyles, satin/glitter/matte tops & gowns, skirts/jeans/cargos/overalls, heels/platform boots/sneakers, crowns, fairy wings, 3D star bags, and dungeon-exclusive relics with live mirror preview and automatic ownership reconciliation.
 - **Illuminated Fashion Runway**: Live rotating runway themes, 8 runway poses & dances (`1`–`8`), and 1–5 ⭐ live star voting with celebration confetti.
 - **Persistent Co-Op Voxel Builder**: Place and remove colorful 3D blocks together in real time; creations and character outfits persist atomically to `data/world_blocks.json` and `data/world_users.json`.
 - **Synchronized Sky Obby Course**: Multi-stage floating parkour course with server-phase-locked moving platforms, checkpoints (`R`), and a Golden Trophy summit celebration.
-- **Parent-Controlled Whitelist, Persistent Chat History & Word Filter**: Password-protected friend accounts, durable `world_chat.jsonl` chat logging with blocked-attempt auditing (`world_chat_blocked.jsonl`), customizable word filter (`chatFilterEnabled` + `blockedWords`), and master parent dashboard — zero public sign-ups or unmoderated strangers.
+- **Parent-Controlled Whitelist, Persistent Chat History & Word Filter**: Password-protected friend accounts, durable `world_chat.jsonl` chat logging with blocked-attempt auditing (`world_chat_blocked.jsonl`), customizable word filter (`chatFilterEnabled` + `blockedWords`), and master parent dashboard (with live coin & backpack counts) — zero public sign-ups or unmoderated strangers.
 
 ---
 

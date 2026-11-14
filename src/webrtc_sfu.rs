@@ -749,6 +749,18 @@ impl WebRtcSfu {
                                     continue;
                                 }
                             }
+                            UdpWorldEvent::DungeonMobs { .. }
+                            | UdpWorldEvent::DungeonSync { .. } => {
+                                let (ws_up, zone) = {
+                                    let map = pump_world.players.read().await;
+                                    map.get(&self_id_filter)
+                                        .map(|p| (p.ws_connected, p.zone))
+                                        .unwrap_or((false, crate::udp_wire::ZONE_PLAZA))
+                                };
+                                if ws_up || zone != crate::udp_wire::ZONE_DUNGEON {
+                                    continue;
+                                }
+                            }
                             _ => {
                                 let ws_up = pump_world
                                     .players

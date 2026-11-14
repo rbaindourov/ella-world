@@ -279,16 +279,141 @@ function buildHatMesh(hatType, hatColor = '#fbbf24') {
     tall.position.y = 0.9;
     group.add(tall);
   } else if (hatType === 'ninja') {
-    const redMat = new THREE.MeshStandardMaterial({ color: '#ef4444', roughness: 0.4 });
-    const band = new THREE.Mesh(new THREE.BoxGeometry(0.96, 0.2, 0.96), redMat);
+    const hoodMat = new THREE.MeshStandardMaterial({ color: '#1e1b4b', roughness: 0.45, metalness: 0.15 });
+    const bandMat = new THREE.MeshStandardMaterial({
+      color: hatColor || '#ec4899',
+      emissive: hatColor || '#ec4899',
+      emissiveIntensity: 0.28,
+      roughness: 0.35
+    });
+    const crestMat = new THREE.MeshStandardMaterial({ color: '#fbbf24', metalness: 0.7, roughness: 0.2 });
+    const cowl = new THREE.Mesh(new THREE.BoxGeometry(0.98, 0.36, 0.98), hoodMat);
+    cowl.position.y = 0.36;
+    group.add(cowl);
+    const band = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.18, 1.0), bandMat);
     band.position.y = 0.24;
     group.add(band);
-    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.12, 0.45), redMat);
-    tail.position.set(0, 0.2, -0.62);
-    tail.rotation.x = -0.3;
-    group.add(tail);
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.12, 0.06), crestMat);
+    plate.position.set(0, 0.24, 0.52);
+    group.add(plate);
+    for (const side of [-1, 1]) {
+      const tail = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.48), bandMat);
+      tail.position.set(side * 0.12, 0.2, -0.64);
+      tail.rotation.x = -0.32;
+      tail.rotation.y = side * 0.18;
+      group.add(tail);
+    }
+  } else if (hatType === 'obsidian_crown') {
+    const obsidianMat = new THREE.MeshStandardMaterial({
+      color: '#1e1b4b',
+      metalness: 0.72,
+      roughness: 0.2
+    });
+    const crystalMat = new THREE.MeshStandardMaterial({
+      color: hatColor || '#c084fc',
+      emissive: '#a855f7',
+      emissiveIntensity: 0.65,
+      metalness: 0.35,
+      roughness: 0.15
+    });
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.48, 0.22, 8), obsidianMat);
+    base.position.y = 0.54;
+    group.add(base);
+
+    const spireAngles = [0, (Math.PI * 2) / 5, (Math.PI * 4) / 5, (Math.PI * 6) / 5, (Math.PI * 8) / 5];
+    spireAngles.forEach((ang, idx) => {
+      const isFront = idx === 0;
+      const spire = new THREE.Mesh(
+        new THREE.ConeGeometry(isFront ? 0.14 : 0.1, isFront ? 0.48 : 0.34, 5),
+        idx % 2 === 0 ? crystalMat : obsidianMat
+      );
+      spire.position.set(Math.sin(ang) * 0.42, isFront ? 0.84 : 0.75, Math.cos(ang) * 0.42);
+      group.add(spire);
+    });
+    const centerGem = new THREE.Mesh(new THREE.OctahedronGeometry(0.14, 0), crystalMat);
+    centerGem.position.set(0, 0.58, 0.5);
+    group.add(centerGem);
   }
 
+  return group;
+}
+
+function buildCrystalWingsAttachment(accentHex = '#38bdf8') {
+  const group = new THREE.Group();
+  const prismPrimary = new THREE.MeshStandardMaterial({
+    color: accentHex || '#38bdf8',
+    emissive: '#a855f7',
+    emissiveIntensity: 0.55,
+    transparent: true,
+    opacity: 0.84,
+    roughness: 0.14,
+    metalness: 0.35
+  });
+  const prismSecondary = new THREE.MeshStandardMaterial({
+    color: '#f472b6',
+    emissive: '#38bdf8',
+    emissiveIntensity: 0.48,
+    transparent: true,
+    opacity: 0.8,
+    roughness: 0.16,
+    metalness: 0.3
+  });
+
+  const leftWing = new THREE.Group();
+  const rightWing = new THREE.Group();
+  for (const [side, wing] of [[-1, leftWing], [1, rightWing]]) {
+    const feathers = [
+      { x: side * 0.24, y: 0.16, rotZ: side * -0.52, len: 0.54, r: 0.085, mat: prismPrimary },
+      { x: side * 0.32, y: 0.02, rotZ: side * -0.92, len: 0.48, r: 0.075, mat: prismSecondary },
+      { x: side * 0.24, y: -0.13, rotZ: side * -1.32, len: 0.38, r: 0.065, mat: prismPrimary }
+    ];
+    for (const f of feathers) {
+      const shard = new THREE.Mesh(new THREE.OctahedronGeometry(f.r, 0), f.mat);
+      shard.scale.set(1.0, f.len / (f.r * 2), 0.42);
+      shard.position.set(f.x, f.y, 0);
+      shard.rotation.z = f.rotZ;
+      wing.add(shard);
+    }
+    wing.rotation.y = side * -0.32;
+  }
+  const coreGem = new THREE.Mesh(new THREE.OctahedronGeometry(0.08, 0), prismSecondary);
+  group.add(leftWing, rightWing, coreGem);
+  group.userData.leftWing = leftWing;
+  group.userData.rightWing = rightWing;
+  return group;
+}
+
+function buildStarLanternAttachment(accentHex = '#fbbf24') {
+  const group = new THREE.Group();
+  const frameMat = new THREE.MeshStandardMaterial({ color: '#1e1b4b', metalness: 0.72, roughness: 0.25 });
+  const glowMat = new THREE.MeshStandardMaterial({
+    color: accentHex || '#fde047',
+    emissive: '#f59e0b',
+    emissiveIntensity: 0.95,
+    roughness: 0.15
+  });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: '#c084fc',
+    emissive: '#a855f7',
+    emissiveIntensity: 0.35,
+    transparent: true,
+    opacity: 0.46,
+    roughness: 0.12
+  });
+
+  const handleRing = new THREE.Mesh(new THREE.TorusGeometry(0.055, 0.012, 8, 16), frameMat);
+  handleRing.position.y = 0.02;
+  const capTop = new THREE.Mesh(new THREE.ConeGeometry(0.095, 0.07, 6), frameMat);
+  capTop.position.y = -0.05;
+  const glassCage = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.065, 0.16, 6), glassMat);
+  glassCage.position.y = -0.15;
+  const starCore = new THREE.Mesh(new THREE.OctahedronGeometry(0.05, 0), glowMat);
+  starCore.position.y = -0.15;
+  const capBottom = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.045, 0.04, 6), frameMat);
+  capBottom.position.y = -0.24;
+
+  group.add(handleRing, capTop, glassCage, starCore, capBottom);
+  group.userData.starCore = starCore;
   return group;
 }
 
@@ -375,9 +500,13 @@ class StylizedCharacterRig {
       n.startsWith('Acc_');
 
     // Pass 1: clone per-character materials on every mesh primitive so colors never bleed across players
+    this.chestBone = null;
+    this.leftHandBone = null;
     this.model.traverse((node) => {
-      if (node.isBone && node.name === 'head') {
-        this.headBone = node;
+      if (node.isBone) {
+        if (node.name === 'head') this.headBone = node;
+        else if (node.name === 'chest') this.chestBone = node;
+        else if (node.name === 'hand.L') this.leftHandBone = node;
       }
       if (node.isMesh) {
         node.castShadow = true;
@@ -391,6 +520,38 @@ class StylizedCharacterRig {
         }
       }
     });
+
+    // Procedural dungeon-exclusive bone mounts for StylizedCharacterRig
+    this.dungeonHatMount = new THREE.Group();
+    this.dungeonHatMount.position.set(0, -0.02, 0.02);
+    this.dungeonHatMount.scale.setScalar(0.36);
+    if (this.headBone) {
+      this.headBone.add(this.dungeonHatMount);
+    } else {
+      this.dungeonHatMount.position.set(0, 1.48, 0.02);
+      this.model.add(this.dungeonHatMount);
+    }
+
+    this.dungeonBackMount = new THREE.Group();
+    this.dungeonBackMount.position.set(0, 0.08, -0.13);
+    if (this.chestBone) {
+      this.chestBone.add(this.dungeonBackMount);
+    } else {
+      this.dungeonBackMount.position.set(0, 1.24, -0.14);
+      this.model.add(this.dungeonBackMount);
+    }
+
+    this.dungeonHandMount = new THREE.Group();
+    this.dungeonHandMount.position.set(0, 0.09, 0.03);
+    if (this.leftHandBone) {
+      this.leftHandBone.add(this.dungeonHandMount);
+    } else {
+      this.dungeonHandMount.position.set(-0.28, 0.96, 0.16);
+      this.model.add(this.dungeonHandMount);
+    }
+
+    this.customCrystalWings = null;
+    this.customStarLantern = null;
 
     // Pass 2: index top-level wardrobe slots (handles BOTH 1-primitive SkinnedMesh AND multi-primitive Group!)
     this.model.traverse((node) => {
@@ -549,6 +710,33 @@ class StylizedCharacterRig {
         }
       }
     }
+
+    // Mount procedural Crystal Cavern exclusive hats & accessories on StylizedCharacterRig
+    while (this.dungeonHatMount.children.length > 0) {
+      this.dungeonHatMount.remove(this.dungeonHatMount.children[0]);
+    }
+    if (hat === 'obsidian_crown' || hat === 'ninja') {
+      const customHat = buildHatMesh(hat, hatColor);
+      this.dungeonHatMount.add(customHat);
+    }
+
+    while (this.dungeonBackMount.children.length > 0) {
+      this.dungeonBackMount.remove(this.dungeonBackMount.children[0]);
+    }
+    this.customCrystalWings = null;
+    if (accessory === 'crystal_wings') {
+      this.customCrystalWings = buildCrystalWingsAttachment(accessoryColor);
+      this.dungeonBackMount.add(this.customCrystalWings);
+    }
+
+    while (this.dungeonHandMount.children.length > 0) {
+      this.dungeonHandMount.remove(this.dungeonHandMount.children[0]);
+    }
+    this.customStarLantern = null;
+    if (accessory === 'star_lantern') {
+      this.customStarLantern = buildStarLanternAttachment(accessoryColor);
+      this.dungeonHandMount.add(this.customStarLantern);
+    }
   }
 
   _applyFabricFinish(mat, hexColor, finish) {
@@ -588,6 +776,21 @@ class StylizedCharacterRig {
 
     if (this.wingsNode && this.wingsNode.visible) {
       this.wingsNode.scale.x = 1.0 + Math.sin(animClock * 9.0) * 0.08;
+    }
+
+    if (this.customCrystalWings) {
+      const flap = Math.sin(animClock * 8.5) * 0.28;
+      if (this.customCrystalWings.userData.leftWing) {
+        this.customCrystalWings.userData.leftWing.rotation.y = 0.32 + flap;
+      }
+      if (this.customCrystalWings.userData.rightWing) {
+        this.customCrystalWings.userData.rightWing.rotation.y = -0.32 - flap;
+      }
+    }
+
+    if (this.customStarLantern && this.customStarLantern.userData.starCore) {
+      this.customStarLantern.rotation.z = Math.sin(animClock * 3.8) * 0.14;
+      this.customStarLantern.userData.starCore.rotation.y = animClock * 3.2;
     }
 
     if (speaking && this.headBone) {
@@ -639,6 +842,9 @@ class ClassicBlockyRig {
     this.torsoMesh.castShadow = true;
     this.bodyGroup.add(this.torsoMesh);
 
+    this.crystalWingsGroup = null;
+    this.starLanternGroup = null;
+
     if (hatType === 'wings' || av.accessory === 'wings') {
       const wingMat = new THREE.MeshStandardMaterial({
         color: av.accessoryColor || '#a5f3fc',
@@ -655,6 +861,13 @@ class ClassicBlockyRig {
       this.rightWing.position.set(0.55, 0.1, -0.32);
       this.rightWing.rotation.y = -0.4;
       this.torsoMesh.add(this.leftWing, this.rightWing);
+    } else if (av.accessory === 'crystal_wings') {
+      this.leftWing = null;
+      this.rightWing = null;
+      this.crystalWingsGroup = buildCrystalWingsAttachment(av.accessoryColor || '#38bdf8');
+      this.crystalWingsGroup.scale.setScalar(1.9);
+      this.crystalWingsGroup.position.set(0, 0.12, -0.3);
+      this.torsoMesh.add(this.crystalWingsGroup);
     } else {
       this.leftWing = null;
       this.rightWing = null;
@@ -666,6 +879,12 @@ class ClassicBlockyRig {
     leftArm.position.y = -0.44;
     leftArm.castShadow = true;
     this.leftArmPivot.add(leftArm);
+    if (av.accessory === 'star_lantern') {
+      this.starLanternGroup = buildStarLanternAttachment(av.accessoryColor || '#fbbf24');
+      this.starLanternGroup.scale.setScalar(2.1);
+      this.starLanternGroup.position.set(-0.04, -0.92, 0.24);
+      this.leftArmPivot.add(this.starLanternGroup);
+    }
 
     this.rightArmPivot = new THREE.Group();
     this.rightArmPivot.position.set(0.74, 1.95, 0);
@@ -696,6 +915,19 @@ class ClassicBlockyRig {
       const flap = Math.sin(t * 9) * 0.25;
       this.leftWing.rotation.y = 0.4 + flap;
       this.rightWing.rotation.y = -0.4 - flap;
+    }
+    if (this.crystalWingsGroup) {
+      const flap = Math.sin(t * 8.5) * 0.28;
+      if (this.crystalWingsGroup.userData.leftWing) {
+        this.crystalWingsGroup.userData.leftWing.rotation.y = 0.32 + flap;
+      }
+      if (this.crystalWingsGroup.userData.rightWing) {
+        this.crystalWingsGroup.userData.rightWing.rotation.y = -0.32 - flap;
+      }
+    }
+    if (this.starLanternGroup && this.starLanternGroup.userData.starCore) {
+      this.starLanternGroup.rotation.z = Math.sin(t * 3.8) * 0.14;
+      this.starLanternGroup.userData.starCore.rotation.y = t * 3.2;
     }
 
     this.bodyGroup.position.set(0, 0, 0);
@@ -765,6 +997,41 @@ class ClassicBlockyRig {
   }
 }
 
+function createWorldBannerSprite(title, subtitle = '', accentHex = '#c084fc') {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = subtitle ? 156 : 96;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+  ctx.strokeStyle = accentHex;
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.roundRect(14, 10, canvas.width - 28, canvas.height - 20, 26);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 28px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(title || '').slice(0, 34), canvas.width / 2, subtitle ? 52 : canvas.height / 2);
+
+  if (subtitle) {
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '600 20px Inter, sans-serif';
+    ctx.fillText(String(subtitle).slice(0, 42), canvas.width / 2, 104);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(subtitle ? 3.8 : 2.6, subtitle ? 1.16 : 0.56, 1);
+  return sprite;
+}
+
 /**
  * Unified WorldAvatar (Defaults to 3D Rigged Forensics + DTI Character, with live Blocky toggle)
  */
@@ -772,6 +1039,7 @@ class WorldAvatar {
   constructor(playerData) {
     this.id = playerData.id;
     this.user = playerData.user || { username: 'friend', displayName: 'Friend', avatar: {} };
+    this.zone = Number(playerData.zone) || 0;
     this.group = new THREE.Group();
     this.rigContainer = new THREE.Group();
     this.group.add(this.rigContainer);
@@ -962,7 +1230,12 @@ export class BlockyWorld3D {
     onRemoveBlock,
     onObbyCheckpoint,
     onTrophyWin,
-    onRunwayProximity
+    onRunwayProximity,
+    onRequestZonePortal,
+    onInteractNode,
+    onAttackMob,
+    onPickupDrop,
+    onInteractionHint
   }) {
     this.container = container;
     this.onMove = onMove || (() => {});
@@ -971,6 +1244,11 @@ export class BlockyWorld3D {
     this.onObbyCheckpoint = onObbyCheckpoint || (() => {});
     this.onTrophyWin = onTrophyWin || (() => {});
     this.onRunwayProximity = onRunwayProximity || (() => {});
+    this.onRequestZonePortal = onRequestZonePortal || (() => {});
+    this.onInteractNode = onInteractNode || (() => {});
+    this.onAttackMob = onAttackMob || (() => {});
+    this.onPickupDrop = onPickupDrop || (() => {});
+    this.onInteractionHint = onInteractionHint || (() => {});
 
     loadDtiWardrobePack().catch(() => {});
 
@@ -988,6 +1266,18 @@ export class BlockyWorld3D {
     this.renderer.toneMappingExposure = 1.08;
     this.container.appendChild(this.renderer.domElement);
 
+    this.currentZone = 0; // 0 = Starlight Plaza, 1 = Crystal Cavern Dungeon
+    this.plazaGroup = new THREE.Group();
+    this.scene.add(this.plazaGroup);
+    this.dungeonGroup = new THREE.Group();
+    this.dungeonGroup.visible = false;
+    this.scene.add(this.dungeonGroup);
+    this.dungeonEntitiesGroup = new THREE.Group();
+    this.dungeonGroup.add(this.dungeonEntitiesGroup);
+
+    this.plazaColliders = [];
+    this.voxelColliders = [];
+    this.dungeonColliders = [];
     this.colliders = [];
     this.movingPlatforms = [];
     this.discoTiles = [];
@@ -996,6 +1286,20 @@ export class BlockyWorld3D {
     this.trophyMesh = null;
     this.runwayStarCrest = null;
     this.confettiParticles = [];
+    this.sparkleRings = [];
+    this.portalVortices = [];
+
+    this.plazaPortalPos = { x: 18, y: 0, z: 16 };
+    this.dungeonReturnPortalPos = { x: 0, y: 0, z: 28 };
+    this.lastPortalTriggerAt = 0;
+    this.lastHintText = '';
+
+    this.dungeonNodesMap = new Map();
+    this.dungeonMobsMap = new Map();
+    this.dungeonDropsMap = new Map();
+
+    this.speedBoostUntilMs = 0;
+    this.jumpBoostUntilMs = 0;
 
     this.voxelMap = new Map();
     this.voxelGroup = new THREE.Group();
@@ -1036,6 +1340,8 @@ export class BlockyWorld3D {
 
     this._setupLights();
     this._buildEnvironment();
+    this._buildDungeonEnvironment();
+    this._rebuildActiveColliders();
     this._bindEvents();
 
     this.lastFrameTime = performance.now();
@@ -1044,40 +1350,56 @@ export class BlockyWorld3D {
     requestAnimationFrame(this._animate);
   }
 
-  _setupLights() {
-    const hemi = new THREE.HemisphereLight('#ffffff', '#fbcfe8', 0.92);
-    this.scene.add(hemi);
-
-    const sun = new THREE.DirectionalLight('#fffbeb', 1.28);
-    sun.position.set(28, 48, 24);
-    sun.castShadow = true;
-    sun.shadow.mapSize.width = 2048;
-    sun.shadow.mapSize.height = 2048;
-    sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 140;
-    const d = 48;
-    sun.shadow.camera.left = -d;
-    sun.shadow.camera.right = d;
-    sun.shadow.camera.top = d;
-    sun.shadow.camera.bottom = -d;
-    this.scene.add(sun);
-
-    const glamFill = new THREE.DirectionalLight('#fdf2f8', 0.55);
-    glamFill.position.set(-28, 18, 26);
-    this.scene.add(glamFill);
+  _rebuildActiveColliders() {
+    if (this.currentZone === 1) {
+      this.colliders = this.dungeonColliders;
+    } else {
+      this.colliders = [...this.plazaColliders, ...this.voxelColliders];
+    }
   }
 
-  _addBoxPlatform({ x, y, z, w, h, d, color, type = 'solid', bounceVel = 0, checkpointIndex = 0 }) {
+  _setupLights() {
+    this.hemiLight = new THREE.HemisphereLight('#ffffff', '#fbcfe8', 0.92);
+    this.scene.add(this.hemiLight);
+
+    this.sunLight = new THREE.DirectionalLight('#fffbeb', 1.28);
+    this.sunLight.position.set(28, 48, 24);
+    this.sunLight.castShadow = true;
+    this.sunLight.shadow.mapSize.width = 2048;
+    this.sunLight.shadow.mapSize.height = 2048;
+    this.sunLight.shadow.camera.near = 1;
+    this.sunLight.shadow.camera.far = 140;
+    const d = 48;
+    this.sunLight.shadow.camera.left = -d;
+    this.sunLight.shadow.camera.right = d;
+    this.sunLight.shadow.camera.top = d;
+    this.sunLight.shadow.camera.bottom = -d;
+    this.scene.add(this.sunLight);
+
+    this.fillLight = new THREE.DirectionalLight('#fdf2f8', 0.55);
+    this.fillLight.position.set(-28, 18, 26);
+    this.scene.add(this.fillLight);
+  }
+
+  _addBoxPlatform(
+    { x, y, z, w, h, d, color, type = 'solid', bounceVel = 0, checkpointIndex = 0, emissive = null, emissiveIntensity = 0 },
+    targetGroup = this.plazaGroup,
+    targetColliders = this.plazaColliders
+  ) {
     const mat = new THREE.MeshStandardMaterial({
       color,
       roughness: type === 'ice' || type === 'runway' ? 0.18 : 0.55,
       metalness: type === 'trophy-pad' || type === 'runway' ? 0.28 : 0.08
     });
+    if (emissive) {
+      mat.emissive = new THREE.Color(emissive);
+      mat.emissiveIntensity = emissiveIntensity || 0.3;
+    }
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     mesh.position.set(x, y, z);
     mesh.receiveShadow = true;
     mesh.castShadow = y > 0.5;
-    this.scene.add(mesh);
+    targetGroup.add(mesh);
 
     const entry = {
       mesh,
@@ -1094,8 +1416,67 @@ export class BlockyWorld3D {
       bounceVel,
       checkpointIndex
     };
-    this.colliders.push(entry);
+    targetColliders.push(entry);
     return entry;
+  }
+
+  _createPortalArch({ x, y, z, title, subtitle, primaryHex, secondaryHex }, targetGroup) {
+    const portal = new THREE.Group();
+    portal.position.set(x, y, z);
+
+    const stoneMat = new THREE.MeshStandardMaterial({ color: '#1e1b4b', roughness: 0.35, metalness: 0.45 });
+    const runeMat = new THREE.MeshStandardMaterial({
+      color: primaryHex,
+      emissive: primaryHex,
+      emissiveIntensity: 0.72,
+      roughness: 0.2,
+      metalness: 0.35
+    });
+
+    const pad = new THREE.Mesh(new THREE.CylinderGeometry(2.75, 3.05, 0.2, 28), stoneMat);
+    pad.position.y = 0.1;
+    const runeRing = new THREE.Mesh(new THREE.TorusGeometry(2.45, 0.09, 10, 32), runeMat);
+    runeRing.rotation.x = Math.PI / 2;
+    runeRing.position.y = 0.22;
+    portal.add(pad, runeRing);
+
+    for (const side of [-1, 1]) {
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.68, 4.1, 0.68), stoneMat);
+      pillar.position.set(side * 1.85, 2.15, 0);
+      pillar.castShadow = true;
+      const runeStrip = new THREE.Mesh(new THREE.BoxGeometry(0.2, 3.5, 0.74), runeMat);
+      runeStrip.position.set(side * 1.85, 2.15, 0);
+      portal.add(pillar, runeStrip);
+    }
+
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(4.65, 0.72, 0.88), stoneMat);
+    lintel.position.set(0, 4.35, 0);
+    const keystone = new THREE.Mesh(new THREE.OctahedronGeometry(0.46, 0), runeMat);
+    keystone.position.set(0, 4.95, 0);
+    portal.add(lintel, keystone);
+
+    const vortexMat = new THREE.MeshBasicMaterial({
+      color: secondaryHex,
+      transparent: true,
+      opacity: 0.68,
+      side: THREE.DoubleSide
+    });
+    const vortexDisc = new THREE.Mesh(new THREE.CircleGeometry(1.75, 28), vortexMat);
+    vortexDisc.position.set(0, 2.28, 0);
+    const swirlRing = new THREE.Mesh(
+      new THREE.TorusGeometry(1.25, 0.08, 10, 28),
+      new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.75 })
+    );
+    swirlRing.position.set(0, 2.28, 0.04);
+    portal.add(vortexDisc, swirlRing);
+    this.portalVortices.push({ disc: vortexDisc, ring: swirlRing, keystone });
+
+    const banner = createWorldBannerSprite(title, subtitle, primaryHex);
+    banner.position.set(0, 6.05, 0);
+    portal.add(banner);
+
+    targetGroup.add(portal);
+    return portal;
   }
 
   _buildEnvironment() {
@@ -1103,8 +1484,8 @@ export class BlockyWorld3D {
     this.groundMesh = new THREE.Mesh(new THREE.BoxGeometry(84, 2, 84), groundMat);
     this.groundMesh.position.set(0, -1, 0);
     this.groundMesh.receiveShadow = true;
-    this.scene.add(this.groundMesh);
-    this.colliders.push({
+    this.plazaGroup.add(this.groundMesh);
+    this.plazaColliders.push({
       mesh: this.groundMesh,
       w: 84,
       h: 2,
@@ -1124,7 +1505,7 @@ export class BlockyWorld3D {
       new THREE.MeshStandardMaterial({ color: '#f472b6', emissive: '#db2777', emissiveIntensity: 0.25 })
     );
     spawnPad.position.set(0, 0.08, 0);
-    this.scene.add(spawnPad);
+    this.plazaGroup.add(spawnPad);
 
     const discoColors = ['#f472b6', '#38bdf8', '#fbbf24', '#a78bfa', '#34d399'];
     for (let gx = 0; gx < 4; gx++) {
@@ -1136,7 +1517,7 @@ export class BlockyWorld3D {
         });
         const tile = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.14, 1.9), tileMat);
         tile.position.set(-13 + gx * 2, 0.08, -2 + gz * 2);
-        this.scene.add(tile);
+        this.plazaGroup.add(tile);
         this.discoTiles.push(tile);
       }
     }
@@ -1151,13 +1532,27 @@ export class BlockyWorld3D {
     });
     const fireCore = new THREE.Mesh(new THREE.ConeGeometry(0.85, 1.5, 6), fireMat);
     fireCore.position.set(-6, 0.75, 11);
-    this.scene.add(fireCore);
+    this.plazaGroup.add(fireCore);
     this._addBoxPlatform({ x: -6, y: 0.35, z: 14.2, w: 4.2, h: 0.7, d: 1.1, color: '#92400e' });
     this._addBoxPlatform({ x: -9.2, y: 0.35, z: 11, w: 1.1, h: 0.7, d: 4.2, color: '#92400e' });
 
     const buildGridFloor = new THREE.GridHelper(16, 16, '#38bdf8', '#94a3b8');
     buildGridFloor.position.set(18, 0.06, -4);
-    this.scene.add(buildGridFloor);
+    this.plazaGroup.add(buildGridFloor);
+
+    // Crystal Cavern Dungeon Portal in Starlight Plaza
+    this._createPortalArch(
+      {
+        x: this.plazaPortalPos.x,
+        y: this.plazaPortalPos.y,
+        z: this.plazaPortalPos.z,
+        title: '🌀 CRYSTAL CAVERN',
+        subtitle: 'Step In or Press E • Farm Coins & Loot!',
+        primaryHex: '#c084fc',
+        secondaryHex: '#7c3aed'
+      },
+      this.plazaGroup
+    );
 
     const jumpPadCoords = [
       { x: 7.5, y: 0.2, z: -7.5, bounceVel: 20 },
@@ -1196,7 +1591,7 @@ export class BlockyWorld3D {
       const leaves = new THREE.Mesh(leavesGeo, idx % 2 === 0 ? blossomMat : greenLeafMat);
       leaves.position.set(tx, 3.6, tz);
       leaves.castShadow = true;
-      this.scene.add(trunk, leaves);
+      this.plazaGroup.add(trunk, leaves);
     });
 
     this._addBoxPlatform({
@@ -1278,7 +1673,7 @@ export class BlockyWorld3D {
     cup.position.y = 1.0;
     trophyGroup.add(pedestal, cup);
     trophyGroup.position.set(6.5, 17.3, -20);
-    this.scene.add(trophyGroup);
+    this.plazaGroup.add(trophyGroup);
     this.trophyMesh = trophyGroup;
   }
 
@@ -1300,7 +1695,7 @@ export class BlockyWorld3D {
       })
     );
     podiumDisc.position.set(rx, 0.58, 11.2);
-    this.scene.add(podiumDisc);
+    this.plazaGroup.add(podiumDisc);
 
     const goldRailMat = new THREE.MeshStandardMaterial({
       color: '#fbbf24',
@@ -1312,7 +1707,7 @@ export class BlockyWorld3D {
     for (const side of [-1, 1]) {
       const rail = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.12, 16.0), goldRailMat);
       rail.position.set(rx + side * 2.55, 0.54, 1.5);
-      this.scene.add(rail);
+      this.plazaGroup.add(rail);
 
       for (let i = 0; i < 8; i++) {
         const bulbMat = new THREE.MeshStandardMaterial({
@@ -1322,7 +1717,7 @@ export class BlockyWorld3D {
         });
         const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 10), bulbMat);
         bulb.position.set(rx + side * 2.55, 0.64, -5.5 + i * 2.0);
-        this.scene.add(bulb);
+        this.plazaGroup.add(bulb);
         this.runwayStripLights.push(bulb);
       }
     }
@@ -1337,7 +1732,7 @@ export class BlockyWorld3D {
     for (const az of [-5.2, 1.5, 8.2]) {
       const arch = new THREE.Mesh(new THREE.TorusGeometry(3.4, 0.18, 12, 32, Math.PI), archMat);
       arch.position.set(rx, 0.5, az);
-      this.scene.add(arch);
+      this.plazaGroup.add(arch);
     }
 
     const wallMat = new THREE.MeshStandardMaterial({
@@ -1348,11 +1743,11 @@ export class BlockyWorld3D {
     const wall = new THREE.Mesh(new THREE.BoxGeometry(10.2, 6.2, 0.55), wallMat);
     wall.position.set(rx, 3.3, -12.4);
     wall.castShadow = true;
-    this.scene.add(wall);
+    this.plazaGroup.add(wall);
 
     const frameTrim = new THREE.Mesh(new THREE.BoxGeometry(10.6, 6.6, 0.35), goldRailMat);
     frameTrim.position.set(rx, 3.3, -12.55);
-    this.scene.add(frameTrim);
+    this.plazaGroup.add(frameTrim);
 
     const crestGroup = new THREE.Group();
     const starCore = new THREE.Mesh(new THREE.OctahedronGeometry(1.15, 0), goldRailMat);
@@ -1362,8 +1757,125 @@ export class BlockyWorld3D {
     );
     crestGroup.add(starCore, starHalo);
     crestGroup.position.set(rx, 4.1, -11.95);
-    this.scene.add(crestGroup);
+    this.plazaGroup.add(crestGroup);
     this.runwayStarCrest = crestGroup;
+  }
+
+  _buildDungeonEnvironment() {
+    const cavernFloorMat = new THREE.MeshStandardMaterial({
+      color: '#14102b',
+      roughness: 0.65,
+      metalness: 0.18
+    });
+    const cavernGround = new THREE.Mesh(new THREE.BoxGeometry(84, 2, 84), cavernFloorMat);
+    cavernGround.position.set(0, -1, 0);
+    cavernGround.receiveShadow = true;
+    this.dungeonGroup.add(cavernGround);
+    this.dungeonColliders.push({
+      mesh: cavernGround,
+      w: 84,
+      h: 2,
+      d: 84,
+      minX: -42,
+      maxX: 42,
+      minZ: -42,
+      maxZ: 42,
+      topY: 0,
+      bottomY: -2,
+      type: 'ground'
+    });
+
+    // Atmospheric cavern point lights
+    const centerGlow = new THREE.PointLight('#c084fc', 2.4, 52);
+    centerGlow.position.set(0, 8, 2);
+    const sanctumGlow = new THREE.PointLight('#38bdf8', 2.6, 48);
+    sanctumGlow.position.set(0, 10, -24);
+    this.dungeonGroup.add(centerGlow, sanctumGlow);
+
+    // Glowing central runestone walkway & arrival circle
+    this._addBoxPlatform(
+      { x: 0, y: 0.04, z: 10, w: 6.4, h: 0.08, d: 34, color: '#271d54', emissive: '#6d28d9', emissiveIntensity: 0.22 },
+      this.dungeonGroup,
+      this.dungeonColliders
+    );
+    const arrivalDisc = new THREE.Mesh(
+      new THREE.CylinderGeometry(3.2, 3.4, 0.12, 32),
+      new THREE.MeshStandardMaterial({ color: '#38bdf8', emissive: '#0284c7', emissiveIntensity: 0.45 })
+    );
+    arrivalDisc.position.set(0, 0.07, 22);
+    this.dungeonGroup.add(arrivalDisc);
+
+    // Return Portal to Starlight Plaza at (0, 0, 28)
+    this._createPortalArch(
+      {
+        x: this.dungeonReturnPortalPos.x,
+        y: this.dungeonReturnPortalPos.y,
+        z: this.dungeonReturnPortalPos.z,
+        title: '🌟 STARLIGHT PLAZA',
+        subtitle: 'Step In or Press E • Return to Plaza',
+        primaryHex: '#38bdf8',
+        secondaryHex: '#f472b6'
+      },
+      this.dungeonGroup
+    );
+
+    // Stepped platforms reaching every elevated Crystal Spire & Golden Vault Chest
+    const addDungeonLedge = (x, topY, z, w, d, color = '#2e1065', emissive = '#7e22ce') =>
+      this._addBoxPlatform(
+        { x, y: topY / 2, z, w, h: topY, d, color, emissive, emissiveIntensity: 0.2 },
+        this.dungeonGroup,
+        this.dungeonColliders
+      );
+
+    // West & East Deep Prism Spire Terraces: (-16, 1.8, -16) and (16, 1.8, -16)
+    addDungeonLedge(-16, 0.9, -9.5, 5.4, 4.4, '#312e81', '#4f46e5');
+    addDungeonLedge(-16, 1.8, -16.0, 7.2, 7.2, '#3b0764', '#9333ea');
+    addDungeonLedge(16, 0.9, -9.5, 5.4, 4.4, '#312e81', '#4f46e5');
+    addDungeonLedge(16, 1.8, -16.0, 7.2, 7.2, '#3b0764', '#9333ea');
+
+    // West Golden Vault Platform: (-18, 3.2, -26)
+    addDungeonLedge(-17, 2.5, -21.2, 4.8, 4.0, '#4c1d95', '#a855f7');
+    addDungeonLedge(-18, 3.2, -26.0, 7.6, 7.2, '#581c87', '#fbbf24');
+
+    // Central Dais (0, 2.2, -18) & Royal Sanctum Platform (0, 4.5, -30)
+    addDungeonLedge(0, 1.1, -12.5, 5.8, 4.2, '#312e81', '#6366f1');
+    addDungeonLedge(0, 2.2, -18.0, 7.4, 6.4, '#3b0764', '#38bdf8');
+    addDungeonLedge(0, 3.4, -23.5, 5.6, 4.4, '#4c1d95', '#c084fc');
+    addDungeonLedge(0, 4.5, -30.0, 9.2, 8.2, '#581c87', '#fbbf24');
+
+    // Perimeter giant bioluminescent crystal spires & cavern pillars
+    const amethystMat = new THREE.MeshStandardMaterial({
+      color: '#c084fc',
+      emissive: '#9333ea',
+      emissiveIntensity: 0.62,
+      roughness: 0.2,
+      metalness: 0.35
+    });
+    const cyanCrystalMat = new THREE.MeshStandardMaterial({
+      color: '#38bdf8',
+      emissive: '#0284c7',
+      emissiveIntensity: 0.58,
+      roughness: 0.2,
+      metalness: 0.35
+    });
+    const spireCoords = [
+      [-30, 16], [30, 16], [-32, -4], [32, -4],
+      [-30, -24], [30, -24], [-10, -36], [10, -36],
+      [-24, 28], [24, 28]
+    ];
+    spireCoords.forEach(([sx, sz], idx) => {
+      const cluster = new THREE.Group();
+      const mat = idx % 2 === 0 ? amethystMat : cyanCrystalMat;
+      const mainSpire = new THREE.Mesh(new THREE.ConeGeometry(1.35, 6.4, 6), mat);
+      mainSpire.position.y = 3.0;
+      mainSpire.rotation.z = idx % 2 === 0 ? 0.12 : -0.12;
+      const sideSpire = new THREE.Mesh(new THREE.ConeGeometry(0.85, 3.8, 6), mat);
+      sideSpire.position.set(idx % 2 === 0 ? 1.1 : -1.1, 1.7, 0.6);
+      sideSpire.rotation.z = idx % 2 === 0 ? -0.28 : 0.28;
+      cluster.add(mainSpire, sideSpire);
+      cluster.position.set(sx, 0, sz);
+      this.dungeonGroup.add(cluster);
+    });
   }
 
   loadBlocks(blocksArray) {
@@ -1371,11 +1883,12 @@ export class BlockyWorld3D {
       this.voxelGroup.remove(mesh);
     }
     this.voxelMap.clear();
-    this.colliders = this.colliders.filter((c) => c.type !== 'voxel');
+    this.voxelColliders = [];
 
     for (const b of blocksArray || []) {
       this.addBlockMesh(b);
     }
+    this._rebuildActiveColliders();
   }
 
   addBlockMesh({ x, y, z, color }) {
@@ -1392,7 +1905,7 @@ export class BlockyWorld3D {
     this.voxelGroup.add(mesh);
     this.voxelMap.set(key, mesh);
 
-    this.colliders.push({
+    this.voxelColliders.push({
       mesh,
       voxelKey: key,
       w: 1,
@@ -1406,6 +1919,7 @@ export class BlockyWorld3D {
       bottomY: y - 1,
       type: 'voxel'
     });
+    this._rebuildActiveColliders();
   }
 
   removeBlockMesh({ x, y, z }) {
@@ -1415,7 +1929,8 @@ export class BlockyWorld3D {
       this.voxelGroup.remove(mesh);
       this.voxelMap.delete(key);
     }
-    this.colliders = this.colliders.filter((c) => c.voxelKey !== key);
+    this.voxelColliders = this.voxelColliders.filter((c) => c.voxelKey !== key);
+    this._rebuildActiveColliders();
   }
 
   initSelfPlayer(playerState) {
@@ -1424,6 +1939,7 @@ export class BlockyWorld3D {
     }
     this.selfAvatar = new WorldAvatar(playerState);
     this.scene.add(this.selfAvatar.group);
+    this.setZone(Number(playerState?.zone) || 0, null);
   }
 
   upsertRemotePlayer(playerState) {
@@ -1431,9 +1947,18 @@ export class BlockyWorld3D {
     let av = this.remoteAvatars.get(playerState.id);
     if (!av) {
       av = new WorldAvatar(playerState);
+      av.group.visible = av.zone === this.currentZone;
       this.remoteAvatars.set(playerState.id, av);
       this.scene.add(av.group);
     } else {
+      if (playerState.zone !== undefined) {
+        const nextZone = Number(playerState.zone) || 0;
+        if (av.zone !== nextZone) {
+          av.zone = nextZone;
+          av.group.position.set(playerState.x, playerState.y, playerState.z);
+        }
+      }
+      av.group.visible = av.zone === this.currentZone;
       av.targetPos.set(playerState.x, playerState.y, playerState.z);
       av.targetRy = playerState.ry || 0;
       av.anim = playerState.anim || 'idle';
@@ -1449,11 +1974,439 @@ export class BlockyWorld3D {
     }
   }
 
+  setRemotePlayerZone(id, zone, coords = null) {
+    const av = this.remoteAvatars.get(id);
+    if (!av) return;
+    av.zone = Number(zone) || 0;
+    if (coords && Number.isFinite(coords.x)) {
+      av.targetPos.set(coords.x, coords.y || 0, coords.z || 0);
+      av.group.position.copy(av.targetPos);
+    }
+    av.group.visible = av.zone === this.currentZone;
+  }
+
   removeRemotePlayer(id) {
     const av = this.remoteAvatars.get(id);
     if (av) {
       this.scene.remove(av.group);
       this.remoteAvatars.delete(id);
+    }
+  }
+
+  setBuffTimers({ speedBoostUntilMs, jumpBoostUntilMs }) {
+    if (Number.isFinite(speedBoostUntilMs)) {
+      this.speedBoostUntilMs = speedBoostUntilMs;
+    }
+    if (Number.isFinite(jumpBoostUntilMs)) {
+      this.jumpBoostUntilMs = jumpBoostUntilMs;
+    }
+  }
+
+  setZone(zone, spawnCoords = null) {
+    const nextZone = Number(zone) === 1 ? 1 : 0;
+    this.currentZone = nextZone;
+    this.lastPortalTriggerAt = performance.now();
+
+    if (nextZone === 1) {
+      this.plazaGroup.visible = false;
+      this.voxelGroup.visible = false;
+      this.dungeonGroup.visible = true;
+      this.ghostMesh.visible = false;
+      this.scene.background.set('#0f0a28');
+      this.scene.fog.color.set('#160d38');
+      this.scene.fog.density = 0.014;
+      this.hemiLight.color.set('#c4b5fd');
+      this.hemiLight.groundColor.set('#1e1b4b');
+      this.hemiLight.intensity = 0.75;
+      this.sunLight.color.set('#e9d5ff');
+      this.sunLight.intensity = 0.82;
+      this.fillLight.color.set('#38bdf8');
+      this.fillLight.intensity = 0.54;
+      if (this.nearRunway) {
+        this.nearRunway = false;
+        this.onRunwayProximity(false);
+      }
+    } else {
+      this.plazaGroup.visible = true;
+      this.voxelGroup.visible = true;
+      this.dungeonGroup.visible = false;
+      this.scene.background.set('#7dd3fc');
+      this.scene.fog.color.set('#bae6fd');
+      this.scene.fog.density = 0.0078;
+      this.hemiLight.color.set('#ffffff');
+      this.hemiLight.groundColor.set('#fbcfe8');
+      this.hemiLight.intensity = 0.92;
+      this.sunLight.color.set('#fffbeb');
+      this.sunLight.intensity = 1.28;
+      this.fillLight.color.set('#fdf2f8');
+      this.fillLight.intensity = 0.55;
+    }
+
+    this._rebuildActiveColliders();
+
+    if (this.selfAvatar) {
+      this.selfAvatar.zone = nextZone;
+      if (spawnCoords && Number.isFinite(spawnCoords.x)) {
+        this.selfAvatar.group.position.set(spawnCoords.x, (spawnCoords.y || 0) + 0.15, spawnCoords.z || 0);
+        this.velocity.set(0, 0, 0);
+        this.selfAvatar.emote = null;
+        if (nextZone === 1) {
+          this.selfAvatar.group.rotation.y = Math.PI;
+          this.cameraYaw = 0;
+        }
+        this._emitMoveNow();
+      }
+    }
+
+    for (const av of this.remoteAvatars.values()) {
+      av.group.visible = av.zone === nextZone;
+    }
+  }
+
+  _buildDungeonNodeEntry(node) {
+    const group = new THREE.Group();
+    group.position.set(node.x, node.y, node.z);
+    let bodyGroup = new THREE.Group();
+    let lidPivot = null;
+
+    if (node.kind === 'wooden_chest' || node.kind === 'golden_chest') {
+      const isGold = node.kind === 'golden_chest';
+      const boxMat = new THREE.MeshStandardMaterial({
+        color: isGold ? '#f59e0b' : '#92400e',
+        emissive: isGold ? '#b45309' : '#000000',
+        emissiveIntensity: isGold ? 0.32 : 0,
+        metalness: isGold ? 0.68 : 0.18,
+        roughness: isGold ? 0.22 : 0.65
+      });
+      const trimMat = new THREE.MeshStandardMaterial({
+        color: isGold ? '#c084fc' : '#fbbf24',
+        emissive: isGold ? '#9333ea' : '#d97706',
+        emissiveIntensity: 0.45,
+        metalness: 0.65,
+        roughness: 0.2
+      });
+      const base = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.72, 0.95), boxMat);
+      base.position.y = 0.36;
+      base.castShadow = true;
+      const strapL = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.76, 1.0), trimMat);
+      strapL.position.set(-0.42, 0.36, 0);
+      const strapR = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.76, 1.0), trimMat);
+      strapR.position.set(0.42, 0.36, 0);
+      const lockGem = new THREE.Mesh(new THREE.OctahedronGeometry(0.16, 0), trimMat);
+      lockGem.position.set(0, 0.62, 0.52);
+
+      lidPivot = new THREE.Group();
+      lidPivot.position.set(0, 0.72, -0.46);
+      const lid = new THREE.Mesh(new THREE.BoxGeometry(1.38, 0.34, 0.98), boxMat);
+      lid.position.set(0, 0.17, 0.46);
+      lidPivot.add(lid);
+
+      bodyGroup.add(base, strapL, strapR, lockGem, lidPivot);
+      const label = createWorldBannerSprite(
+        isGold ? '🗝️ Golden Vault' : '📦 Supply Chest',
+        'Press E to Open',
+        isGold ? '#fbbf24' : '#38bdf8'
+      );
+      label.position.set(0, 1.95, 0);
+      group.add(bodyGroup, label);
+    } else {
+      const crystalMat = new THREE.MeshStandardMaterial({
+        color: '#e879f9',
+        emissive: '#a855f7',
+        emissiveIntensity: 0.68,
+        roughness: 0.16,
+        metalness: 0.32
+      });
+      const subMat = new THREE.MeshStandardMaterial({
+        color: '#38bdf8',
+        emissive: '#0284c7',
+        emissiveIntensity: 0.55,
+        roughness: 0.18,
+        metalness: 0.28
+      });
+      const c1 = new THREE.Mesh(new THREE.ConeGeometry(0.46, 1.75, 6), crystalMat);
+      c1.position.set(0, 0.88, 0);
+      c1.rotation.z = 0.08;
+      const c2 = new THREE.Mesh(new THREE.ConeGeometry(0.32, 1.2, 6), subMat);
+      c2.position.set(-0.42, 0.58, 0.2);
+      c2.rotation.z = 0.32;
+      const c3 = new THREE.Mesh(new THREE.ConeGeometry(0.3, 1.1, 6), crystalMat);
+      c3.position.set(0.4, 0.52, -0.18);
+      c3.rotation.z = -0.3;
+      bodyGroup.add(c1, c2, c3);
+
+      const label = createWorldBannerSprite(`✨ ${node.label}`, 'Press E to Mine', '#c084fc');
+      label.position.set(0, 2.35, 0);
+      group.add(bodyGroup, label);
+    }
+
+    this.dungeonEntitiesGroup.add(group);
+    return { id: node.id, data: node, group, bodyGroup, lidPivot };
+  }
+
+  _buildDungeonMobEntry(mob) {
+    const group = new THREE.Group();
+    group.position.set(mob.x, mob.y, mob.z);
+    const visual = new THREE.Group();
+    let leftWing = null;
+    let rightWing = null;
+
+    if (mob.kind === 'crystal_bat') {
+      const bodyMat = new THREE.MeshStandardMaterial({
+        color: '#312e81',
+        emissive: '#4338ca',
+        emissiveIntensity: 0.35,
+        roughness: 0.3
+      });
+      const wingMat = new THREE.MeshStandardMaterial({
+        color: '#38bdf8',
+        emissive: '#a855f7',
+        emissiveIntensity: 0.55,
+        side: THREE.DoubleSide
+      });
+      const eyeMat = new THREE.MeshBasicMaterial({ color: '#fde047' });
+      const body = new THREE.Mesh(new THREE.OctahedronGeometry(0.46, 1), bodyMat);
+      body.position.y = 0.55;
+      const earL = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.34, 4), wingMat);
+      earL.position.set(-0.22, 0.96, 0);
+      const earR = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.34, 4), wingMat);
+      earR.position.set(0.22, 0.96, 0);
+      const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 8), eyeMat);
+      eyeL.position.set(-0.15, 0.62, 0.38);
+      const eyeR = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 8), eyeMat);
+      eyeR.position.set(0.15, 0.62, 0.38);
+
+      leftWing = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.42, 0.06), wingMat);
+      leftWing.position.set(-0.62, 0.6, 0);
+      rightWing = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.42, 0.06), wingMat);
+      rightWing.position.set(0.62, 0.6, 0);
+
+      visual.add(body, earL, earR, eyeL, eyeR, leftWing, rightWing);
+    } else {
+      const outerMat = new THREE.MeshStandardMaterial({
+        color: '#7c3aed',
+        emissive: '#6d28d9',
+        emissiveIntensity: 0.38,
+        transparent: true,
+        opacity: 0.84,
+        roughness: 0.2
+      });
+      const coreMat = new THREE.MeshStandardMaterial({
+        color: '#f472b6',
+        emissive: '#ec4899',
+        emissiveIntensity: 0.72
+      });
+      const eyeMat = new THREE.MeshBasicMaterial({ color: '#ffffff' });
+      const pupilMat = new THREE.MeshBasicMaterial({ color: '#0f172a' });
+
+      const slimeCube = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.92, 1.12), outerMat);
+      slimeCube.position.y = 0.46;
+      const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.28, 0), coreMat);
+      core.position.y = 0.46;
+      for (const sx of [-0.22, 0.22]) {
+        const eye = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.06), eyeMat);
+        eye.position.set(sx, 0.56, 0.56);
+        const pupil = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 0.07), pupilMat);
+        pupil.position.set(sx, 0.55, 0.58);
+        visual.add(eye, pupil);
+      }
+      visual.add(slimeCube, core);
+    }
+
+    const hearts = '♥'.repeat(Math.max(1, mob.hp || 1));
+    const label = createWorldBannerSprite(`${mob.name} ${hearts}`, 'Jump-Stomp or Press E!', '#f472b6');
+    label.position.set(0, 1.92, 0);
+    group.add(visual, label);
+    this.dungeonEntitiesGroup.add(group);
+
+    return {
+      id: mob.id,
+      data: mob,
+      group,
+      visual,
+      leftWing,
+      rightWing,
+      label,
+      lastHp: mob.hp,
+      targetPos: new THREE.Vector3(mob.x, mob.y, mob.z),
+      phaseOffset: Math.random() * 6.28
+    };
+  }
+
+  _buildDungeonDropEntry(drop) {
+    const group = new THREE.Group();
+    group.position.set(drop.x, drop.y, drop.z);
+    const rarityPalette = {
+      common: '#38bdf8',
+      uncommon: '#34d399',
+      rare: '#f472b6',
+      epic: '#fbbf24'
+    };
+    const hex = drop.itemId ? rarityPalette[drop.rarity] || '#38bdf8' : '#fbbf24';
+    const orbMat = new THREE.MeshStandardMaterial({
+      color: hex,
+      emissive: hex,
+      emissiveIntensity: 0.78,
+      metalness: 0.45,
+      roughness: 0.15
+    });
+
+    const mesh = drop.itemId
+      ? new THREE.Mesh(new THREE.OctahedronGeometry(0.36, 0), orbMat)
+      : new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.12, 18), orbMat);
+    if (!drop.itemId) {
+      mesh.rotation.z = Math.PI / 2;
+    }
+    mesh.position.y = 0.55;
+
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.38, 0.52, 20),
+      new THREE.MeshBasicMaterial({ color: hex, side: THREE.DoubleSide, transparent: true, opacity: 0.62 })
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.06;
+
+    const label = createWorldBannerSprite(drop.label, '', hex);
+    label.position.set(0, 1.38, 0);
+    group.add(mesh, ring, label);
+    this.dungeonEntitiesGroup.add(group);
+
+    return { id: drop.id, data: drop, group, mesh, lastPickupAttemptAt: 0 };
+  }
+
+  syncDungeonSnapshot(dungeon) {
+    if (!dungeon) return;
+    if (Array.isArray(dungeon.portalPos) && dungeon.portalPos.length === 3) {
+      this.plazaPortalPos = { x: dungeon.portalPos[0], y: dungeon.portalPos[1], z: dungeon.portalPos[2] };
+    }
+    if (Array.isArray(dungeon.returnPortalPos) && dungeon.returnPortalPos.length === 3) {
+      this.dungeonReturnPortalPos = {
+        x: dungeon.returnPortalPos[0],
+        y: dungeon.returnPortalPos[1],
+        z: dungeon.returnPortalPos[2]
+      };
+    }
+
+    // Sync Crystal Veins & Treasure Chests
+    for (const node of dungeon.nodes || []) {
+      let entry = this.dungeonNodesMap.get(node.id);
+      if (!entry) {
+        entry = this._buildDungeonNodeEntry(node);
+        this.dungeonNodesMap.set(node.id, entry);
+      }
+      entry.data = node;
+      entry.group.position.set(node.x, node.y, node.z);
+      if (entry.lidPivot) {
+        entry.lidPivot.rotation.x = node.available ? 0 : -0.92;
+        entry.bodyGroup.scale.setScalar(node.available ? 1.0 : 0.92);
+      } else {
+        entry.bodyGroup.scale.setScalar(node.available ? 1.0 : 0.38);
+      }
+    }
+
+    // Sync Mobs
+    this.syncDungeonMobs(dungeon.mobs || []);
+
+    // Sync Ground Loot Drops
+    const nextDropIds = new Set();
+    for (const drop of dungeon.drops || []) {
+      nextDropIds.add(drop.id);
+      if (!this.dungeonDropsMap.has(drop.id)) {
+        this.dungeonDropsMap.set(drop.id, this._buildDungeonDropEntry(drop));
+      } else {
+        const existing = this.dungeonDropsMap.get(drop.id);
+        existing.data = drop;
+      }
+    }
+    for (const [dropId, entry] of this.dungeonDropsMap.entries()) {
+      if (!nextDropIds.has(dropId)) {
+        this.dungeonEntitiesGroup.remove(entry.group);
+        this.dungeonDropsMap.delete(dropId);
+      }
+    }
+  }
+
+  syncDungeonMobs(mobs) {
+    if (!Array.isArray(mobs)) return;
+    for (const mob of mobs) {
+      let entry = this.dungeonMobsMap.get(mob.id);
+      if (!entry) {
+        entry = this._buildDungeonMobEntry(mob);
+        this.dungeonMobsMap.set(mob.id, entry);
+      }
+      entry.data = mob;
+      entry.targetPos.set(mob.x, mob.y, mob.z);
+      entry.group.visible = Boolean(mob.alive);
+      if (entry.lastHp !== mob.hp && mob.alive) {
+        entry.lastHp = mob.hp;
+        const hearts = '♥'.repeat(Math.max(1, mob.hp || 1));
+        entry.group.remove(entry.label);
+        entry.label = createWorldBannerSprite(`${mob.name} ${hearts}`, 'Jump-Stomp or Press E!', '#f472b6');
+        entry.label.position.set(0, 1.92, 0);
+        entry.group.add(entry.label);
+      }
+    }
+  }
+
+  spawnSparkleBurst(originPos, hexColor = '#f472b6') {
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(0.55, 0.08, 8, 28),
+      new THREE.MeshBasicMaterial({ color: hexColor, transparent: true, opacity: 0.92 })
+    );
+    ring.rotation.x = Math.PI / 2;
+    ring.position.set(originPos.x, originPos.y + 0.45, originPos.z);
+    this.scene.add(ring);
+    this.sparkleRings.push({ mesh: ring, bornAt: performance.now() });
+  }
+
+  triggerAction() {
+    if (!this.selfAvatar || this.salonMirrorMode) return;
+    const pos = this.selfAvatar.group.position;
+    this.spawnSparkleBurst(pos, this.currentZone === 1 ? '#c084fc' : '#f472b6');
+
+    if (this.currentZone === 0) {
+      const dPortal = Math.hypot(pos.x - this.plazaPortalPos.x, pos.z - this.plazaPortalPos.z);
+      if (dPortal < 4.2) {
+        this.lastPortalTriggerAt = performance.now();
+        this.onRequestZonePortal(1);
+      }
+      return;
+    }
+
+    const dReturn = Math.hypot(pos.x - this.dungeonReturnPortalPos.x, pos.z - this.dungeonReturnPortalPos.z);
+    if (dReturn < 4.0) {
+      this.lastPortalTriggerAt = performance.now();
+      this.onRequestZonePortal(0);
+      return;
+    }
+
+    let nearestMob = null;
+    let nearestMobDist = 5.4;
+    for (const entry of this.dungeonMobsMap.values()) {
+      if (!entry.data.alive) continue;
+      const d = pos.distanceTo(entry.group.position);
+      if (d < nearestMobDist) {
+        nearestMobDist = d;
+        nearestMob = entry.data;
+      }
+    }
+    if (nearestMob) {
+      this.onAttackMob(nearestMob.id, 'blast');
+      return;
+    }
+
+    let nearestNode = null;
+    let nearestNodeDist = 5.8;
+    for (const entry of this.dungeonNodesMap.values()) {
+      if (!entry.data.available) continue;
+      const d = pos.distanceTo(entry.group.position);
+      if (d < nearestNodeDist) {
+        nearestNodeDist = d;
+        nearestNode = entry.data;
+      }
+    }
+    if (nearestNode) {
+      this.onInteractNode(nearestNode.id);
     }
   }
 
@@ -1489,6 +2442,10 @@ export class BlockyWorld3D {
 
   warpToPlaza() {
     if (!this.selfAvatar) return;
+    if (this.currentZone !== 0) {
+      this.onRequestZonePortal(0);
+      return;
+    }
     this.selfAvatar.group.position.set(0, 0.5, 0);
     this.velocity.set(0, 0, 0);
     this.selfAvatar.emote = null;
@@ -1497,6 +2454,10 @@ export class BlockyWorld3D {
 
   warpToRunway() {
     if (!this.selfAvatar) return;
+    if (this.currentZone !== 0) {
+      this.onRequestZonePortal(0);
+      return;
+    }
     this.selfAvatar.group.position.set(-24, 0.85, -8.5);
     this.selfAvatar.group.rotation.y = 0;
     this.cameraYaw = Math.PI;
@@ -1508,6 +2469,10 @@ export class BlockyWorld3D {
 
   warpToObbyCheckpoint() {
     if (!this.selfAvatar) return;
+    if (this.currentZone !== 0) {
+      this.onRequestZonePortal(0);
+      return;
+    }
     this.selfAvatar.group.position.set(
       this.currentCheckpoint.x,
       this.currentCheckpoint.y + 0.6,
@@ -1555,6 +2520,9 @@ export class BlockyWorld3D {
         if (code === 'Space') {
           e.preventDefault();
           this.jump();
+        } else if (code === 'KeyE') {
+          e.preventDefault();
+          this.triggerAction();
         }
       }
     });
@@ -1599,11 +2567,15 @@ export class BlockyWorld3D {
       const wasClick = this.isDraggingCamera && !this.dragMoved && e.target === canvas;
       this.isDraggingCamera = false;
 
-      if (wasClick && this.buildMode && !this.salonMirrorMode) {
-        if (e.button === 2 || this.buildTool === 'remove') {
-          this._handleVoxelRemoveClick();
-        } else {
-          this._handleVoxelPlaceClick();
+      if (wasClick && !this.salonMirrorMode) {
+        if (this.currentZone === 1) {
+          this.triggerAction();
+        } else if (this.buildMode) {
+          if (e.button === 2 || this.buildTool === 'remove') {
+            this._handleVoxelRemoveClick();
+          } else {
+            this._handleVoxelPlaceClick();
+          }
         }
       }
     });
@@ -1621,7 +2593,7 @@ export class BlockyWorld3D {
   }
 
   _updateBuildGhost() {
-    if (!this.buildMode) {
+    if (!this.buildMode || this.currentZone !== 0) {
       this.ghostMesh.visible = false;
       return;
     }
@@ -1673,7 +2645,9 @@ export class BlockyWorld3D {
   jump() {
     if (!this.selfAvatar) return;
     if (this.isGrounded) {
-      this.velocity.y = 12.2;
+      const serverNow = Date.now() + this.serverClockOffsetMs;
+      const jumpMult = serverNow < this.jumpBoostUntilMs ? 1.3 : 1.0;
+      this.velocity.y = 12.2 * jumpMult;
       this.isGrounded = false;
       this.selfAvatar.emote = null;
     }
@@ -1688,7 +2662,8 @@ export class BlockyWorld3D {
       z: Math.round(p.z * 100) / 100,
       ry: Math.round(this.selfAvatar.group.rotation.y * 100) / 100,
       anim: this.selfAvatar.anim,
-      emote: this.selfAvatar.emote
+      emote: this.selfAvatar.emote,
+      zone: this.currentZone
     });
   }
 
@@ -1703,42 +2678,87 @@ export class BlockyWorld3D {
     const dt = Math.min(0.05, (now - this.lastFrameTime) / 1000);
     this.lastFrameTime = now;
 
-    const tSec = (Date.now() + this.serverClockOffsetMs) * 0.001;
-    for (const mp of this.movingPlatforms) {
-      const prevX = mp.mesh.position.x;
-      const prevZ = mp.mesh.position.z;
-      const nx = mp.baseX + Math.sin(tSec * mp.speed) * mp.ampX;
-      const nz = mp.baseZ + Math.cos(tSec * mp.speed) * mp.ampZ;
-      mp.dx = nx - prevX;
-      mp.dz = nz - prevZ;
-      mp.mesh.position.x = nx;
-      mp.mesh.position.z = nz;
-      mp.minX = nx - mp.w / 2;
-      mp.maxX = nx + mp.w / 2;
-      mp.minZ = nz - mp.d / 2;
-      mp.maxZ = nz + mp.d / 2;
+    const serverNowMs = Date.now() + this.serverClockOffsetMs;
+    const tSec = serverNowMs * 0.001;
+
+    for (const pv of this.portalVortices) {
+      pv.ring.rotation.z = tSec * 2.4;
+      pv.disc.material.opacity = 0.56 + Math.sin(tSec * 4.2) * 0.16;
+      pv.keystone.rotation.y = tSec * 1.9;
     }
 
-    if (this.trophyMesh) {
-      this.trophyMesh.rotation.y = tSec * 1.8;
-      this.trophyMesh.position.y = 17.3 + Math.sin(tSec * 3) * 0.18;
+    for (let i = this.sparkleRings.length - 1; i >= 0; i--) {
+      const sr = this.sparkleRings[i];
+      const age = (now - sr.bornAt) / 420;
+      if (age >= 1) {
+        this.scene.remove(sr.mesh);
+        this.sparkleRings.splice(i, 1);
+        continue;
+      }
+      const sc = 1 + age * 4.8;
+      sr.mesh.scale.set(sc, sc, 1);
+      sr.mesh.material.opacity = (1 - age) * 0.9;
     }
-    if (this.runwayStarCrest) {
-      this.runwayStarCrest.children[0].rotation.y = tSec * 1.4;
-      this.runwayStarCrest.children[1].rotation.z = -tSec * 0.8;
-    }
-    if (Math.floor(tSec * 3) !== this._lastDiscoTick) {
-      this._lastDiscoTick = Math.floor(tSec * 3);
-      const cols = ['#f472b6', '#38bdf8', '#fbbf24', '#a78bfa', '#34d399'];
-      this.discoTiles.forEach((tile, i) => {
-        const c = cols[(i + this._lastDiscoTick) % cols.length];
-        tile.material.color.set(c);
-        tile.material.emissive.set(c);
-      });
-      this.runwayStripLights.forEach((bulb, idx) => {
-        const active = idx % 4 === this._lastDiscoTick % 4;
-        bulb.material.emissiveIntensity = active ? 1.15 : 0.35;
-      });
+
+    if (this.currentZone === 0) {
+      for (const mp of this.movingPlatforms) {
+        const prevX = mp.mesh.position.x;
+        const prevZ = mp.mesh.position.z;
+        const nx = mp.baseX + Math.sin(tSec * mp.speed) * mp.ampX;
+        const nz = mp.baseZ + Math.cos(tSec * mp.speed) * mp.ampZ;
+        mp.dx = nx - prevX;
+        mp.dz = nz - prevZ;
+        mp.mesh.position.x = nx;
+        mp.mesh.position.z = nz;
+        mp.minX = nx - mp.w / 2;
+        mp.maxX = nx + mp.w / 2;
+        mp.minZ = nz - mp.d / 2;
+        mp.maxZ = nz + mp.d / 2;
+      }
+
+      if (this.trophyMesh) {
+        this.trophyMesh.rotation.y = tSec * 1.8;
+        this.trophyMesh.position.y = 17.3 + Math.sin(tSec * 3) * 0.18;
+      }
+      if (this.runwayStarCrest) {
+        this.runwayStarCrest.children[0].rotation.y = tSec * 1.4;
+        this.runwayStarCrest.children[1].rotation.z = -tSec * 0.8;
+      }
+      if (Math.floor(tSec * 3) !== this._lastDiscoTick) {
+        this._lastDiscoTick = Math.floor(tSec * 3);
+        const cols = ['#f472b6', '#38bdf8', '#fbbf24', '#a78bfa', '#34d399'];
+        this.discoTiles.forEach((tile, i) => {
+          const c = cols[(i + this._lastDiscoTick) % cols.length];
+          tile.material.color.set(c);
+          tile.material.emissive.set(c);
+        });
+        this.runwayStripLights.forEach((bulb, idx) => {
+          const active = idx % 4 === this._lastDiscoTick % 4;
+          bulb.material.emissiveIntensity = active ? 1.15 : 0.35;
+        });
+      }
+    } else {
+      // Animate Crystal Cavern mobs, nodes, and spinning loot orbs
+      for (const entry of this.dungeonMobsMap.values()) {
+        if (!entry.data.alive) continue;
+        entry.group.position.lerp(entry.targetPos, Math.min(1, dt * 8.5));
+        entry.group.rotation.y = entry.data.ry || 0;
+        if (entry.data.kind === 'crystal_bat') {
+          const flap = Math.sin(tSec * 12 + entry.phaseOffset) * 0.48;
+          if (entry.leftWing) entry.leftWing.rotation.z = flap;
+          if (entry.rightWing) entry.rightWing.rotation.z = -flap;
+          entry.visual.position.y = Math.sin(tSec * 4.2 + entry.phaseOffset) * 0.16;
+        } else {
+          const hop = Math.abs(Math.sin(tSec * 4.5 + entry.phaseOffset));
+          entry.visual.position.y = hop * 0.34;
+          entry.visual.scale.set(1 + (1 - hop) * 0.1, 0.88 + hop * 0.2, 1 + (1 - hop) * 0.1);
+        }
+      }
+
+      for (const dropEntry of this.dungeonDropsMap.values()) {
+        dropEntry.mesh.rotation.y = tSec * 2.8;
+        dropEntry.mesh.position.y = 0.52 + Math.sin(tSec * 3.6) * 0.14;
+      }
     }
 
     for (let i = this.confettiParticles.length - 1; i >= 0; i--) {
@@ -1767,7 +2787,8 @@ export class BlockyWorld3D {
       }
 
       const isSprinting = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
-      const speed = isSprinting ? 11.4 : 8.4;
+      const speedMult = serverNowMs < this.speedBoostUntilMs ? 1.35 : 1.0;
+      const speed = (isSprinting ? 11.4 : 8.4) * speedMult;
       const forwardVec = new THREE.Vector3(-Math.sin(this.cameraYaw), 0, -Math.cos(this.cameraYaw));
       const rightVec = new THREE.Vector3(Math.cos(this.cameraYaw), 0, -Math.sin(this.cameraYaw));
 
@@ -1843,13 +2864,92 @@ export class BlockyWorld3D {
       }
 
       if (pos.y < -14) {
-        this.warpToPlaza();
+        if (this.currentZone === 1) {
+          pos.set(0, 0.6, 22);
+          this.velocity.set(0, 0, 0);
+          this._emitMoveNow();
+        } else {
+          this.warpToPlaza();
+        }
       }
 
-      const isNowNearRunway = pos.x < -14.5 && pos.x > -33.5 && pos.z > -15.5 && pos.z < 16.5;
-      if (isNowNearRunway !== this.nearRunway) {
-        this.nearRunway = isNowNearRunway;
-        this.onRunwayProximity(isNowNearRunway);
+      // Zone-specific proximity, portal walk-in, jump-stomp, auto-pickup & contextual HUD prompt
+      let nextHint = '';
+      if (this.currentZone === 0) {
+        const isNowNearRunway = pos.x < -14.5 && pos.x > -33.5 && pos.z > -15.5 && pos.z < 16.5;
+        if (isNowNearRunway !== this.nearRunway) {
+          this.nearRunway = isNowNearRunway;
+          this.onRunwayProximity(isNowNearRunway);
+        }
+        const dPortal = Math.hypot(pos.x - this.plazaPortalPos.x, pos.z - this.plazaPortalPos.z);
+        if (dPortal < 2.25 && now - this.lastPortalTriggerAt > 2600) {
+          this.lastPortalTriggerAt = now;
+          this.onRequestZonePortal(1);
+        } else if (dPortal < 5.2) {
+          nextHint = '🌀 Step In or Press E — Enter Crystal Cavern Dungeon!';
+        }
+      } else {
+        const dReturn = Math.hypot(pos.x - this.dungeonReturnPortalPos.x, pos.z - this.dungeonReturnPortalPos.z);
+        if (dReturn < 2.25 && now - this.lastPortalTriggerAt > 2600) {
+          this.lastPortalTriggerAt = now;
+          this.onRequestZonePortal(0);
+        } else if (dReturn < 5.0) {
+          nextHint = '🌟 Step In or Press E — Return to Starlight Plaza';
+        }
+
+        // Mario-style Jump-Stomp on live mobs + nearest mob hint
+        for (const entry of this.dungeonMobsMap.values()) {
+          if (!entry.data.alive) continue;
+          const mPos = entry.group.position;
+          const hDist = Math.hypot(pos.x - mPos.x, pos.z - mPos.z);
+          if (
+            this.velocity.y < -1.0 &&
+            hDist < 1.55 &&
+            pos.y >= mPos.y + 0.15 &&
+            pos.y <= mPos.y + 2.1 &&
+            now - (entry.lastStompAt || 0) > 280
+          ) {
+            entry.lastStompAt = now;
+            this.velocity.y = 11.8;
+            this.isGrounded = false;
+            this.selfAvatar.anim = 'jump';
+            this.spawnSparkleBurst(mPos, '#fbbf24');
+            this.onAttackMob(entry.data.id, 'stomp');
+          } else if (!nextHint && hDist < 5.0) {
+            nextHint = `⚔️ Press E (Sparkle Blast) or Jump-Stomp ${entry.data.name}!`;
+          }
+        }
+
+        // Nearest Crystal Vein / Treasure Chest hint
+        if (!nextHint) {
+          for (const entry of this.dungeonNodesMap.values()) {
+            if (!entry.data.available) continue;
+            if (pos.distanceTo(entry.group.position) < 5.5) {
+              nextHint =
+                entry.data.kind === 'golden_chest'
+                  ? `🗝️ Press E to Unlock ${entry.data.label}`
+                  : `✨ Press E to Harvest ${entry.data.label}`;
+              break;
+            }
+          }
+        }
+
+        // Auto-pickup Ground Loot Orbs
+        for (const dropEntry of this.dungeonDropsMap.values()) {
+          if (
+            pos.distanceTo(dropEntry.group.position) < 2.55 &&
+            now - dropEntry.lastPickupAttemptAt > 650
+          ) {
+            dropEntry.lastPickupAttemptAt = now;
+            this.spawnSparkleBurst(dropEntry.group.position, '#34d399');
+            this.onPickupDrop(dropEntry.id);
+          }
+        }
+      }
+
+      if (nextHint !== this.lastHintText) {
+        this.lastHintText = nextHint;
+        this.onInteractionHint(nextHint || null);
       }
 
       this.selfAvatar.update(dt, true);
@@ -1870,7 +2970,7 @@ export class BlockyWorld3D {
       this.camera.lookAt(targetLookAt);
 
       if (now - this.lastMoveSentAt > 55) {
-        const sig = `${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)},${this.selfAvatar.group.rotation.y.toFixed(2)},${this.selfAvatar.anim},${this.selfAvatar.emote}`;
+        const sig = `${this.currentZone}:${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)},${this.selfAvatar.group.rotation.y.toFixed(2)},${this.selfAvatar.anim},${this.selfAvatar.emote}`;
         if (sig !== this._lastMoveSig) {
           this._lastMoveSig = sig;
           this.lastMoveSentAt = now;
@@ -1880,7 +2980,9 @@ export class BlockyWorld3D {
     }
 
     for (const remoteAv of this.remoteAvatars.values()) {
-      remoteAv.update(dt, false);
+      if (remoteAv.group.visible) {
+        remoteAv.update(dt, false);
+      }
     }
 
     this.renderer.render(this.scene, this.camera);

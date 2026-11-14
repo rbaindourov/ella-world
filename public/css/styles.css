@@ -1722,3 +1722,554 @@ kbd {
     width: 260px;
   }
 }
+
+/* =========================================================================
+   Crystal Cavern Dungeon, Persistent Economy HUD, Backpack & Live P2P Trade
+   ========================================================================= */
+
+.hud-zone-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.14rem 0.52rem;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  color: #bae6fd;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.hud-zone-pill.is-dungeon {
+  background: rgba(168, 85, 247, 0.24);
+  border-color: rgba(192, 132, 252, 0.6);
+  color: #f3e8ff;
+}
+
+.hud-coins-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  padding: 0.14rem 0.56rem;
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.2);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  color: #fef08a;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.hud-buff-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.14rem 0.54rem;
+  border-radius: 999px;
+  background: rgba(52, 211, 153, 0.22);
+  border: 1px solid rgba(52, 211, 153, 0.55);
+  color: #a7f3d0;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.hud-buff-pill[hidden] {
+  display: none;
+}
+
+.hud-chip-btn.dungeon-chip {
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.85), rgba(56, 189, 248, 0.75));
+  border-color: rgba(192, 132, 252, 0.75);
+  color: #ffffff;
+}
+
+.hud-chip-btn.backpack-chip {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: rgba(251, 191, 36, 0.6);
+  color: #fef08a;
+}
+
+.hud-interact-prompt {
+  position: fixed;
+  top: 7.4rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.48rem 1.05rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1.5px solid rgba(192, 132, 252, 0.72);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55), 0 0 22px rgba(168, 85, 247, 0.35);
+  color: #f8fafc;
+  font-size: 0.84rem;
+  font-weight: 800;
+  pointer-events: none;
+  z-index: 28;
+  white-space: nowrap;
+}
+
+.hud-interact-prompt[hidden] {
+  display: none;
+}
+
+.touch-action-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  align-items: stretch;
+}
+
+.touch-action-btn {
+  padding: 0.68rem 1.05rem;
+  border-radius: 999px;
+  border: 2px solid rgba(192, 132, 252, 0.75);
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.9), rgba(236, 72, 153, 0.88));
+  color: #ffffff;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+}
+
+/* Friends List Zone Badge & Trade Action Button */
+.friend-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+}
+
+.friend-zone-tag {
+  font-size: 0.69rem;
+  padding: 0.1rem 0.42rem;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.32);
+  color: #bae6fd;
+  font-weight: 700;
+}
+
+.friend-zone-tag.in-dungeon {
+  background: rgba(168, 85, 247, 0.2);
+  border-color: rgba(192, 132, 252, 0.48);
+  color: #e9d5ff;
+}
+
+.friend-trade-btn {
+  padding: 0.18rem 0.52rem;
+  border-radius: 999px;
+  border: 1px solid rgba(251, 191, 36, 0.6);
+  background: rgba(245, 158, 11, 0.2);
+  color: #fef08a;
+  font-size: 0.7rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform 0.1s ease, background 0.15s ease;
+}
+
+.friend-trade-btn:hover {
+  transform: translateY(-1px);
+  background: rgba(245, 158, 11, 0.36);
+}
+
+/* Glam Salon Exclusive Relics Lock/Unlock Badges */
+.glam-item-card.is-exclusive {
+  border-color: rgba(192, 132, 252, 0.45);
+}
+
+.glam-item-card.is-locked {
+  opacity: 0.64;
+  border-style: dashed;
+}
+
+.glam-lock-badge {
+  display: inline-block;
+  margin-top: 0.18rem;
+  padding: 0.08rem 0.38rem;
+  border-radius: 999px;
+  font-size: 0.64rem;
+  font-weight: 800;
+  background: rgba(15, 23, 42, 0.82);
+  color: #cbd5e1;
+}
+
+.glam-lock-badge.is-owned {
+  background: rgba(34, 197, 94, 0.22);
+  color: #86efac;
+}
+
+/* Non-Modal Top-Layer Incoming Trade Invite Card (popover="manual") */
+.trade-invite-popover {
+  margin: 5.2rem 1rem auto auto;
+  max-width: 370px;
+  width: calc(100vw - 2rem);
+  border: 2px solid rgba(251, 191, 36, 0.72);
+  background: rgba(15, 23, 42, 0.96);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 22px 50px rgba(0, 0, 0, 0.72), 0 0 26px rgba(251, 191, 36, 0.28);
+  overscroll-behavior: contain;
+}
+
+.trade-invite-popover:is(:popover-open, .\:popover-open),
+.trade-invite-popover[open] {
+  display: block;
+  pointer-events: auto;
+  z-index: 55;
+}
+
+.trade-invite-shell {
+  padding: 0.95rem 1.05rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.trade-invite-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+
+.trade-invite-icon {
+  font-size: 1.65rem;
+  line-height: 1;
+}
+
+.trade-invite-sub {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.trade-invite-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.55rem;
+}
+
+/* Backpack Inventory Modal */
+.backpack-summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+  padding: 0.8rem 0.95rem;
+  border-radius: 14px;
+  background: rgba(30, 41, 59, 0.76);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  margin-bottom: 0.9rem;
+}
+
+.backpack-wallet-box {
+  display: flex;
+  flex-direction: column;
+}
+
+.wallet-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.wallet-value {
+  font-size: 1.28rem;
+  color: #fef08a;
+}
+
+.backpack-tip {
+  flex: 1;
+  min-width: 210px;
+  margin: 0;
+}
+
+.backpack-items-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(205px, 1fr));
+  gap: 0.75rem;
+  max-height: 52vh;
+  overflow-y: auto;
+  padding-right: 0.2rem;
+}
+
+.backpack-card {
+  padding: 0.8rem;
+  border-radius: 14px;
+  background: rgba(30, 41, 59, 0.82);
+  border: 1.5px solid rgba(148, 163, 184, 0.3);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
+.backpack-card.is-unowned {
+  opacity: 0.52;
+  border-style: dashed;
+}
+
+.backpack-card.rarity-common {
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.backpack-card.rarity-uncommon {
+  border-color: rgba(52, 211, 153, 0.55);
+}
+
+.backpack-card.rarity-rare {
+  border-color: rgba(244, 114, 182, 0.65);
+}
+
+.backpack-card.rarity-epic {
+  border-color: rgba(251, 191, 36, 0.75);
+  box-shadow: inset 0 0 18px rgba(251, 191, 36, 0.08);
+}
+
+.backpack-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.backpack-icon {
+  font-size: 1.5rem;
+}
+
+.backpack-qty-pill {
+  padding: 0.14rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #f8fafc;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.backpack-card-title {
+  margin: 0.15rem 0 0;
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.backpack-rarity-tag {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 800;
+}
+
+.backpack-desc {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.backpack-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+/* Scam-Proof Two-Sided Live Trade Dialog */
+.trade-status-note {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  color: #fde047;
+  font-weight: 700;
+}
+
+.trade-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.95rem;
+}
+
+.trade-side-card {
+  padding: 0.9rem;
+  border-radius: 15px;
+  background: rgba(30, 41, 59, 0.78);
+  border: 1.5px solid rgba(148, 163, 184, 0.32);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.trade-side-card.is-locked {
+  border-color: rgba(56, 189, 248, 0.75);
+}
+
+.trade-side-card.is-confirmed {
+  border-color: rgba(34, 197, 94, 0.85);
+  box-shadow: inset 0 0 22px rgba(34, 197, 94, 0.1);
+}
+
+.trade-side-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.trade-side-header h3 {
+  margin: 0;
+  font-size: 0.96rem;
+}
+
+.trade-state-pill {
+  padding: 0.16rem 0.56rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  background: rgba(148, 163, 184, 0.2);
+  color: #cbd5e1;
+}
+
+.trade-state-pill.locked {
+  background: rgba(56, 189, 248, 0.22);
+  border: 1px solid rgba(56, 189, 248, 0.55);
+  color: #bae6fd;
+}
+
+.trade-state-pill.confirmed {
+  background: rgba(34, 197, 94, 0.24);
+  border: 1px solid rgba(34, 197, 94, 0.65);
+  color: #86efac;
+}
+
+.trade-wallet-hint {
+  font-size: 0.76rem;
+  color: #fef08a;
+}
+
+#trade-coins-input:user-invalid {
+  border-color: #ef4444;
+  outline-color: #ef4444;
+}
+
+.trade-sub-label {
+  font-size: 0.73rem;
+  font-weight: 800;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.35rem;
+}
+
+.trade-offer-box {
+  padding: 0.65rem;
+  border-radius: 11px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  min-height: 92px;
+}
+
+.trade-offer-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.trade-offer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.26rem 0.55rem;
+  border-radius: 9px;
+  background: rgba(51, 65, 85, 0.85);
+  border: 1px solid rgba(192, 132, 252, 0.45);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.trade-chip-remove-btn {
+  padding: 0 0.28rem;
+  border-radius: 5px;
+  border: 0;
+  background: rgba(239, 68, 68, 0.28);
+  color: #fecaca;
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.trade-inventory-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.38rem;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+.trade-pick-btn {
+  padding: 0.28rem 0.56rem;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.88);
+  color: #f8fafc;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.trade-pick-btn:hover:not(:disabled) {
+  border-color: var(--accent-primary);
+}
+
+.trade-pick-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.trade-partner-coins-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.65rem 0.8rem;
+  border-radius: 11px;
+  background: rgba(251, 191, 36, 0.14);
+  border: 1px solid rgba(251, 191, 36, 0.42);
+  font-size: 0.85rem;
+}
+
+.trade-partner-coins-banner strong {
+  font-size: 1.08rem;
+  color: #fef08a;
+}
+
+.trade-partner-offer-box {
+  min-height: 150px;
+}
+
+.trade-safety-callout {
+  padding: 0.65rem 0.75rem;
+  border-radius: 10px;
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  font-size: 0.76rem;
+  color: #cbd5e1;
+  line-height: 1.4;
+}
+
+.trade-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.trade-confirm-group {
+  display: flex;
+  gap: 0.55rem;
+}
+
+@media (max-width: 900px) {
+  .trade-columns {
+    grid-template-columns: 1fr;
+  }
+}

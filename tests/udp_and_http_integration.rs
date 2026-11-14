@@ -270,6 +270,7 @@ async fn native_udp_voice_and_state_sync_end_to_end() {
         emote: Some("dance".into()),
         muted: false,
         speaking: true,
+        zone: 0,
     });
     let wrapped_move = wrap_native_packet(OP_C2S_STATE, &move_pkt);
     sock_ella.send(&wrapped_move).await.unwrap();
@@ -612,6 +613,7 @@ async fn webrtc_sfu_udp_state_and_opus_voice_forwarding_end_to_end() {
         emote: Some("pose".into()),
         muted: false,
         speaking: true,
+        zone: 0,
     });
     ella_state_dc.send(&c2s_bytes).await.unwrap();
 
@@ -741,6 +743,7 @@ async fn ws_spine_presence_grace_window_and_binary_fallback_end_to_end() {
         emote: Some("peace".into()),
         muted: false,
         speaking: false,
+        zone: 0,
     });
     ws_ella
         .send(TungsMessage::Binary(move_bytes.to_vec()))
@@ -793,6 +796,7 @@ async fn ws_spine_presence_grace_window_and_binary_fallback_end_to_end() {
         emote: Some("spin".into()),
         muted: false,
         speaking: false,
+        zone: 0,
     });
     ws_ella_reconn
         .send(TungsMessage::Binary(reconn_move.to_vec()))
@@ -971,6 +975,7 @@ async fn hybrid_ws_plus_zero_renegotiation_sfu_failover_stability() {
         emote: None,
         muted: false,
         speaking: false,
+        zone: 0,
     });
     maya_state_dc.send(&maya_hb).await.unwrap();
     ws_maya
@@ -992,6 +997,7 @@ async fn hybrid_ws_plus_zero_renegotiation_sfu_failover_stability() {
         emote: None,
         muted: false,
         speaking: false,
+        zone: 0,
     });
     ws_ella
         .send(TungsMessage::Binary(ella_m1.to_vec()))
@@ -1048,6 +1054,7 @@ async fn hybrid_ws_plus_zero_renegotiation_sfu_failover_stability() {
         emote: Some("cheer".into()),
         muted: false,
         speaking: false,
+        zone: 0,
     });
     ws_ella
         .send(TungsMessage::Binary(ella_m2.to_vec()))
@@ -1239,7 +1246,10 @@ async fn chat_persistence_word_filter_and_admin_chat_viewer_work_across_restart(
         chats_after_restart[0].text,
         "hello bestie! classic butterfly runway look!"
     );
-    assert_eq!(reloaded.users_cfg.read().await.blocked_words, vec!["fuck", "meanyhead"]);
+    assert_eq!(
+        reloaded.users_cfg.read().await.blocked_words,
+        vec!["fuck", "meanyhead"]
+    );
 }
 
 #[tokio::test]
@@ -1267,13 +1277,16 @@ async fn scaling_pre_encoded_chunked_snapshots_and_async_persistence() {
                     emote: None,
                     muted: false,
                     speaking: i < 3,
+                    zone: 0,
                 },
             )
             .await;
     }
 
     world.rebuild_pre_encoded_tick(77).await;
-    let chunks = world.encode_world_snapshot_chunks_for("peer_scale_000").await;
+    let chunks = world
+        .encode_world_snapshot_chunks_for("peer_scale_000")
+        .await;
     assert!(
         chunks.len() >= 2,
         "100 peers must chunk into >= 2 MTU-safe packets (got {})",
@@ -1320,7 +1333,13 @@ async fn scaling_pre_encoded_chunked_snapshots_and_async_persistence() {
 
     // Verify async block persistence + cached sync digest work seamlessly
     let (ver, blocks) = world
-        .mutate_block("peer_scale_000", "ella", "place", (4, 2, 4), Some("#38bdf8"))
+        .mutate_block(
+            "peer_scale_000",
+            "ella",
+            "place",
+            (4, 2, 4),
+            Some("#38bdf8"),
+        )
         .await
         .expect("mutate_block");
     assert!(ver >= 2);
@@ -1328,4 +1347,414 @@ async fn scaling_pre_encoded_chunked_snapshots_and_async_persistence() {
 
     let digest_json = world.get_cached_sync_digest_json().await;
     assert!(digest_json.contains("world_sync_digest"));
+}
+
+#[tokio::test]
+async fn dungeon_portal_farming_and_live_p2p_trade_end_to_end() {
+    let cfg = make_test_config("dungeon_and_p2p_trade");
+    let data_dir = cfg.data_dir.clone();
+    let seed_file = cfg.seed_users_file.clone();
+    let running = start_all_servers(cfg).await.expect("start servers");
+
+    // 1. Verify item catalog endpoint exposes all 12 items
+    let (st_cat, cat_res) = http_json_request(
+        running.http_addr,
+        "GET",
+        "/api/ella-world/economy/catalog",
+        None,
+    )
+    .await;
+    assert_eq!(st_cat, 200);
+    assert_eq!(cat_res["itemCatalog"].as_array().unwrap().len(), 12);
+
+    // 2. Login Ella & Maya and connect WebSocket spines
+    let (st_e, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "ec1" })),
+    )
+    .await;
+    assert_eq!(st_e, 200);
+    let ella_token = ella_login["token"].as_str().unwrap().to_string();
+    assert_eq!(ella_login["self"]["zone"], 0);
+    assert_eq!(ella_login["economy"]["coins"], 0);
+
+    let (st_m, maya_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "ec2" })),
+    )
+    .await;
+    assert_eq!(st_m, 200);
+    let maya_token = maya_login["token"].as_str().unwrap().to_string();
+
+    let (mut ws_ella, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, ella_token
+    ))
+    .await
+    .unwrap();
+    let (_ws_maya, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, maya_token
+    ))
+    .await
+    .unwrap();
+
+    // 3. Attempting to equip unowned dungeon-exclusive Obsidian Crown falls back to 'crown'
+    let (st_av_locked, av_locked_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/avatar",
+        Some(json!({
+            "token": ella_token,
+            "avatar": { "hat": "obsidian_crown" }
+        })),
+    )
+    .await;
+    assert_eq!(st_av_locked, 200);
+    assert_eq!(
+        av_locked_res["user"]["avatar"]["hat"], "crown",
+        "Unowned dungeon-exclusive cosmetic must not equip"
+    );
+
+    // 4. Transition Ella into Crystal Cavern Dungeon (zone = 1)
+    let (st_portal, portal_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/portal",
+        Some(json!({ "token": ella_token, "targetZone": 1 })),
+    )
+    .await;
+    assert_eq!(st_portal, 200);
+    assert_eq!(portal_res["zone"], 1);
+
+    // Verify 20 Hz binary snapshot zone isolation: Maya (zone 0) should NOT see Ella (zone 1)
+    running.world.rebuild_pre_encoded_tick(500).await;
+    let maya_plaza_chunks = running
+        .world
+        .encode_world_snapshot_chunks_for("peer_maya_ec2")
+        .await;
+    let maya_decoded = decode_s2c_world_state(&maya_plaza_chunks[0]).unwrap();
+    assert!(
+        maya_decoded.players.is_empty(),
+        "Plaza snapshot must exclude peers currently inside Crystal Cavern Dungeon"
+    );
+
+    // 5. Ella walks to crystal_1 (-14, 0, 12) in zone 1, harvests it, and picks up drop
+    let move_to_crystal = encode_c2s_state(&DecodedC2SState {
+        seq: 1,
+        client_time_ms: 1000,
+        x: -14.0,
+        y: 0.0,
+        z: 12.0,
+        ry: 0.0,
+        anim: "walk".into(),
+        emote: None,
+        muted: false,
+        speaking: false,
+        zone: 1,
+    });
+    ws_ella
+        .send(TungsMessage::Binary(move_to_crystal.to_vec()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    let (st_harv, harv_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/interact",
+        Some(json!({ "token": ella_token, "nodeId": "crystal_1" })),
+    )
+    .await;
+    assert_eq!(st_harv, 200);
+    let crystal_drop_id = harv_res["drop"]["id"].as_str().unwrap().to_string();
+
+    let (st_pick1, pick1_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/pickup",
+        Some(json!({ "token": ella_token, "dropId": crystal_drop_id })),
+    )
+    .await;
+    assert_eq!(st_pick1, 200);
+    assert!(pick1_res["economy"]["coins"].as_u64().unwrap() >= 10);
+
+    // 6. Ella walks to slime_1 (0, 0, 8), Jump-Stomps it (2 dmg = instant defeat), and collects drop
+    let move_to_slime = encode_c2s_state(&DecodedC2SState {
+        seq: 2,
+        client_time_ms: 1100,
+        x: 0.0,
+        y: 0.0,
+        z: 8.0,
+        ry: 0.0,
+        anim: "jump".into(),
+        emote: None,
+        muted: false,
+        speaking: false,
+        zone: 1,
+    });
+    ws_ella
+        .send(TungsMessage::Binary(move_to_slime.to_vec()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    let (st_atk, atk_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/attack",
+        Some(json!({ "token": ella_token, "mobId": "slime_1", "mode": "stomp" })),
+    )
+    .await;
+    assert_eq!(st_atk, 200);
+    assert_eq!(atk_res["defeated"], true);
+    let slime_drop_id = atk_res["drop"]["id"].as_str().unwrap().to_string();
+
+    let (st_pick2, pick2_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/pickup",
+        Some(json!({ "token": ella_token, "dropId": slime_drop_id })),
+    )
+    .await;
+    assert_eq!(st_pick2, 200);
+    let ella_farmed_coins = pick2_res["economy"]["coins"].as_u64().unwrap();
+    assert!(ella_farmed_coins >= 22);
+
+    // 7. Grant deterministic Obsidian Crown + Speed Potion to Ella & 60 coins to Maya for P2P trade test
+    {
+        let mut cfg_guard = running.world.users_cfg.write().await;
+        let ella_u = cfg_guard
+            .users
+            .iter_mut()
+            .find(|u| u.username == "ella")
+            .unwrap();
+        ella_u
+            .inventory
+            .insert("cosmetic_hat_obsidian_crown".into(), 1);
+        ella_u.inventory.insert("speed_potion".into(), 1);
+        let maya_u = cfg_guard
+            .users
+            .iter_mut()
+            .find(|u| u.username == "maya")
+            .unwrap();
+        maya_u.coins = 60;
+    }
+
+    // Drink Speed Potion -> grants speedBoostUntilMs and decrements stack
+    let (st_use, use_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/economy/use",
+        Some(json!({ "token": ella_token, "itemId": "speed_potion" })),
+    )
+    .await;
+    assert_eq!(st_use, 200);
+    assert!(use_res["speedBoostUntilMs"].as_u64().unwrap() > 0);
+
+    // Equip Obsidian Crown on Ella now that she owns 1x cosmetic_hat_obsidian_crown
+    let (st_av_ok, av_ok_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/avatar",
+        Some(json!({
+            "token": ella_token,
+            "avatar": { "hat": "obsidian_crown" }
+        })),
+    )
+    .await;
+    assert_eq!(st_av_ok, 200);
+    assert_eq!(av_ok_res["user"]["avatar"]["hat"], "obsidian_crown");
+
+    // 8. Execute Live Two-Sided Scam-Proof P2P Trade between Ella and Maya
+    let (st_inv, inv_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/invite",
+        Some(json!({ "token": ella_token, "targetPeerId": "peer_maya_ec2" })),
+    )
+    .await;
+    assert_eq!(st_inv, 200);
+    let trade_id = inv_res["trade"]["tradeId"].as_str().unwrap().to_string();
+
+    let (st_resp, resp_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/respond",
+        Some(json!({ "token": maya_token, "tradeId": trade_id, "accept": true })),
+    )
+    .await;
+    assert_eq!(st_resp, 200);
+    assert_eq!(resp_res["trade"]["status"], "active");
+
+    // Ella offers 1x Obsidian Crown + 10 coins; Maya offers 45 coins
+    let (st_of_e, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/offer",
+        Some(json!({
+            "token": ella_token,
+            "tradeId": trade_id,
+            "coins": 10,
+            "items": { "cosmetic_hat_obsidian_crown": 1 }
+        })),
+    )
+    .await;
+    assert_eq!(st_of_e, 200);
+
+    let (st_of_m, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/offer",
+        Some(json!({
+            "token": maya_token,
+            "tradeId": trade_id,
+            "coins": 45,
+            "items": {}
+        })),
+    )
+    .await;
+    assert_eq!(st_of_m, 200);
+
+    // Both lock offers
+    let (st_l1, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/lock",
+        Some(json!({ "token": ella_token, "tradeId": trade_id, "locked": true })),
+    )
+    .await;
+    assert_eq!(st_l1, 200);
+    let (st_l2, l2_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/lock",
+        Some(json!({ "token": maya_token, "tradeId": trade_id, "locked": true })),
+    )
+    .await;
+    assert_eq!(st_l2, 200);
+    assert_eq!(l2_res["trade"]["initiatorOffer"]["locked"], true);
+    assert_eq!(l2_res["trade"]["partnerOffer"]["locked"], true);
+
+    // Anti-bait check: Maya edits coin offer from 45 -> 35, resetting BOTH locks!
+    let (st_edit, edit_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/offer",
+        Some(json!({
+            "token": maya_token,
+            "tradeId": trade_id,
+            "coins": 35,
+            "items": {}
+        })),
+    )
+    .await;
+    assert_eq!(st_edit, 200);
+    assert_eq!(edit_res["trade"]["initiatorOffer"]["locked"], false);
+    assert_eq!(edit_res["trade"]["partnerOffer"]["locked"], false);
+
+    // Confirming while unlocked MUST fail with 400
+    let (st_premature_cf, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/confirm",
+        Some(json!({ "token": ella_token, "tradeId": trade_id })),
+    )
+    .await;
+    assert_eq!(st_premature_cf, 400);
+
+    // Re-lock both sides and confirm both sides
+    http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/lock",
+        Some(json!({ "token": ella_token, "tradeId": trade_id, "locked": true })),
+    )
+    .await;
+    http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/lock",
+        Some(json!({ "token": maya_token, "tradeId": trade_id, "locked": true })),
+    )
+    .await;
+
+    let (st_cf1, cf1_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/confirm",
+        Some(json!({ "token": ella_token, "tradeId": trade_id })),
+    )
+    .await;
+    assert_eq!(st_cf1, 200);
+    assert_eq!(cf1_res["completed"], false);
+
+    let (st_cf2, cf2_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/confirm",
+        Some(json!({ "token": maya_token, "tradeId": trade_id })),
+    )
+    .await;
+    assert_eq!(st_cf2, 200);
+    assert_eq!(cf2_res["completed"], true);
+
+    // Allow background spawn_blocking persistence write to settle
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    running.http_task.abort();
+
+    // 9. Reload WorldEngine from disk and verify atomic conservation + automatic cosmetic unequip!
+    let reload_cfg = ServerConfig {
+        http_addr: "127.0.0.1:0".parse().unwrap(),
+        webrtc_udp_bind_ip: "127.0.0.1".into(),
+        webrtc_udp_port: 0,
+        native_udp_addr: "127.0.0.1:0".parse().unwrap(),
+        public_ip: None,
+        data_dir,
+        public_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("public"),
+        seed_users_file: seed_file,
+        hmac_secret: "integration-test-hmac-secret-2026".into(),
+        tls_cert_path: None,
+        tls_key_path: None,
+    };
+    let reloaded = WorldEngine::new(reload_cfg).expect("reload world");
+    let cfg_after = reloaded.users_cfg.read().await;
+    let ella_after = cfg_after
+        .users
+        .iter()
+        .find(|u| u.username == "ella")
+        .unwrap();
+    let maya_after = cfg_after
+        .users
+        .iter()
+        .find(|u| u.username == "maya")
+        .unwrap();
+
+    // Ella gave 10 coins and received 35 coins (net +25); Maya had 60, gave 35, received 10 (35 left)
+    assert_eq!(ella_after.coins, ella_farmed_coins + 25);
+    assert_eq!(maya_after.coins, 35);
+    assert_eq!(
+        ella_after
+            .inventory
+            .get("cosmetic_hat_obsidian_crown")
+            .copied()
+            .unwrap_or(0),
+        0
+    );
+    assert_eq!(
+        maya_after
+            .inventory
+            .get("cosmetic_hat_obsidian_crown")
+            .copied()
+            .unwrap_or(0),
+        1
+    );
+    assert_eq!(
+        ella_after.avatar.hat, "crown",
+        "Trading away equipped Obsidian Crown must automatically unequip back to 'crown'"
+    );
 }
