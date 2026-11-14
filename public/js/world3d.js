@@ -61,7 +61,7 @@ const ANIM_TO_CLIP = {
   jump: 'Jump_Air'
 };
 
-function createFaceTexture(faceType = 'happy', skinColor = '#ffdfc4') {
+function createFaceTexture(faceType = 'happy', skinColor = '#ffdfc4', isMale = false) {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
@@ -70,18 +70,48 @@ function createFaceTexture(faceType = 'happy', skinColor = '#ffdfc4') {
   ctx.fillStyle = skinColor;
   ctx.fillRect(0, 0, 256, 256);
 
-  ctx.fillStyle = 'rgba(244, 114, 182, 0.38)';
-  ctx.beginPath();
-  ctx.arc(58, 152, 20, 0, Math.PI * 2);
-  ctx.arc(198, 152, 20, 0, Math.PI * 2);
-  ctx.fill();
+  if (!isMale && faceType !== 'hero') {
+    ctx.fillStyle = 'rgba(244, 114, 182, 0.38)';
+    ctx.beginPath();
+    ctx.arc(58, 152, 20, 0, Math.PI * 2);
+    ctx.arc(198, 152, 20, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   ctx.fillStyle = '#0f172a';
   ctx.strokeStyle = '#0f172a';
   ctx.lineWidth = 10;
   ctx.lineCap = 'round';
 
-  if (faceType === 'cool') {
+  if (faceType === 'hero') {
+    // Strong straight masculine hero eyebrows
+    ctx.fillStyle = '#1e1b18';
+    ctx.fillRect(52, 74, 58, 12);
+    ctx.fillRect(146, 74, 58, 12);
+    // Sharp eyes + steel-blue Oblivion iris glint
+    ctx.fillStyle = '#0f172a';
+    ctx.beginPath();
+    ctx.arc(82, 108, 14, 0, Math.PI * 2);
+    ctx.arc(174, 108, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#38bdf8';
+    ctx.beginPath();
+    ctx.arc(82, 110, 6, 0, Math.PI * 2);
+    ctx.arc(174, 110, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(77, 103, 4, 0, Math.PI * 2);
+    ctx.arc(169, 103, 4, 0, Math.PI * 2);
+    ctx.fill();
+    // Confident asymmetric Jack Harper smirk
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 9;
+    ctx.beginPath();
+    ctx.moveTo(96, 168);
+    ctx.quadraticCurveTo(132, 182, 166, 160);
+    ctx.stroke();
+  } else if (faceType === 'cool') {
     ctx.fillStyle = '#0f172a';
     ctx.fillRect(36, 84, 78, 44);
     ctx.fillRect(142, 84, 78, 44);
@@ -333,6 +363,25 @@ function buildHatMesh(hatType, hatColor = '#fbbf24') {
     const centerGem = new THREE.Mesh(new THREE.OctahedronGeometry(0.14, 0), crystalMat);
     centerGem.position.set(0, 0.58, 0.5);
     group.add(centerGem);
+  } else if (hatType === 'recon_cap') {
+    const capMat = new THREE.MeshStandardMaterial({ color: hatColor || '#2c3e50', roughness: 0.52, metalness: 0.12 });
+    const darkMat = new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.45, metalness: 0.25 });
+    const patchMat = new THREE.MeshStandardMaterial({
+      color: '#38bdf8',
+      emissive: '#0284c7',
+      emissiveIntensity: 0.45,
+      roughness: 0.25
+    });
+    const crown = new THREE.Mesh(new THREE.BoxGeometry(0.98, 0.34, 0.98), capMat);
+    crown.position.y = 0.48;
+    group.add(crown);
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.08, 0.52), darkMat);
+    visor.position.set(0, 0.35, 0.62);
+    visor.rotation.x = 0.12;
+    group.add(visor);
+    const patch = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.14, 0.05), patchMat);
+    patch.position.set(0, 0.49, 0.5);
+    group.add(patch);
   }
 
   return group;
@@ -488,7 +537,9 @@ class StylizedCharacterRig {
 
     const isCanonicalSlotName = (n) =>
       n === 'Body_Stylized' ||
+      n === 'Body_Male' ||
       n === 'Face_Brows' ||
+      n === 'Face_Brows_Male' ||
       n === 'Face_SmileTeeth' ||
       n === 'Eye_L' ||
       n === 'Eye_R' ||
@@ -570,7 +621,7 @@ class StylizedCharacterRig {
       });
       if (childMeshes.length === 0) return;
 
-      this.slotsByName.set(node.name, { node, meshes: childMeshes });
+      this.slotsByName.set(node.name, { node, meshes: childMeshes, baseScale: node.scale.clone() });
       if (node.name === 'Acc_wings') {
         this.wingsNode = node;
       }
@@ -609,11 +660,16 @@ class StylizedCharacterRig {
   }
 
   applyAppearance(av = {}) {
-    const hairStyle = av.hairStyle || 'twin_pigtails';
-    const topStyle = av.topStyle || 'glam_gown';
-    const bottomStyle = av.bottomStyle || 'pleated_skirt';
-    const shoeStyle = av.shoeStyle || 'runway_heels';
-    const hat = av.hat || 'crown';
+    const isMale =
+      av.bodyType === 'male' ||
+      av.characterPreset === 'jack_tech49' ||
+      av.characterPreset === 'maverick_cabin';
+
+    const hairStyle = av.hairStyle || (isMale ? 'tech_crop' : 'twin_pigtails');
+    const topStyle = av.topStyle || (isMale ? 'tech_jacket' : 'glam_gown');
+    const bottomStyle = av.bottomStyle || (isMale ? 'tech_pants' : 'pleated_skirt');
+    const shoeStyle = av.shoeStyle || (isMale ? 'flight_boots' : 'runway_heels');
+    const hat = av.hat || (isMale ? 'none' : 'crown');
     const accessory = av.accessory || (hat === 'wings' ? 'wings' : 'none');
 
     const skinColor = av.skinColor || '#ffdfc4';
@@ -631,9 +687,11 @@ class StylizedCharacterRig {
 
     for (const [slotName, slot] of this.slotsByName.entries()) {
       let isVisible = false;
-      if (
-        slotName === 'Body_Stylized' ||
-        slotName === 'Face_Brows' ||
+      if (slotName === 'Body_Male' || slotName === 'Face_Brows_Male') {
+        isVisible = isMale;
+      } else if (slotName === 'Body_Stylized' || slotName === 'Face_Brows') {
+        isVisible = !isMale;
+      } else if (
         slotName === 'Face_SmileTeeth' ||
         slotName === 'Eye_L' ||
         slotName === 'Eye_R'
@@ -655,6 +713,10 @@ class StylizedCharacterRig {
         isVisible = accessory !== 'none' && slotName === `Acc_${accessory}`;
       }
 
+      if (slot.baseScale) {
+        slot.node.scale.copy(slot.baseScale);
+      }
+
       slot.node.visible = isVisible;
       for (const mesh of slot.meshes) {
         mesh.visible = isVisible;
@@ -667,6 +729,15 @@ class StylizedCharacterRig {
             mat.color.set(skinColor);
             mat.roughness = 0.46;
             mat.metalness = 0.02;
+          } else if (mName.startsWith('Mat_Avatar_Lips')) {
+            if (isMale) {
+              const maleLip = new THREE.Color(skinColor).multiplyScalar(0.76);
+              mat.color.copy(maleLip);
+              mat.roughness = 0.55;
+            } else {
+              mat.color.set('#d85c7a');
+              mat.roughness = 0.34;
+            }
           } else if (mName.startsWith('Mat_Avatar_EyeIris')) {
             mat.color.set(eyeColor);
             mat.roughness = 0.08;
@@ -815,17 +886,21 @@ class ClassicBlockyRig {
       this.bodyGroup.remove(this.bodyGroup.children[0]);
     }
 
+    const isMale =
+      av.bodyType === 'male' ||
+      av.characterPreset === 'jack_tech49' ||
+      av.characterPreset === 'maverick_cabin';
     const skinColor = av.skinColor || '#ffdfc4';
     const torsoColor = av.topColor || av.torsoColor || '#f472b6';
     const legsColor = av.bottomColor || av.legsColor || '#6366f1';
-    const hatType = av.hat || 'crown';
+    const hatType = av.hat || (isMale ? 'none' : 'crown');
     const hatColor = av.hatColor || '#fbbf24';
-    const faceType = av.face || 'happy';
+    const faceType = av.face || (isMale ? 'hero' : 'happy');
 
     const skinMat = new THREE.MeshStandardMaterial({ color: skinColor, roughness: 0.5 });
     const torsoMat = new THREE.MeshStandardMaterial({ color: torsoColor, roughness: 0.45 });
     const legsMat = new THREE.MeshStandardMaterial({ color: legsColor, roughness: 0.55 });
-    const faceTex = createFaceTexture(faceType, skinColor);
+    const faceTex = createFaceTexture(faceType, skinColor, isMale);
     const faceMat = new THREE.MeshStandardMaterial({ map: faceTex, roughness: 0.45 });
 
     const headMaterials = [skinMat, skinMat, skinMat, skinMat, faceMat, skinMat];
@@ -833,13 +908,40 @@ class ClassicBlockyRig {
     this.headMesh.position.set(0, 2.48, 0);
     this.headMesh.castShadow = true;
 
+    if (av.accessory === 'aviators') {
+      const frameMat = new THREE.MeshStandardMaterial({ color: '#cbd5e1', metalness: 0.85, roughness: 0.18 });
+      const lensMat = new THREE.MeshStandardMaterial({ color: '#090d16', metalness: 0.72, roughness: 0.08 });
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.05, 0.05), frameMat);
+      bar.position.set(0, 0.14, 0.48);
+      this.headMesh.add(bar);
+      for (const side of [-1, 1]) {
+        const lens = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.24, 0.05), lensMat);
+        lens.position.set(side * 0.22, 0.04, 0.48);
+        this.headMesh.add(lens);
+      }
+    }
+
     const hatGroup = buildHatMesh(hatType, hatColor);
     this.headMesh.add(hatGroup);
     this.bodyGroup.add(this.headMesh);
 
-    this.torsoMesh = new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.08, 0.52), torsoMat);
+    const torsoWidth = isMale ? 1.14 : 1.05;
+    this.torsoMesh = new THREE.Mesh(new THREE.BoxGeometry(torsoWidth, 1.08, 0.54), torsoMat);
     this.torsoMesh.position.set(0, 1.48, 0);
     this.torsoMesh.castShadow = true;
+    if (av.topStyle === 'tech_jacket') {
+      const darkTrimMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.4, metalness: 0.3 });
+      const badgeMat = new THREE.MeshStandardMaterial({
+        color: av.accessoryColor || '#38bdf8',
+        emissive: av.accessoryColor || '#38bdf8',
+        emissiveIntensity: 0.45
+      });
+      const belt = new THREE.Mesh(new THREE.BoxGeometry(torsoWidth + 0.04, 0.14, 0.58), darkTrimMat);
+      belt.position.set(0, -0.44, 0);
+      const badge = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.1, 0.04), badgeMat);
+      badge.position.set(-0.24, 0.24, 0.28);
+      this.torsoMesh.add(belt, badge);
+    }
     this.bodyGroup.add(this.torsoMesh);
 
     this.crystalWingsGroup = null;

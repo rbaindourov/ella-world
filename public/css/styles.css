@@ -1311,7 +1311,15 @@ dialog::backdrop {
   transform: translateY(-1px);
 }
 
-.glam-item-card.selected {
+.glam-item-card:focus-visible,
+.seg-btn:focus-visible,
+.mini-swatch:focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 2px;
+}
+
+.glam-item-card.selected,
+.glam-item-card[aria-pressed="true"] {
   border-color: #f472b6;
   background: linear-gradient(135deg, rgba(236, 72, 153, 0.28), rgba(99, 102, 241, 0.25));
   box-shadow: 0 0 14px rgba(236, 72, 153, 0.25);
@@ -1348,7 +1356,8 @@ dialog::backdrop {
   cursor: pointer;
 }
 
-.seg-btn.active {
+.seg-btn.active,
+.seg-btn[aria-pressed="true"] {
   border-color: #f472b6;
   background: rgba(236, 72, 153, 0.28);
   color: #ffffff;

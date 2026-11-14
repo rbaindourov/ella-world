@@ -6,6 +6,7 @@ import { BlockyWorld3D, BLOCK_COLORS } from '/ella-world/js/world3d.js';
 const SIGNATURE_GLAM_PRESETS = {
   ella_idol: {
     avatarMode: 'stylized',
+    bodyType: 'female',
     characterPreset: 'ella_idol',
     skinColor: '#ffdfc4',
     eyeColor: '#60a5fa',
@@ -26,6 +27,7 @@ const SIGNATURE_GLAM_PRESETS = {
   },
   katey: {
     avatarMode: 'stylized',
+    bodyType: 'female',
     characterPreset: 'katey',
     skinColor: '#ffe4d0',
     eyeColor: '#34d399',
@@ -46,6 +48,7 @@ const SIGNATURE_GLAM_PRESETS = {
   },
   lizzy: {
     avatarMode: 'stylized',
+    bodyType: 'female',
     characterPreset: 'lizzy',
     skinColor: '#e5b887',
     eyeColor: '#8b5cf6',
@@ -66,6 +69,7 @@ const SIGNATURE_GLAM_PRESETS = {
   },
   amy: {
     avatarMode: 'stylized',
+    bodyType: 'female',
     characterPreset: 'amy',
     skinColor: '#f3c6a5',
     eyeColor: '#60a5fa',
@@ -86,6 +90,7 @@ const SIGNATURE_GLAM_PRESETS = {
   },
   mom: {
     avatarMode: 'stylized',
+    bodyType: 'female',
     characterPreset: 'mom',
     skinColor: '#f5cba7',
     eyeColor: '#92400e',
@@ -106,6 +111,7 @@ const SIGNATURE_GLAM_PRESETS = {
   },
   fairy_queen: {
     avatarMode: 'stylized',
+    bodyType: 'female',
     characterPreset: 'fairy_queen',
     skinColor: '#ffe4d0',
     eyeColor: '#8b5cf6',
@@ -126,6 +132,7 @@ const SIGNATURE_GLAM_PRESETS = {
   },
   y2k_skater: {
     avatarMode: 'stylized',
+    bodyType: 'female',
     characterPreset: 'y2k_skater',
     skinColor: '#ffdfc4',
     eyeColor: '#ec4899',
@@ -146,6 +153,7 @@ const SIGNATURE_GLAM_PRESETS = {
   },
   runway_gala: {
     avatarMode: 'stylized',
+    bodyType: 'female',
     characterPreset: 'runway_gala',
     skinColor: '#c68652',
     eyeColor: '#34d399',
@@ -163,6 +171,48 @@ const SIGNATURE_GLAM_PRESETS = {
     accessoryColor: '#f59e0b',
     fabricFinish: 'glitter',
     face: 'star'
+  },
+  jack_tech49: {
+    avatarMode: 'stylized',
+    bodyType: 'male',
+    characterPreset: 'jack_tech49',
+    skinColor: '#eab692',
+    eyeColor: '#38bdf8',
+    hairStyle: 'tech_crop',
+    hairColor: '#3b2516',
+    topStyle: 'tech_jacket',
+    topColor: '#e2e8f0',
+    bottomStyle: 'tech_pants',
+    bottomColor: '#64748b',
+    shoeStyle: 'flight_boots',
+    shoeColor: '#334155',
+    hat: 'none',
+    hatColor: '#334155',
+    accessory: 'aviators',
+    accessoryColor: '#38bdf8',
+    fabricFinish: 'matte',
+    face: 'hero'
+  },
+  maverick_cabin: {
+    avatarMode: 'stylized',
+    bodyType: 'male',
+    characterPreset: 'maverick_cabin',
+    skinColor: '#eab692',
+    eyeColor: '#38bdf8',
+    hairStyle: 'maverick_quiff',
+    hairColor: '#3b2516',
+    topStyle: 'hero_henley',
+    topColor: '#cbd5e1',
+    bottomStyle: 'tech_pants',
+    bottomColor: '#2c3e5a',
+    shoeStyle: 'flight_boots',
+    shoeColor: '#3f2e24',
+    hat: 'recon_cap',
+    hatColor: '#334155',
+    accessory: 'aviators',
+    accessoryColor: '#38bdf8',
+    fabricFinish: 'matte',
+    face: 'hero'
   }
 };
 
@@ -2626,21 +2676,31 @@ function syncSalonControlsFromDraft() {
   setPicker('avatar-hat-color', draftAvatar.hatColor || '#fbbf24');
   setPicker('avatar-acc-color', draftAvatar.accessoryColor || '#f472b6');
 
+  const effectiveBodyType =
+    draftAvatar.bodyType ||
+    (draftAvatar.characterPreset === 'jack_tech49' || draftAvatar.characterPreset === 'maverick_cabin'
+      ? 'male'
+      : 'female');
+
   for (const card of avatarDialog.querySelectorAll('.glam-item-card[data-preset-id]')) {
-    card.classList.toggle(
-      'selected',
-      card.getAttribute('data-preset-id') === draftAvatar.characterPreset
-    );
+    const isSel = card.getAttribute('data-preset-id') === draftAvatar.characterPreset;
+    card.classList.toggle('selected', isSel);
+    card.setAttribute('aria-pressed', String(isSel));
   }
   for (const card of avatarDialog.querySelectorAll('.glam-item-card[data-field]')) {
     const f = card.getAttribute('data-field');
     const v = card.getAttribute('data-val');
-    card.classList.toggle('selected', String(draftAvatar[f] || '') === v);
+    const isSel = String(draftAvatar[f] || '') === v;
+    card.classList.toggle('selected', isSel);
+    card.setAttribute('aria-pressed', String(isSel));
   }
   for (const seg of avatarDialog.querySelectorAll('.seg-btn[data-field]')) {
     const f = seg.getAttribute('data-field');
     const v = seg.getAttribute('data-val');
-    seg.classList.toggle('active', String(draftAvatar[f] || '') === v);
+    const curVal = f === 'bodyType' ? effectiveBodyType : String(draftAvatar[f] || '');
+    const isAct = curVal === v;
+    seg.classList.toggle('active', isAct);
+    seg.setAttribute('aria-pressed', String(isAct));
   }
 
   const gownHint = document.getElementById('gown-override-hint');
@@ -2785,7 +2845,7 @@ avatarDialog.addEventListener('click', (e) => {
       draftAvatar = { ...draftAvatar, ...preset, avatarMode: 'stylized' };
       previewDraftInMirror();
       scheduleAutoSaveAvatar(180);
-      showToast(`✨ Equipped ${presetCard.querySelector('.item-name')?.textContent || 'Signature Look'}!`);
+      showToast(`✨ Equipped ${presetCard.querySelector('strong')?.textContent || 'Signature Look'}!`);
     }
     return;
   }
@@ -2832,13 +2892,35 @@ avatarDialog.addEventListener('click', (e) => {
     return;
   }
 
-  // 3. Segmented Buttons (Avatar Mode & Fabric Finish)
+  // 3. Segmented Buttons (Character Build, Avatar Mode & Fabric Finish)
   const segBtn = target.closest('.seg-btn[data-field]');
   if (segBtn) {
     const field = segBtn.getAttribute('data-field');
     const val = segBtn.getAttribute('data-val');
     if (field && val !== null) {
-      draftAvatar[field] = val;
+      if (field === 'bodyType' && val === 'male' && draftAvatar.topStyle === 'glam_gown') {
+        draftAvatar = {
+          ...draftAvatar,
+          ...SIGNATURE_GLAM_PRESETS.jack_tech49,
+          avatarMode: draftAvatar.avatarMode || 'stylized'
+        };
+      } else if (
+        field === 'bodyType' &&
+        val === 'female' &&
+        draftAvatar.topStyle === 'tech_jacket' &&
+        draftAvatar.characterPreset === 'jack_tech49'
+      ) {
+        draftAvatar = {
+          ...draftAvatar,
+          ...SIGNATURE_GLAM_PRESETS.ella_idol,
+          avatarMode: draftAvatar.avatarMode || 'stylized'
+        };
+      } else {
+        draftAvatar[field] = val;
+        if (field === 'bodyType') {
+          draftAvatar.characterPreset = 'custom';
+        }
+      }
       previewDraftInMirror();
       scheduleAutoSaveAvatar(180);
     }

@@ -1758,3 +1758,81 @@ async fn dungeon_portal_farming_and_live_p2p_trade_end_to_end() {
         "Trading away equipped Obsidian Crown must automatically unequip back to 'crown'"
     );
 }
+
+#[tokio::test]
+async fn male_oblivion_jack_tech49_avatar_api_and_resume_persistence() {
+    let cfg = make_test_config("male_oblivion_avatar");
+    let running = start_all_servers(cfg).await.expect("start servers");
+
+    let (st_login, login_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "m1" })),
+    )
+    .await;
+    assert_eq!(st_login, 200);
+    let token = login_res["token"].as_str().unwrap().to_string();
+    assert_eq!(login_res["self"]["user"]["avatar"]["bodyType"], "female");
+
+    // Equip Jack Tech-49 Oblivion flight suit preset via HTTP avatar endpoint
+    let (st_av, av_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/avatar",
+        Some(json!({
+            "token": token,
+            "avatar": {
+                "avatarMode": "stylized",
+                "bodyType": "male",
+                "characterPreset": "jack_tech49",
+                "skinColor": "#eab692",
+                "eyeColor": "#38bdf8",
+                "hairStyle": "tech_crop",
+                "hairColor": "#3b2516",
+                "topStyle": "tech_jacket",
+                "topColor": "#e2e8f0",
+                "bottomStyle": "tech_pants",
+                "bottomColor": "#64748b",
+                "shoeStyle": "flight_boots",
+                "shoeColor": "#334155",
+                "hat": "recon_cap",
+                "hatColor": "#334155",
+                "accessory": "aviators",
+                "accessoryColor": "#38bdf8",
+                "fabricFinish": "matte",
+                "face": "hero"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(st_av, 200);
+    assert_eq!(av_res["user"]["avatar"]["bodyType"], "male");
+    assert_eq!(av_res["user"]["avatar"]["characterPreset"], "jack_tech49");
+    assert_eq!(av_res["user"]["avatar"]["hairStyle"], "tech_crop");
+    assert_eq!(av_res["user"]["avatar"]["topStyle"], "tech_jacket");
+    assert_eq!(av_res["user"]["avatar"]["bottomStyle"], "tech_pants");
+    assert_eq!(av_res["user"]["avatar"]["shoeStyle"], "flight_boots");
+    assert_eq!(av_res["user"]["avatar"]["hat"], "recon_cap");
+    assert_eq!(av_res["user"]["avatar"]["accessory"], "aviators");
+    assert_eq!(av_res["user"]["avatar"]["face"], "hero");
+
+    // Verify /api/ella-world/resume restores the persisted male build & Oblivion wardrobe cleanly
+    let (st_res, resume_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/resume",
+        Some(json!({ "token": token, "clientId": "m1" })),
+    )
+    .await;
+    assert_eq!(st_res, 200);
+    assert_eq!(resume_res["self"]["user"]["avatar"]["bodyType"], "male");
+    assert_eq!(
+        resume_res["self"]["user"]["avatar"]["topStyle"],
+        "tech_jacket"
+    );
+    assert_eq!(
+        resume_res["self"]["user"]["avatar"]["accessory"],
+        "aviators"
+    );
+}

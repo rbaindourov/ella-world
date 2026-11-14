@@ -83,3 +83,40 @@ In November 2026, ELLA World was extracted out of the `multipleDomainCMS` Node.j
    - **`44445/udp` (`NativeUdpServer`)**: Raw `tokio::net::UdpSocket` speaking the `EWLD` v1 binary UDP protocol with bidirectional Opus voice bridging to WebRTC browser peers.
 3. **Production Deployment & Atomic State**:
    - Compiled as a static zero-glibc `x86_64-unknown-linux-musl` Rust binary at `/opt/ella-world/ella-world-server` with persistent world state stored in `/var/lib/ella-world/world_users.json` and `/var/lib/ella-world/world_blocks.json`.
+
+---
+
+## 6. Male Character Rig & *Oblivion* "Tech-49" Wardrobe Expansion (`v0.3.0`)
+
+To support boy characters alongside the Ella Forensics female cast without duplicating armatures or animation tracks, [`scripts/build_male_oblivion_wardrobe.py`](../scripts/build_male_oblivion_wardrobe.py) extends `assets/blender/ella_dti_wardrobe.blend` and exports a unified **47-mesh** `public/models/ella_dti_wardrobe.glb` (`~6.91 MB`, 23 PBR materials, 12 shared NLA skeletal animations across 25 bones):
+
+### 6.1 Shared-Skeleton Male Base Mesh (`Body_Male` & `Face_Brows_Male`)
+- **`Body_Male`**: Sculpted from `Body_Stylized` in rest pose while preserving exact 25-bone skin weights and joint pivots (`1.55x` WebGL world height):
+  - Flattens the female bust and smooths chest/waist topology into an athletic masculine V-taper torso, broader lats/shoulders, stronger neck, defined jaw/chin/nasal bridge, and neutralized vertex-color blush.
+- **`Face_Brows_Male`**: Thicker, straighter, lower-set masculine eyebrows parented to the `head` bone (`Mat_Avatar_Brow`).
+- **Runtime Toggling (`StylizedCharacterRig.applyAppearance`)**:
+  - Evaluates `isMale = av.bodyType === 'male' || av.characterPreset === 'jack_tech49' || av.characterPreset === 'maverick_cabin'`.
+  - Shows `Body_Male` + `Face_Brows_Male` when `isMale` (or `Body_Stylized` + `Face_Brows` when `!isMale`) and tints `Mat_Avatar_Lips` to a natural muted skin-terracotta shade on male builds.
+
+### 6.2 *Oblivion* ("Jack Tech-49") & Casual Boy Modular Slots (10 New Meshes)
+| Slot Name | Description | Materials & Binding |
+| :--- | :--- | :--- |
+| `Hair_tech_crop` | Short textured side-part crew cut inspired by Jack Harper (*Oblivion*); BVHTree cranium-raycast watertight quad dome + 6 feathered swept locks + Catmull-Clark `SUBSURF` | `Mat_Avatar_HairSolid`, parented to `head` |
+| `Hair_maverick_quiff` | Wind-swept tousled hero quiff with full temple & sideburn coverage | `Mat_Avatar_HairSolid`, parented to `head` |
+| `Top_tech_jacket` | Light-grey/white *Oblivion* Tech-49 tactical flight jacket with stand-up Mandarin collar, 3D charcoal shoulder yokes, diagonal chest harness seams, full-wrap wrist gauntlets, glowing cyan Tech-49 telemetry chest badge, sleeve recon patch, and 3D utility belt + silver buckle + hip pouches | `Mat_Avatar_Top`, `Mat_Avatar_TechDark`, `Mat_Avatar_Accent`, `Mat_Avatar_Silver` (25-bone `DataTransfer`) |
+| `Top_hero_henley` | Athletic short-sleeve Henley crew tee (`bmesh.ops.bisect_plane` bicep cuffs, 3D collar/placket, full-coverage hip hem, and slim dark waist belt) | `Mat_Avatar_Top`, `Mat_Avatar_TechDark` (25-bone `DataTransfer`) |
+| `Bottom_tech_pants` | Straight-cut tactical flight trousers with 3D beveled charcoal knee armor pads, cargo flaps/silver clasps, and boot-tucked ankles | `Mat_Avatar_Bottom`, `Mat_Avatar_TechDark`, `Mat_Avatar_Silver` (25-bone `DataTransfer`) |
+| `Shoe_flight_boots` | Closed-toe rounded 3D tactical flight boots with chunky charcoal lug soles, front shin armor plates, and dual brushed-silver shin buckles | `Mat_Avatar_Shoe`, `Mat_Avatar_TechDark`, `Mat_Avatar_Silver` (25-bone `DataTransfer`) |
+| `Acc_aviators` | Brushed-silver double-bridge teardrop Aviator sunglasses with dark mirror lenses | `Mat_Avatar_Silver`, `Mat_Avatar_AviatorLens`, parented to `head` |
+| `Hat_recon_cap` | Curved-brim *Oblivion* Recon baseball cap with forward visor and cyan front mission patch | `Mat_Avatar_Hat`, `Mat_Avatar_TechDark`, `Mat_Avatar_Accent`, parented to `head` |
+
+### 6.3 Reproducible Headless Blender Build & Verification
+```bash
+/home/ella/.local/bin/blender -b /home/ella/projects/ella-world/assets/blender/ella_dti_wardrobe.blend \
+  -P /home/ella/projects/ella-world/scripts/build_male_oblivion_wardrobe.py
+```
+Automatically rebuilds all 10 male character/wardrobe meshes cleanly (idempotent cleanup on re-run), saves `assets/blender/ella_dti_wardrobe.blend`, exports `public/models/ella_dti_wardrobe.glb`, and renders 5 EEVEE studio verification cards (`jack_tech49_front.png`, `jack_tech49_three_quarter.png`, `jack_face_closeup.png`, `jack_aviators_closeup.png`, `maverick_cabin_look.png`).
+
+### 6.4 Server Schema & Accessible Glam Salon Integration
+- **`src/models.rs`**: Adds `#[serde(default = "default_body_type")] pub body_type: String` (defaulting to `"female"` so existing `world_users.json` profiles deserialize seamlessly), whitelists all new boy presets/slots/faces (`hero`), includes `body_type` in `AvatarAppearance::short_hash()` for instant 20 Hz binary digest propagation, and adds `"🛸 Sky-Tower Tech Recon"` to `RUNWAY_THEMES`.
+- **Glam Salon Closet (`public/index.html`, `public/js/app.js`, `public/css/styles.css`)**: Adds **Jack Tech-49** (`jack_tech49`) and **Maverick Recon** (`maverick_cabin`) signature preset cards, an accessible `👧 Girl Build` / `👦 Boy Build` `role="group"` segmented toggle with live `aria-pressed` synchronization and `:focus-visible` outlines, and full Classic Blocky fallback parity (`ClassicBlockyRig`).

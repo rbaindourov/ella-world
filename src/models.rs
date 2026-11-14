@@ -12,6 +12,7 @@ pub const RUNWAY_THEMES: &[&str] = &[
     "🎨 Parisian Fashion Week",
     "🌺 Sunset Beach Glam",
     "🌈 Rainbow Slumber Party",
+    "🛸 Sky-Tower Tech Recon",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -19,6 +20,8 @@ pub const RUNWAY_THEMES: &[&str] = &[
 pub struct AvatarAppearance {
     #[serde(default = "default_avatar_mode")]
     pub avatar_mode: String,
+    #[serde(default = "default_body_type")]
+    pub body_type: String,
     #[serde(default = "default_preset")]
     pub character_preset: String,
     #[serde(default = "default_skin")]
@@ -61,6 +64,9 @@ pub struct AvatarAppearance {
 
 fn default_avatar_mode() -> String {
     "stylized".into()
+}
+fn default_body_type() -> String {
+    "female".into()
 }
 fn default_preset() -> String {
     "ella_idol".into()
@@ -115,6 +121,7 @@ impl Default for AvatarAppearance {
     fn default() -> Self {
         Self {
             avatar_mode: default_avatar_mode(),
+            body_type: default_body_type(),
             character_preset: default_preset(),
             skin_color: default_skin(),
             eye_color: default_eye(),
@@ -154,6 +161,11 @@ impl AvatarAppearance {
                 self.avatar_mode = v.into();
             }
         }
+        if let Some(v) = get_str("bodyType") {
+            if ["female", "male"].contains(&v) {
+                self.body_type = v.into();
+            }
+        }
         if let Some(v) = get_str("characterPreset") {
             if [
                 "ella_idol",
@@ -164,11 +176,20 @@ impl AvatarAppearance {
                 "fairy_queen",
                 "y2k_skater",
                 "runway_gala",
+                "jack_tech49",
+                "maverick_cabin",
                 "custom",
             ]
             .contains(&v)
             {
                 self.character_preset = v.into();
+                if get_str("bodyType").is_none() {
+                    if ["jack_tech49", "maverick_cabin"].contains(&v) {
+                        self.body_type = "male".into();
+                    } else if v != "custom" {
+                        self.body_type = "female".into();
+                    }
+                }
             }
         }
         if let Some(v) = get_str("skinColor").filter(|c| is_valid_hex_color(c)) {
@@ -185,6 +206,8 @@ impl AvatarAppearance {
                 "mom_bun",
                 "twin_pigtails",
                 "glam_ponytail",
+                "tech_crop",
+                "maverick_quiff",
             ]
             .contains(&v)
             {
@@ -202,6 +225,8 @@ impl AvatarAppearance {
                 "crew_tee",
                 "puff_blouse",
                 "glam_gown",
+                "tech_jacket",
+                "hero_henley",
             ]
             .contains(&v)
             {
@@ -222,6 +247,7 @@ impl AvatarAppearance {
                 "jeans",
                 "cargo_pants",
                 "overalls",
+                "tech_pants",
             ]
             .contains(&v)
             {
@@ -236,7 +262,7 @@ impl AvatarAppearance {
             self.bottom_color = v.into();
         }
         if let Some(v) = get_str("shoeStyle") {
-            if ["sneakers", "platform_boots", "runway_heels"].contains(&v) {
+            if ["sneakers", "platform_boots", "runway_heels", "flight_boots"].contains(&v) {
                 self.shoe_style = v.into();
             }
         }
@@ -254,6 +280,7 @@ impl AvatarAppearance {
                 "astronaut",
                 "wings",
                 "tophat",
+                "recon_cap",
                 "ninja",
                 "obsidian_crown",
             ]
@@ -270,6 +297,7 @@ impl AvatarAppearance {
                 "none",
                 "star_purse",
                 "sunglasses",
+                "aviators",
                 "choker",
                 "pearls",
                 "wings",
@@ -290,7 +318,7 @@ impl AvatarAppearance {
             }
         }
         if let Some(v) = get_str("face") {
-            if ["happy", "star", "cat", "cool", "wink", "silly"].contains(&v) {
+            if ["happy", "star", "cat", "cool", "wink", "silly", "hero"].contains(&v) {
                 self.face = v.into();
             }
         }
@@ -302,6 +330,7 @@ impl AvatarAppearance {
         let mut h = Sha256::new();
         for field in [
             &self.avatar_mode,
+            &self.body_type,
             &self.character_preset,
             &self.skin_color,
             &self.eye_color,
@@ -733,4 +762,60 @@ pub fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn male_oblivion_jack_tech49_avatar_patch_and_legacy_defaults() {
+        // Legacy saved user JSON without bodyType must deserialize cleanly as "female"
+        let legacy: AvatarAppearance = serde_json::from_value(json!({
+            "characterPreset": "katey",
+            "hairStyle": "katey_long"
+        }))
+        .expect("legacy avatar json");
+        assert_eq!(legacy.body_type, "female");
+
+        let mut jack = AvatarAppearance::default();
+        let base_hash = jack.short_hash();
+        jack.apply_patch(&json!({
+            "characterPreset": "jack_tech49",
+            "skinColor": "#e5b887",
+            "eyeColor": "#0ea5e9",
+            "hairStyle": "tech_crop",
+            "hairColor": "#3b2314",
+            "topStyle": "tech_jacket",
+            "topColor": "#e2e8f0",
+            "bottomStyle": "tech_pants",
+            "bottomColor": "#64748b",
+            "shoeStyle": "flight_boots",
+            "shoeColor": "#334155",
+            "hat": "recon_cap",
+            "hatColor": "#334155",
+            "accessory": "aviators",
+            "accessoryColor": "#38bdf8",
+            "fabricFinish": "matte",
+            "face": "hero"
+        }));
+
+        assert_eq!(jack.body_type, "male");
+        assert_eq!(jack.character_preset, "jack_tech49");
+        assert_eq!(jack.hair_style, "tech_crop");
+        assert_eq!(jack.top_style, "tech_jacket");
+        assert_eq!(jack.bottom_style, "tech_pants");
+        assert_eq!(jack.shoe_style, "flight_boots");
+        assert_eq!(jack.hat, "recon_cap");
+        assert_eq!(jack.accessory, "aviators");
+        assert_eq!(jack.face, "hero");
+        assert_ne!(jack.short_hash(), base_hash);
+
+        // Switching only bodyType must alter short_hash so remote 20Hz peers resync immediately
+        let male_hash = jack.short_hash();
+        jack.apply_patch(&json!({ "bodyType": "female" }));
+        assert_eq!(jack.body_type, "female");
+        assert_ne!(jack.short_hash(), male_hash);
+    }
 }
