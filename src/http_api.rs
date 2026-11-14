@@ -113,8 +113,8 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
         "blockCount": blocks_count,
         "chatFilterEnabled": cfg.chat_filter_enabled,
         "blockedWords": cfg.blocked_words,
-        "chatCount": world.store.count_chats(),
-        "blockedChatCount": world.store.count_blocked_chats(),
+        "chatCount": world.cached_chat_count.load(std::sync::atomic::Ordering::Relaxed),
+        "blockedChatCount": world.cached_blocked_chat_count.load(std::sync::atomic::Ordering::Relaxed),
         "users": users_list
     })
 }
@@ -565,8 +565,8 @@ async fn admin_upsert_user_handler(
                 last_pos_saved_at: None,
             });
         }
-        let _ = st.world.store.save_users(&cfg);
     }
+    st.world.persist_users_async().await;
 
     let dashboard = build_admin_dashboard(&st.world).await;
     Json(json!({ "ok": true, "dashboard": dashboard })).into_response()
@@ -586,8 +586,8 @@ async fn admin_delete_user_handler(
         let mut cfg = st.world.users_cfg.write().await;
         cfg.users
             .retain(|u| !u.username.eq_ignore_ascii_case(&target));
-        let _ = st.world.store.save_users(&cfg);
     }
+    st.world.persist_users_async().await;
 
     let peer_ids_to_kick: Vec<String> = {
         let map = st.world.players.read().await;
@@ -703,8 +703,8 @@ async fn admin_settings_handler(
             }
             cfg.blocked_words = clean;
         }
-        let _ = st.world.store.save_users(&cfg);
     }
+    st.world.persist_users_async().await;
 
     let dashboard = build_admin_dashboard(&st.world).await;
     Json(json!({ "ok": true, "dashboard": dashboard })).into_response()

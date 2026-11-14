@@ -84,9 +84,11 @@ impl NativeUdpServer {
                 };
 
                 for sess in &peers {
-                    let snap = tx_world.encode_world_snapshot_for(&sess.self_id).await;
-                    let framed = wrap_native_packet(OP_S2C_WORLD_STATE, &snap);
-                    let _ = tx_srv.socket.send_to(&framed, sess.addr).await;
+                    let chunks = tx_world.encode_world_snapshot_chunks_for(&sess.self_id).await;
+                    for snap in chunks {
+                        let framed = wrap_native_packet(OP_S2C_WORLD_STATE, &snap);
+                        let _ = tx_srv.socket.send_to(&framed, sess.addr).await;
+                    }
                 }
 
                 if tick_idx.is_multiple_of(100) {

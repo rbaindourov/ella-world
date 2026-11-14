@@ -1241,3 +1241,91 @@ async fn chat_persistence_word_filter_and_admin_chat_viewer_work_across_restart(
     );
     assert_eq!(reloaded.users_cfg.read().await.blocked_words, vec!["fuck", "meanyhead"]);
 }
+
+#[tokio::test]
+async fn scaling_pre_encoded_chunked_snapshots_and_async_persistence() {
+    let cfg = make_test_config("scaling_100");
+    let world = WorldEngine::new(cfg.clone()).expect("world engine");
+
+    for i in 0..100usize {
+        let sid = format!("peer_scale_{i:03}");
+        let res = world
+            .ensure_player_online(&sid, if i % 2 == 0 { "ella" } else { "maya" })
+            .await;
+        assert!(res.is_some());
+        world
+            .apply_c2s_state(
+                &sid,
+                DecodedC2SState {
+                    seq: 1,
+                    client_time_ms: 1000 + i as u32,
+                    x: (i as f32) * 0.25,
+                    y: 0.0,
+                    z: -3.0,
+                    ry: 0.5,
+                    anim: "run".into(),
+                    emote: None,
+                    muted: false,
+                    speaking: i < 3,
+                },
+            )
+            .await;
+    }
+
+    world.rebuild_pre_encoded_tick(77).await;
+    let chunks = world.encode_world_snapshot_chunks_for("peer_scale_000").await;
+    assert!(
+        chunks.len() >= 2,
+        "100 peers must chunk into >= 2 MTU-safe packets (got {})",
+        chunks.len()
+    );
+    let mut seen_ids = std::collections::HashSet::new();
+    for c in &chunks {
+        assert!(
+            c.len() <= 1240,
+            "every chunk must stay within MAX_SNAPSHOT_MTU_BYTES (got {})",
+            c.len()
+        );
+        let decoded = decode_s2c_world_state(c).expect("decode chunk");
+        assert_eq!(decoded.server_tick, 77);
+        assert_eq!(decoded.echo_client_time_ms, 1000);
+        for p in decoded.players {
+            seen_ids.insert(p.id);
+        }
+    }
+    assert_eq!(
+        seen_ids.len(),
+        99,
+        "all 99 other peers must be delivered without any 64-player cap"
+    );
+    assert!(!seen_ids.contains("peer_scale_000"));
+
+    // Verify round-robin scheduled chunk selector covers all 99 peers across consecutive ticks
+    let mut sched_ids = std::collections::HashSet::new();
+    for tick in 100u32..106u32 {
+        world.rebuild_pre_encoded_tick(tick).await;
+        let pre = world.pre_encoded_tick.read().await.clone();
+        let pkt = WorldEngine::encode_pre_tick_scheduled_chunk_for(&pre, "peer_scale_000");
+        assert!(pkt.len() <= 1240);
+        let decoded = decode_s2c_world_state(&pkt).expect("decode scheduled chunk");
+        for p in decoded.players {
+            sched_ids.insert(p.id);
+        }
+    }
+    assert_eq!(
+        sched_ids.len(),
+        99,
+        "scheduled chunk rotation must cover all 99 other peers cleanly within <= 6 ticks"
+    );
+
+    // Verify async block persistence + cached sync digest work seamlessly
+    let (ver, blocks) = world
+        .mutate_block("peer_scale_000", "ella", "place", (4, 2, 4), Some("#38bdf8"))
+        .await
+        .expect("mutate_block");
+    assert!(ver >= 2);
+    assert!(blocks.iter().any(|b| b.x == 4 && b.y == 2 && b.z == 4));
+
+    let digest_json = world.get_cached_sync_digest_json().await;
+    assert!(digest_json.contains("world_sync_digest"));
+}

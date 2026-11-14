@@ -75,7 +75,25 @@ cargo build --release --target x86_64-unknown-linux-musl
 2. **Browser Opus Voice + UDP Fast-Lane (`UDP 4444`)**: Open/forward **`4444/udp`** on your host firewall and NAT router to your dedicated game server's LAN IP (`192.168.11.24`) for sub-millisecond UDP movement and Opus voice.
 3. **Native Raw UDP Protocol (`UDP 44445`, optional)**: Open/forward **`44445/udp`** only if connecting native desktop/CLI `EWLD` UDP clients from outside your LAN.
 
-See [`docs/architecture.md`](docs/architecture.md) and [`docs/firewall_and_network_setup.md`](docs/firewall_and_network_setup.md) for complete protocol frame layouts and deployment instructions.
+See [`docs/architecture.md`](docs/architecture.md), [`docs/firewall_and_network_setup.md`](docs/firewall_and_network_setup.md), and [`docs/stress_test_and_scaling.md`](docs/stress_test_and_scaling.md) for complete protocol frame layouts, stress-test benchmarks, and deployment instructions.
+
+---
+
+## 📊 Classroom Stress Testing & 100-Player Scaling
+
+Verified on the 2-vCPU production server (`192.168.11.24`) up to **100 concurrent students + 3 active Opus speakers** using the built-in Rust [`ella-stress`](src/bin/stress.rs) harness (`10 -> 25 -> 50 -> 100` stages, 100% peer visibility, 100% UDP fast-lane share, 100% DataChannels open, `74.9 ms` login p95, `~51.8%` CPU, `~95 MiB` RSS):
+
+```bash
+cargo build --release --bin ella-stress
+./target/release/ella-stress \
+  --base-url https://192.168.11.24:14444 \
+  --insecure-tls \
+  --stages 10,25,50,100 \
+  --hold-secs 15 \
+  --active-talkers 3
+```
+
+Full Before/After telemetry and bottleneck analysis: [`docs/stress_test_and_scaling.md`](docs/stress_test_and_scaling.md).
 
 ---
 

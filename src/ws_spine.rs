@@ -88,11 +88,15 @@ async fn run_ws_spine_session(
 
     hub.active_count.fetch_add(1, Ordering::Relaxed);
     let mut ev_rx = world.udp_event_tx.subscribe();
+    let (targeted_tx, mut targeted_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    world.register_peer_json_channel(&self_id, targeted_tx).await;
+    let mut last_lag_resync_ms = 0u64;
 
     // 1. Push full authoritative welcome snapshot immediately on connect/reconnect
     if let Some(welcome) = world.build_welcome_snapshot(&self_id, &username).await {
         if let Ok(txt) = serde_json::to_string(&welcome) {
             if socket.send(Message::Text(txt)).await.is_err() {
+                world.unregister_peer_json_channel(&self_id).await;
                 hub.active_count.fetch_sub(1, Ordering::Relaxed);
                 world.mark_ws_disconnected(&self_id, epoch).await;
                 return;
@@ -100,8 +104,7 @@ async fn run_ws_spine_session(
         }
     }
 
-    let mut binary_fallback_tick = tokio::time::interval(Duration::from_millis(50));
-    binary_fallback_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut tick_rx = world.pre_encoded_tick_tx.subscribe();
 
     let mut digest_tick = tokio::time::interval(Duration::from_millis(3_000));
     digest_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -223,6 +226,14 @@ async fn run_ws_spine_session(
                 }
             }
 
+            targeted_txt = targeted_rx.recv() => {
+                if let Some(txt) = targeted_txt {
+                    if socket.send(Message::Text(txt)).await.is_err() {
+                        break;
+                    }
+                }
+            }
+
             ev_res = ev_rx.recv() => {
                 match ev_res {
                     Ok(ev) => {
@@ -244,11 +255,15 @@ async fn run_ws_spine_session(
                         }
                     }
                     Err(RecvError::Lagged(_)) => {
-                        // Broadcast ring lagged; immediately self-heal client with full welcome_snapshot!
-                        if let Some(snap) = world.build_welcome_snapshot(&self_id, &username).await {
-                            if let Ok(snap_txt) = serde_json::to_string(&snap) {
-                                if socket.send(Message::Text(snap_txt)).await.is_err() {
-                                    break;
+                        // Rate-limit lag resyncs to >= 5s so join bursts don't self-amplify!
+                        let now = now_ms();
+                        if now.saturating_sub(last_lag_resync_ms) >= 5_000 {
+                            last_lag_resync_ms = now;
+                            if let Some(snap) = world.build_welcome_snapshot(&self_id, &username).await {
+                                if let Ok(snap_txt) = serde_json::to_string(&snap) {
+                                    if socket.send(Message::Text(snap_txt)).await.is_err() {
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -257,11 +272,12 @@ async fn run_ws_spine_session(
                 }
             }
 
-            _ = binary_fallback_tick.tick() => {
+            Ok(()) = tick_rx.changed() => {
+                let pre = tick_rx.borrow_and_update().clone();
                 // Automatic 20Hz Binary Fallback: stream compact `OP_S2C_WORLD_STATE` (`0x11`)
-                // over the WebSocket spine whenever the UDP fast-lane (`44444/udp`) is not active.
+                // over the WebSocket spine whenever the UDP fast-lane (`4444/udp`) is not active.
                 if !world.is_udp_fastlane_healthy(&self_id).await {
-                    let snap = world.encode_world_snapshot_for(&self_id).await;
+                    let snap = WorldEngine::encode_pre_tick_scheduled_chunk_for(&pre, &self_id);
                     if socket.send(Message::Binary(snap.to_vec())).await.is_err() {
                         break;
                     }
@@ -269,11 +285,9 @@ async fn run_ws_spine_session(
             }
 
             _ = digest_tick.tick() => {
-                let digest = world.build_sync_digest().await;
-                if let Ok(json_txt) = serde_json::to_string(&digest) {
-                    if socket.send(Message::Text(json_txt)).await.is_err() {
-                        break;
-                    }
+                let json_txt = world.get_cached_sync_digest_json().await;
+                if socket.send(Message::Text((*json_txt).clone())).await.is_err() {
+                    break;
                 }
             }
 
@@ -285,6 +299,7 @@ async fn run_ws_spine_session(
         }
     }
 
+    world.unregister_peer_json_channel(&self_id).await;
     hub.active_count.fetch_sub(1, Ordering::Relaxed);
     world.mark_ws_disconnected(&self_id, epoch).await;
 }

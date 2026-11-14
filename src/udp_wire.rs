@@ -159,6 +159,145 @@ pub fn decode_c2s_state(raw: &[u8]) -> Option<DecodedC2SState> {
     })
 }
 
+pub const MAX_SNAPSHOT_MTU_BYTES: usize = 1240;
+
+/// Encodes one player's binary `0x11` entry slice (`[id_len][id_utf8][x][y][z][ry][anim][emote][flags]`).
+pub fn encode_player_binary_entry(p: &PlayerRuntimeState) -> Bytes {
+    let id_bytes = p.id.as_bytes();
+    let id_len = id_bytes.len().min(64);
+    let mut buf = BytesMut::with_capacity(1 + id_len + 19);
+    buf.put_u8(id_len as u8);
+    buf.put_slice(&id_bytes[..id_len]);
+    buf.put_f32_le(p.x);
+    buf.put_f32_le(p.y);
+    buf.put_f32_le(p.z);
+    buf.put_f32_le(p.ry);
+    buf.put_u8(anim_to_code(&p.anim));
+    buf.put_u8(emote_to_code(p.emote.as_deref()));
+    let mut flags = 0u8;
+    if p.muted {
+        flags |= VOICE_FLAG_MUTED;
+    }
+    if p.speaking {
+        flags |= VOICE_FLAG_SPEAKING;
+    }
+    buf.put_u8(flags);
+    buf.freeze()
+}
+
+/// Assembles pre-serialized binary entries into MTU-safe `OP_S2C_WORLD_STATE` (`0x11`) frames.
+/// Ensures 100+ concurrent players are ALL represented with zero IP/SCTP MTU fragmentation.
+pub fn assemble_s2c_world_state_chunks(
+    server_tick: u32,
+    echo_client_time_ms: u32,
+    entries: &[(String, Bytes)],
+    exclude_self_id: &str,
+    max_packet_bytes: usize,
+) -> Vec<Bytes> {
+    let limit = max_packet_bytes.max(128);
+    let mut chunks = Vec::new();
+    let mut idx = 0usize;
+
+    // Gather indices excluding self cleanly with zero String clones
+    let eligible: Vec<&Bytes> = entries
+        .iter()
+        .filter(|(id, _)| id != exclude_self_id)
+        .map(|(_, b)| b)
+        .collect();
+
+    if eligible.is_empty() {
+        let mut buf = BytesMut::with_capacity(11);
+        buf.put_u8(OP_S2C_WORLD_STATE);
+        buf.put_u32_le(server_tick);
+        buf.put_u32_le(echo_client_time_ms);
+        buf.put_u16_le(0);
+        chunks.push(buf.freeze());
+        return chunks;
+    }
+
+    while idx < eligible.len() {
+        let mut chunk_end = idx;
+        let mut payload_len = 11usize;
+        while chunk_end < eligible.len() {
+            let entry_len = eligible[chunk_end].len();
+            if chunk_end > idx && payload_len + entry_len > limit {
+                break;
+            }
+            payload_len += entry_len;
+            chunk_end += 1;
+        }
+
+        let count = chunk_end - idx;
+        let mut buf = BytesMut::with_capacity(payload_len);
+        buf.put_u8(OP_S2C_WORLD_STATE);
+        buf.put_u32_le(server_tick);
+        buf.put_u32_le(echo_client_time_ms);
+        buf.put_u16_le(count as u16);
+        for slice in &eligible[idx..chunk_end] {
+            buf.put_slice(slice);
+        }
+        chunks.push(buf.freeze());
+        idx = chunk_end;
+    }
+
+    chunks
+}
+
+/// Allocates ONLY the scheduled MTU chunk `chunk_selector % total_chunks` (`O(N)` scan, 1 allocation),
+/// keeping outbound WebRTC SCTP/DTLS traffic locked at a steady 20 packets/sec per peer at 100+ players.
+pub fn assemble_s2c_world_state_scheduled_chunk(
+    server_tick: u32,
+    echo_client_time_ms: u32,
+    entries: &[(String, Bytes)],
+    exclude_self_id: &str,
+    max_packet_bytes: usize,
+) -> Bytes {
+    let limit = max_packet_bytes.max(128);
+    let eligible: Vec<&Bytes> = entries
+        .iter()
+        .filter(|(id, _)| id != exclude_self_id)
+        .map(|(_, b)| b)
+        .collect();
+
+    if eligible.is_empty() {
+        let mut buf = BytesMut::with_capacity(11);
+        buf.put_u8(OP_S2C_WORLD_STATE);
+        buf.put_u32_le(server_tick);
+        buf.put_u32_le(echo_client_time_ms);
+        buf.put_u16_le(0);
+        return buf.freeze();
+    }
+
+    let mut ranges: Vec<(usize, usize, usize)> = Vec::with_capacity(4);
+    let mut idx = 0usize;
+    while idx < eligible.len() {
+        let mut chunk_end = idx;
+        let mut payload_len = 11usize;
+        while chunk_end < eligible.len() {
+            let entry_len = eligible[chunk_end].len();
+            if chunk_end > idx && payload_len + entry_len > limit {
+                break;
+            }
+            payload_len += entry_len;
+            chunk_end += 1;
+        }
+        ranges.push((idx, chunk_end, payload_len));
+        idx = chunk_end;
+    }
+
+    let (start, end, payload_len) = ranges[(server_tick as usize) % ranges.len()];
+    let count = end - start;
+    let mut buf = BytesMut::with_capacity(payload_len);
+    buf.put_u8(OP_S2C_WORLD_STATE);
+    buf.put_u32_le(server_tick);
+    buf.put_u32_le(echo_client_time_ms);
+    buf.put_u16_le(count as u16);
+    for slice in &eligible[start..end] {
+        buf.put_slice(slice);
+    }
+    buf.freeze()
+}
+
 /// Encodes `OP_S2C_WORLD_STATE` (`0x11`) binary snapshot for a specific recipient
 /// (excluding `exclude_self_id` and echoing their `echo_client_time_ms` for live RTT measurement).
 pub fn encode_s2c_world_state(
@@ -167,37 +306,21 @@ pub fn encode_s2c_world_state(
     players: &[PlayerRuntimeState],
     exclude_self_id: &str,
 ) -> Bytes {
-    let others: Vec<&PlayerRuntimeState> = players
+    let entries: Vec<Bytes> = players
         .iter()
         .filter(|p| p.id != exclude_self_id)
-        .take(64)
+        .map(encode_player_binary_entry)
         .collect();
 
-    let mut buf = BytesMut::with_capacity(11 + others.len() * 36);
+    let total_len = 11 + entries.iter().map(|b| b.len()).sum::<usize>();
+    let mut buf = BytesMut::with_capacity(total_len);
     buf.put_u8(OP_S2C_WORLD_STATE);
     buf.put_u32_le(server_tick);
     buf.put_u32_le(echo_client_time_ms);
-    buf.put_u16_le(others.len() as u16);
+    buf.put_u16_le(entries.len().min(u16::MAX as usize) as u16);
 
-    for p in others {
-        let id_bytes = p.id.as_bytes();
-        let id_len = id_bytes.len().min(64);
-        buf.put_u8(id_len as u8);
-        buf.put_slice(&id_bytes[..id_len]);
-        buf.put_f32_le(p.x);
-        buf.put_f32_le(p.y);
-        buf.put_f32_le(p.z);
-        buf.put_f32_le(p.ry);
-        buf.put_u8(anim_to_code(&p.anim));
-        buf.put_u8(emote_to_code(p.emote.as_deref()));
-        let mut flags = 0u8;
-        if p.muted {
-            flags |= VOICE_FLAG_MUTED;
-        }
-        if p.speaking {
-            flags |= VOICE_FLAG_SPEAKING;
-        }
-        buf.put_u8(flags);
+    for e in entries.into_iter().take(u16::MAX as usize) {
+        buf.put_slice(&e);
     }
 
     buf.freeze()
@@ -212,7 +335,7 @@ pub fn decode_s2c_world_state(raw: &[u8]) -> Option<DecodedS2CWorldState> {
     let count = u16::from_le_bytes(raw[9..11].try_into().ok()?) as usize;
 
     let mut offset = 11usize;
-    let mut players = Vec::with_capacity(count.min(64));
+    let mut players = Vec::with_capacity(count.min(512));
     for _ in 0..count {
         if offset >= raw.len() {
             return None;
@@ -406,5 +529,57 @@ mod tests {
         assert_eq!(parsed.players[0].emote.as_deref(), Some("peace"));
         assert!(parsed.players[0].speaking);
         assert!(!parsed.players[0].muted);
+    }
+
+    #[test]
+    fn mtu_chunked_s2c_covers_100_players_without_cap() {
+        let base_av = AvatarAppearance::default();
+        let mut entries = Vec::with_capacity(100);
+        for i in 0..100 {
+            let p = PlayerRuntimeState {
+                id: format!("peer_stress_{i:03}_bot{i:03}"),
+                user: SanitizedUser {
+                    username: format!("stress_{i:03}"),
+                    display_name: format!("Student {i:03}"),
+                    role: "friend".into(),
+                    avatar: base_av.clone(),
+                },
+                avatar_hash: base_av.short_hash(),
+                x: i as f32,
+                y: 0.0,
+                z: -(i as f32),
+                ry: 0.5,
+                anim: "run".into(),
+                emote: None,
+                muted: false,
+                speaking: i < 3,
+                last_seen: 1000,
+                last_seq: 1,
+                last_client_time_ms: 555,
+                conn_epoch: 1,
+                ws_connected: true,
+                udp_fastlane_active: true,
+                last_udp_seen_ms: 1000,
+                disconnected_at_ms: None,
+            };
+            entries.push((p.id.clone(), encode_player_binary_entry(&p)));
+        }
+
+        let chunks = assemble_s2c_world_state_chunks(
+            42,
+            555,
+            &entries,
+            "peer_stress_000_bot000",
+            MAX_SNAPSHOT_MTU_BYTES,
+        );
+        assert!(chunks.len() >= 3 && chunks.len() <= 6);
+        let mut decoded_ids = Vec::new();
+        for c in &chunks {
+            assert!(c.len() <= MAX_SNAPSHOT_MTU_BYTES);
+            let parsed = decode_s2c_world_state(c).expect("valid chunk");
+            decoded_ids.extend(parsed.players.into_iter().map(|p| p.id));
+        }
+        assert_eq!(decoded_ids.len(), 99);
+        assert!(!decoded_ids.contains(&"peer_stress_000_bot000".to_string()));
     }
 }

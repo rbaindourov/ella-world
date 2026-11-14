@@ -6,13 +6,16 @@ use crate::models::{
     SavedPosition, UserAccount, UsersConfigFile, VoxelBlock, RUNWAY_THEMES,
 };
 use crate::persistence::PersistenceStore;
-use crate::udp_wire::{encode_s2c_world_state, DecodedC2SState};
+use crate::udp_wire::{
+    assemble_s2c_world_state_chunks, assemble_s2c_world_state_scheduled_chunk,
+    encode_player_binary_entry, DecodedC2SState, MAX_SNAPSHOT_MTU_BYTES,
+};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, watch, RwLock};
 
 pub const DEFAULT_DISCONNECT_GRACE_MS: u64 = 12_000;
 
@@ -102,9 +105,16 @@ pub struct BridgedOpusFrame {
     pub payload: Bytes,
 }
 
+#[derive(Clone, Default)]
+pub struct PreEncodedWorldTick {
+    pub server_tick: u32,
+    pub entries: Vec<(String, Bytes)>,
+    pub echo_ts_by_id: HashMap<String, u32>,
+}
+
 pub struct WorldEngine {
     pub config: ServerConfig,
-    pub store: PersistenceStore,
+    pub store: Arc<PersistenceStore>,
     pub users_cfg: RwLock<UsersConfigFile>,
     pub blocks_data: RwLock<BlocksDataFile>,
     pub players: RwLock<HashMap<String, PlayerRuntimeState>>,
@@ -114,22 +124,33 @@ pub struct WorldEngine {
     pub server_tick: AtomicU32,
     pub state_seq: AtomicU64,
     pub disconnect_grace_ms: AtomicU64,
+    pub users_dirty: AtomicBool,
+    pub cached_chat_count: AtomicUsize,
+    pub cached_blocked_chat_count: AtomicUsize,
+    pub pre_encoded_tick: RwLock<Arc<PreEncodedWorldTick>>,
+    pub pre_encoded_tick_tx: watch::Sender<Arc<PreEncodedWorldTick>>,
+    pub cached_digest: RwLock<(u64, Arc<String>)>,
+    pub peer_json_txs: RwLock<HashMap<String, mpsc::UnboundedSender<String>>>,
     pub udp_event_tx: broadcast::Sender<UdpWorldEvent>,
     pub opus_bridge_tx: broadcast::Sender<BridgedOpusFrame>,
 }
 
 impl WorldEngine {
     pub fn new(config: ServerConfig) -> anyhow::Result<Arc<Self>> {
-        let store = PersistenceStore::new(&config.data_dir, &config.seed_users_file)?;
+        let store = Arc::new(PersistenceStore::new(&config.data_dir, &config.seed_users_file)?);
         let users_cfg = store.load_or_init_users()?;
         let blocks_data = store.load_or_init_blocks()?;
+        let initial_chat_count = store.count_chats();
+        let initial_blocked_count = store.count_blocked_chats();
         let recent_chats = store.load_recent_chats(60);
         let mut chat_deque = VecDeque::with_capacity(64);
         for c in recent_chats {
             chat_deque.push_back(c);
         }
-        let (udp_event_tx, _) = broadcast::channel(1024);
-        let (opus_bridge_tx, _) = broadcast::channel(1024);
+        let (udp_event_tx, _) = broadcast::channel(4096);
+        let (opus_bridge_tx, _) = broadcast::channel(2048);
+        let initial_tick_arc = Arc::new(PreEncodedWorldTick::default());
+        let (pre_encoded_tick_tx, _) = watch::channel(Arc::clone(&initial_tick_arc));
 
         let engine = Arc::new(Self {
             config,
@@ -143,6 +164,13 @@ impl WorldEngine {
             server_tick: AtomicU32::new(1),
             state_seq: AtomicU64::new(1),
             disconnect_grace_ms: AtomicU64::new(DEFAULT_DISCONNECT_GRACE_MS),
+            users_dirty: AtomicBool::new(false),
+            cached_chat_count: AtomicUsize::new(initial_chat_count),
+            cached_blocked_chat_count: AtomicUsize::new(initial_blocked_count),
+            pre_encoded_tick: RwLock::new(initial_tick_arc),
+            pre_encoded_tick_tx,
+            cached_digest: RwLock::new((0, Arc::new(String::new()))),
+            peer_json_txs: RwLock::new(HashMap::new()),
             udp_event_tx,
             opus_bridge_tx,
         });
@@ -150,13 +178,26 @@ impl WorldEngine {
         let bg = Arc::clone(&engine);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut tick_counter = 0u32;
             loop {
                 interval.tick().await;
-                bg.server_tick.fetch_add(1, Ordering::Relaxed);
+                let tick = bg.server_tick.fetch_add(1, Ordering::Relaxed) + 1;
                 tick_counter = tick_counter.wrapping_add(1);
                 if tick_counter.is_multiple_of(10) {
                     bg.prune_stale_players().await;
+                }
+                bg.rebuild_pre_encoded_tick(tick).await;
+                if tick_counter.is_multiple_of(100) {
+                    bg.flush_player_positions_async().await;
+                } else if tick_counter.is_multiple_of(60)
+                    && bg.users_dirty.swap(false, Ordering::AcqRel)
+                {
+                    let snapshot = bg.users_cfg.read().await.clone();
+                    let store = Arc::clone(&bg.store);
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let _ = store.save_users(&snapshot);
+                    });
                 }
             }
         });
@@ -552,9 +593,70 @@ impl WorldEngine {
         }
     }
 
+    pub async fn get_cached_sync_digest_json(&self) -> Arc<String> {
+        let now = now_ms();
+        {
+            let guard = self.cached_digest.read().await;
+            if now.saturating_sub(guard.0) < 2_000 && !guard.1.is_empty() {
+                return Arc::clone(&guard.1);
+            }
+        }
+        let digest = self.build_sync_digest().await;
+        let serialized = Arc::new(serde_json::to_string(&digest).unwrap_or_default());
+        let mut guard = self.cached_digest.write().await;
+        *guard = (now, Arc::clone(&serialized));
+        serialized
+    }
+
+    pub async fn register_peer_json_channel(
+        &self,
+        self_id: &str,
+        tx: mpsc::UnboundedSender<String>,
+    ) {
+        self.peer_json_txs
+            .write()
+            .await
+            .insert(self_id.to_string(), tx);
+    }
+
+    pub async fn unregister_peer_json_channel(&self, self_id: &str) {
+        self.peer_json_txs.write().await.remove(self_id);
+    }
+
+    pub async fn send_peer_targeted_json(&self, self_id: &str, json_text: String) -> bool {
+        let tx = self.peer_json_txs.read().await.get(self_id).cloned();
+        if let Some(sender) = tx {
+            sender.send(json_text).is_ok()
+        } else {
+            false
+        }
+    }
+
+    pub async fn persist_users_async(&self) {
+        self.users_dirty.store(false, Ordering::Release);
+        let snapshot = self.users_cfg.read().await.clone();
+        let store = Arc::clone(&self.store);
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = store.save_users(&snapshot);
+        })
+        .await;
+    }
+
+    pub async fn persist_blocks_async(&self, snapshot: BlocksDataFile) {
+        let store = Arc::clone(&self.store);
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = store.save_blocks(&snapshot);
+        })
+        .await;
+    }
+
     pub async fn apply_c2s_state(&self, self_id: &str, decoded: DecodedC2SState) {
         self.apply_c2s_state_ext(self_id, None, false, decoded)
             .await;
+    }
+
+    pub async fn active_player_ids(&self) -> Vec<String> {
+        self.players.read().await.keys().cloned().collect()
     }
 
     pub async fn apply_c2s_state_ext(
@@ -564,16 +666,7 @@ impl WorldEngine {
         from_udp: bool,
         decoded: DecodedC2SState,
     ) {
-        let missing = !self.players.read().await.contains_key(self_id);
-        if missing {
-            if let Some(uname) = username_hint {
-                let _ = self.ensure_player_online(self_id, uname).await;
-            }
-        }
-
         let now = now_ms();
-        let mut maybe_save_pos: Option<(String, SavedPosition)> = None;
-
         {
             let mut map = self.players.write().await;
             if let Some(p) = map.get_mut(self_id) {
@@ -604,31 +697,68 @@ impl WorldEngine {
                     p.udp_fastlane_active = true;
                     p.last_udp_seen_ms = now;
                 }
+                return;
+            }
+        }
 
-                if p.y >= 0.0 {
-                    maybe_save_pos = Some((
-                        p.user.username.clone(),
+        // Player not currently in map -> lazily re-hydrate then apply once
+        if let Some(uname) = username_hint {
+            if self.ensure_player_online(self_id, uname).await.is_some() {
+                let mut map = self.players.write().await;
+                if let Some(p) = map.get_mut(self_id) {
+                    p.last_seq = decoded.seq;
+                    p.last_client_time_ms = decoded.client_time_ms;
+                    p.x = decoded.x;
+                    p.y = decoded.y;
+                    p.z = decoded.z;
+                    p.ry = decoded.ry;
+                    p.anim = decoded.anim;
+                    p.emote = decoded.emote;
+                    p.muted = decoded.muted;
+                    p.speaking = decoded.speaking;
+                    p.last_seen = now;
+                    p.disconnected_at_ms = None;
+                    if from_udp {
+                        p.udp_fastlane_active = true;
+                        p.last_udp_seen_ms = now;
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn flush_player_positions_async(&self) {
+        let updates: Vec<(String, SavedPosition)> = {
+            let map = self.players.read().await;
+            map.values()
+                .filter(|p| p.y >= 0.0)
+                .map(|p| {
+                    (
+                        p.user.username.to_lowercase(),
                         SavedPosition {
                             x: (p.x * 10.0).round() / 10.0,
                             y: (p.y * 10.0).round() / 10.0,
                             z: (p.z * 10.0).round() / 10.0,
                             ry: (p.ry * 100.0).round() / 100.0,
                         },
-                    ));
-                }
-            }
+                    )
+                })
+                .collect()
+        };
+        let dirty_flag = self.users_dirty.swap(false, Ordering::AcqRel);
+        if updates.is_empty() && !dirty_flag {
+            return;
         }
-
-        // Throttled persistence of builder lastPos (at most once every 10s when moved > 2.0m)
-        if let Some((username, next_pos)) = maybe_save_pos {
-            let mut should_write = false;
-            {
-                let mut cfg = self.users_cfg.write().await;
-                if let Some(u) = cfg
-                    .users
-                    .iter_mut()
-                    .find(|u| u.username.eq_ignore_ascii_case(&username))
-                {
+        let now = now_ms();
+        let mut by_user: HashMap<String, SavedPosition> = HashMap::with_capacity(updates.len());
+        for (u, pos) in updates {
+            by_user.insert(u, pos);
+        }
+        let mut changed = dirty_flag;
+        let snapshot_to_save = {
+            let mut cfg = self.users_cfg.write().await;
+            for u in cfg.users.iter_mut() {
+                if let Some(next_pos) = by_user.get(&u.username.to_lowercase()) {
                     let elapsed = now.saturating_sub(u.last_pos_saved_at.unwrap_or(0));
                     let dist = u
                         .last_pos
@@ -638,16 +768,76 @@ impl WorldEngine {
                         })
                         .unwrap_or(999.0);
                     if elapsed > 10_000 && dist > 2.0 {
-                        u.last_pos = Some(next_pos);
+                        u.last_pos = Some(next_pos.clone());
                         u.last_pos_saved_at = Some(now);
-                        should_write = true;
+                        changed = true;
                     }
                 }
-                if should_write {
-                    let _ = self.store.save_users(&cfg);
-                }
             }
+            if changed {
+                Some(cfg.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(snapshot) = snapshot_to_save {
+            let store = Arc::clone(&self.store);
+            tokio::task::spawn_blocking(move || {
+                let _ = store.save_users(&snapshot);
+            });
         }
+    }
+
+    pub async fn rebuild_pre_encoded_tick(&self, server_tick: u32) {
+        let map = self.players.read().await;
+        let snap = if map.is_empty() {
+            drop(map);
+            Arc::new(PreEncodedWorldTick {
+                server_tick,
+                entries: Vec::new(),
+                echo_ts_by_id: HashMap::new(),
+            })
+        } else {
+            let mut entries = Vec::with_capacity(map.len());
+            let mut echo_ts_by_id = HashMap::with_capacity(map.len());
+            for (id, p) in map.iter() {
+                entries.push((id.clone(), encode_player_binary_entry(p)));
+                echo_ts_by_id.insert(id.clone(), p.last_client_time_ms);
+            }
+            drop(map);
+            Arc::new(PreEncodedWorldTick {
+                server_tick,
+                entries,
+                echo_ts_by_id,
+            })
+        };
+        *self.pre_encoded_tick.write().await = Arc::clone(&snap);
+        let _ = self.pre_encoded_tick_tx.send(snap);
+    }
+
+    pub fn encode_pre_tick_chunks_for(pre: &PreEncodedWorldTick, self_id: &str) -> Vec<Bytes> {
+        let echo_ts = pre.echo_ts_by_id.get(self_id).copied().unwrap_or(0);
+        assemble_s2c_world_state_chunks(
+            pre.server_tick,
+            echo_ts,
+            &pre.entries,
+            self_id,
+            MAX_SNAPSHOT_MTU_BYTES,
+        )
+    }
+
+    pub fn encode_pre_tick_scheduled_chunk_for(
+        pre: &PreEncodedWorldTick,
+        self_id: &str,
+    ) -> Bytes {
+        let echo_ts = pre.echo_ts_by_id.get(self_id).copied().unwrap_or(0);
+        assemble_s2c_world_state_scheduled_chunk(
+            pre.server_tick,
+            echo_ts,
+            &pre.entries,
+            self_id,
+            MAX_SNAPSHOT_MTU_BYTES,
+        )
     }
 
     pub async fn touch_player(&self, self_id: &str) {
@@ -668,12 +858,42 @@ impl WorldEngine {
         }
     }
 
-    pub async fn encode_world_snapshot_for(&self, self_id: &str) -> Bytes {
+    pub async fn encode_world_snapshot_chunks_for(&self, self_id: &str) -> Vec<Bytes> {
+        let pre = self.pre_encoded_tick.read().await.clone();
+        let current_len = self.players.read().await.len();
+        if pre.entries.len() == current_len && (!pre.entries.is_empty() || current_len == 0) {
+            let echo_ts = pre.echo_ts_by_id.get(self_id).copied().unwrap_or(0);
+            return assemble_s2c_world_state_chunks(
+                pre.server_tick,
+                echo_ts,
+                &pre.entries,
+                self_id,
+                MAX_SNAPSHOT_MTU_BYTES,
+            );
+        }
+
         let map = self.players.read().await;
         let echo_ts = map.get(self_id).map(|p| p.last_client_time_ms).unwrap_or(0);
-        let list: Vec<PlayerRuntimeState> = map.values().cloned().collect();
+        let entries: Vec<(String, Bytes)> = map
+            .iter()
+            .map(|(id, p)| (id.clone(), encode_player_binary_entry(p)))
+            .collect();
         drop(map);
-        encode_s2c_world_state(self.current_tick(), echo_ts, &list, self_id)
+        assemble_s2c_world_state_chunks(
+            self.current_tick(),
+            echo_ts,
+            &entries,
+            self_id,
+            MAX_SNAPSHOT_MTU_BYTES,
+        )
+    }
+
+    pub async fn encode_world_snapshot_for(&self, self_id: &str) -> Bytes {
+        self.encode_world_snapshot_chunks_for(self_id)
+            .await
+            .into_iter()
+            .next()
+            .unwrap_or_default()
     }
 
     pub async fn mutate_block(
@@ -689,7 +909,7 @@ impl WorldEngine {
             return Err("Invalid block coordinates");
         }
 
-        let (next_version, snapshot) = {
+        let (next_version, snapshot, blocks_file) = {
             let mut bd = self.blocks_data.write().await;
             bd.blocks.retain(|b| !(b.x == x && b.y == y && b.z == z));
             if action != "remove" {
@@ -710,9 +930,9 @@ impl WorldEngine {
                 });
             }
             bd.version += 1;
-            let _ = self.store.save_blocks(&bd);
-            (bd.version, bd.blocks.clone())
+            (bd.version, bd.blocks.clone(), bd.clone())
         };
+        self.persist_blocks_async(blocks_file).await;
 
         let seq = self.next_state_seq();
         let _ = self.udp_event_tx.send(UdpWorldEvent::Block {
@@ -738,10 +958,9 @@ impl WorldEngine {
                 .iter_mut()
                 .find(|u| u.username.eq_ignore_ascii_case(username))?;
             user.avatar.apply_patch(patch);
-            let s = user.sanitized();
-            let _ = self.store.save_users(&cfg);
-            s
+            user.sanitized()
         };
+        self.persist_users_async().await;
         let avatar_hash = sanitized.avatar.short_hash();
 
         {
@@ -828,7 +1047,12 @@ impl WorldEngine {
                         matched_word: Some(matched),
                         ts,
                     };
-                    let _ = self.store.append_blocked_chat(&blocked);
+                    let store = Arc::clone(&self.store);
+                    tokio::task::spawn_blocking(move || {
+                        let _ = store.append_blocked_chat(&blocked);
+                    });
+                    self.cached_blocked_chat_count
+                        .fetch_add(1, Ordering::Relaxed);
                     return Err("Keep chat friendly! Please avoid inappropriate words.".into());
                 }
             }
@@ -853,7 +1077,12 @@ impl WorldEngine {
                     matched_word: None,
                     ts,
                 };
-                let _ = self.store.append_blocked_chat(&blocked);
+                let store = Arc::clone(&self.store);
+                tokio::task::spawn_blocking(move || {
+                    let _ = store.append_blocked_chat(&blocked);
+                });
+                self.cached_blocked_chat_count
+                    .fetch_add(1, Ordering::Relaxed);
                 return Err("Slow down a tiny bit! Wait a couple seconds before chatting again.".into());
             }
             q.push_back(ts);
@@ -878,7 +1107,12 @@ impl WorldEngine {
             }
             chats.push_back(entry.clone());
         }
-        let _ = self.store.append_chat(&entry);
+        self.cached_chat_count.fetch_add(1, Ordering::Relaxed);
+        let store = Arc::clone(&self.store);
+        let entry_for_disk = entry.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = store.append_chat(&entry_for_disk);
+        });
 
         let seq = self.next_state_seq();
         let _ = self.udp_event_tx.send(UdpWorldEvent::Chat {
@@ -964,7 +1198,7 @@ impl WorldEngine {
     }
 
     pub async fn reset_world_blocks(&self, clear_all: bool) -> Vec<VoxelBlock> {
-        let (next_ver, next_blocks) = {
+        let (next_ver, next_blocks, blocks_file) = {
             let mut bd = self.blocks_data.write().await;
             bd.blocks = if clear_all {
                 Vec::new()
@@ -972,9 +1206,9 @@ impl WorldEngine {
                 default_starter_blocks()
             };
             bd.version += 1;
-            let _ = self.store.save_blocks(&bd);
-            (bd.version, bd.blocks.clone())
+            (bd.version, bd.blocks.clone(), bd.clone())
         };
+        self.persist_blocks_async(blocks_file).await;
         let seq = self.next_state_seq();
         let _ = self.udp_event_tx.send(UdpWorldEvent::Block {
             state_seq: seq,

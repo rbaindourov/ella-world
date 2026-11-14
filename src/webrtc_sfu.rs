@@ -138,7 +138,22 @@ impl WebRtcSfu {
         )
         .parse()?;
 
-        let udp_socket = UdpSocket::bind(bind_addr).await?;
+        let sock = socket2::Socket::new(
+            if bind_addr.is_ipv4() {
+                socket2::Domain::IPV4
+            } else {
+                socket2::Domain::IPV6
+            },
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )?;
+        sock.set_reuse_address(true)?;
+        let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
+        let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
+        sock.set_nonblocking(true)?;
+        sock.bind(&bind_addr.into())?;
+        let std_udp: std::net::UdpSocket = sock.into();
+        let udp_socket = UdpSocket::from_std(std_udp)?;
         let actual_port = udp_socket.local_addr()?.port();
         info!(
             "🎙️ [WebRTC SFU] Single-port zero-renegotiation UDP Voice + State listening on {}:{}/udp",
@@ -246,9 +261,11 @@ impl WebRtcSfu {
             target_self_id: sess.self_id.clone(),
             slots,
         };
-        let _ = self.world.udp_event_tx.send(ev.clone());
-        if let Some(dc) = sess.events_dc.read().await.clone() {
-            if let Ok(txt) = serde_json::to_string(&ev) {
+        if let Ok(txt) = serde_json::to_string(&ev) {
+            self.world
+                .send_peer_targeted_json(&sess.self_id, txt.clone())
+                .await;
+            if let Some(dc) = sess.events_dc.read().await.clone() {
                 let _ = dc.send_text(txt).await;
             }
         }
@@ -453,10 +470,9 @@ impl WebRtcSfu {
         // Pre-assign slots for currently online peers so mapping is ready before first syllable!
         let existing_peer_ids: Vec<String> = self
             .world
-            .active_players_list()
+            .active_player_ids()
             .await
             .into_iter()
-            .map(|p| p.id)
             .filter(|pid| pid != &self_id)
             .take(slot_count)
             .collect();
@@ -635,10 +651,12 @@ impl WebRtcSfu {
             Box::pin(async move {
                 w.set_udp_fastlane_active(&sid, true).await;
                 tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
-                    loop {
-                        interval.tick().await;
-                        let snap = w.encode_world_snapshot_for(&sid).await;
+                    let mut tick_rx = w.pre_encoded_tick_tx.subscribe();
+                    while tick_rx.changed().await.is_ok() {
+                        let pre = tick_rx.borrow_and_update().clone();
+                        let snap = crate::world::WorldEngine::encode_pre_tick_scheduled_chunk_for(
+                            &pre, &sid,
+                        );
                         if d.send(&snap).await.is_err() {
                             w.set_udp_fastlane_active(&sid, false).await;
                             break;
