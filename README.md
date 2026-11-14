@@ -84,6 +84,10 @@ node scripts/ella_admin_user_cli.mjs --revoke-all
 # Expire tokens & sign out a single player account:
 node scripts/ella_admin_user_cli.mjs --revoke-user ella
 
+# Rotate production ELLA_HMAC_SECRET key in systemd & verify stale-token 401 rejection:
+node scripts/rotate_prod_hmac_secret.mjs
+node scripts/verify_prod_http_and_auth.mjs
+
 # Inspect current sessionEpoch, online status, coins/debt, strikes, prison status & parental locks:
 node scripts/ella_admin_user_cli.mjs --list
 

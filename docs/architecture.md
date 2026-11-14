@@ -139,6 +139,7 @@ To ensure parent password rotations and emergency sign-outs take effect **instan
    - **Global Revoke (`{}`)**: Increments `UsersConfigFile::session_epoch` and every user's `token_epoch`, disconnects all WebSocket, WebRTC SFU, and Native UDP sessions immediately, and returns a freshly minted `adminToken` for the parent dashboard.
    - **Per-User Revoke (`{ "username": "<id>" }`)**: Increments that account's `token_epoch` and kicks only that player's active transports.
    - **CLI & UI**: Accessible both from the Parent Admin Panel (**"🔒 Expire All Logged-In Tokens"** and per-row **"Expire"** buttons) and via `node scripts/ella_admin_user_cli.mjs --revoke-all` / `--revoke-user <username>`.
+   - **Emergency HMAC Signing Key Rotation & Production Verifier**: `node scripts/rotate_prod_hmac_secret.mjs` losslessly archives `/etc/systemd/system/ella-world.service.d/override.conf` to `/var/lib/ella-world/`, rotates `ELLA_HMAC_SECRET` to a fresh 256-bit key, restarts `ella-world.service`, and confirms `HTTP 401` on prior tokens; `node scripts/verify_prod_http_and_auth.mjs` verifies live HTML, static CSS/ES-module asset integrity, stale-token `401` rejection, and `Clear-Site-Data` header emission.
    - **Browser Cleanup (`Clear-Site-Data`)**: `POST /api/ella-world/logout` emits `Clear-Site-Data: "cookies", "storage", "cache"`, and browser clients immediately purge `localStorage` `ella_world_token` and return to the Login Screen upon receiving `session_revoked` or `401`.
 
 ---
