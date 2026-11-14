@@ -14,6 +14,9 @@ pub const PLAZA_PORTAL_POS: (f32, f32, f32) = (18.0, 0.0, 16.0);
 pub const PLAZA_RETURN_SPAWN_POS: (f32, f32, f32) = (14.2, 0.0, 13.2);
 pub const DUNGEON_SPAWN_POS: (f32, f32, f32) = (0.0, 0.0, 22.0);
 pub const DUNGEON_RETURN_PORTAL_POS: (f32, f32, f32) = (0.0, 0.0, 28.0);
+pub const PRISON_SPAWN_POS: (f32, f32, f32) = (0.0, 0.0, 3.5);
+pub const PRISON_RELEASE_PORTAL_POS: (f32, f32, f32) = (0.0, 0.0, 11.5);
+pub const PRISON_WORK_REWARD_COINS: i64 = 5;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -794,6 +797,172 @@ pub fn roll_golden_chest_loot() -> (u64, Option<&'static str>, u32) {
 }
 
 // ============================================================================
+// Escalating Profanity Fines & Debtor's Prison Community Service Yard
+// ============================================================================
+
+/// Computes an escalating fine for repeat chat violations:
+/// Strike 1 -> `base` (default 15 🪙)
+/// Strike 2 -> `(base * 7 / 3).max(base + 5)` (default 35 🪙)
+/// Strike 3+ -> `base * 5 * 2^(strike - 3)` capped at 500 🪙 (default 75 -> 150 -> 300 -> 500 🪙)
+pub fn calculate_escalating_fine(base_fine: u64, strike_number: u32) -> u64 {
+    if base_fine == 0 {
+        return 0;
+    }
+    let strike = strike_number.max(1);
+    let raw = match strike {
+        1 => base_fine,
+        2 => (base_fine.saturating_mul(7) / 3).max(base_fine.saturating_add(5)),
+        s => {
+            let exp = (s - 3).min(6);
+            base_fine.saturating_mul(5).saturating_mul(1u64 << exp)
+        }
+    };
+    raw.min(500)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrisonWorkNode {
+    pub id: String,
+    pub kind: String, // "boulder" | "sweep" | "lantern"
+    pub name: String,
+    pub icon: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub available: bool,
+    pub ready_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrisonSnapshot {
+    pub nodes: Vec<PrisonWorkNode>,
+    pub release_portal_pos: [f32; 3],
+    pub reward_coins: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct PrisonState {
+    pub nodes: Vec<PrisonWorkNode>,
+}
+
+impl Default for PrisonState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PrisonState {
+    pub fn new() -> Self {
+        let nodes = vec![
+            Self::make_node(
+                "prison_rock_1",
+                "boulder",
+                "West Quarry Boulder",
+                "🪨",
+                -7.5,
+                0.0,
+                -4.5,
+            ),
+            Self::make_node(
+                "prison_rock_2",
+                "boulder",
+                "East Quarry Boulder",
+                "🪨",
+                7.5,
+                0.0,
+                -4.5,
+            ),
+            Self::make_node(
+                "prison_sweep_1",
+                "sweep",
+                "North Courtyard Dust Pile",
+                "🧹",
+                -5.0,
+                0.0,
+                -9.0,
+            ),
+            Self::make_node(
+                "prison_sweep_2",
+                "sweep",
+                "South Courtyard Dust Pile",
+                "🧹",
+                5.0,
+                0.0,
+                -9.0,
+            ),
+            Self::make_node(
+                "prison_lantern_1",
+                "lantern",
+                "West Tarnished Lantern",
+                "🧽",
+                -8.2,
+                0.0,
+                3.5,
+            ),
+            Self::make_node(
+                "prison_lantern_2",
+                "lantern",
+                "East Tarnished Lantern",
+                "🧽",
+                8.2,
+                0.0,
+                3.5,
+            ),
+        ];
+        Self { nodes }
+    }
+
+    fn make_node(
+        id: &str,
+        kind: &str,
+        name: &str,
+        icon: &str,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> PrisonWorkNode {
+        PrisonWorkNode {
+            id: id.into(),
+            kind: kind.into(),
+            name: name.into(),
+            icon: icon.into(),
+            x,
+            y,
+            z,
+            available: true,
+            ready_at_ms: 0,
+        }
+    }
+
+    pub fn snapshot(&self) -> PrisonSnapshot {
+        PrisonSnapshot {
+            nodes: self.nodes.clone(),
+            release_portal_pos: [
+                PRISON_RELEASE_PORTAL_POS.0,
+                PRISON_RELEASE_PORTAL_POS.1,
+                PRISON_RELEASE_PORTAL_POS.2,
+            ],
+            reward_coins: PRISON_WORK_REWARD_COINS,
+        }
+    }
+
+    /// Re-enables completed community-service stations after their 6-second recharge timer.
+    pub fn tick(&mut self, now: u64) -> bool {
+        let mut changed = false;
+        for node in &mut self.nodes {
+            if !node.available && now >= node.ready_at_ms {
+                node.available = true;
+                node.ready_at_ms = 0;
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
+// ============================================================================
 // Live Two-Sided Player-to-Player (P2P) Trade Engine
 // ============================================================================
 
@@ -829,13 +998,18 @@ pub struct TradeSession {
 pub fn sanitize_and_validate_offer(
     coins: u64,
     raw_items: &HashMap<String, u32>,
-    owned_coins: u64,
+    owned_coins: i64,
     owned_inv: &HashMap<String, u32>,
 ) -> Result<(u64, HashMap<String, u32>), String> {
     if coins > MAX_TRADE_COINS {
         return Err("Offered coin amount exceeds maximum trade limit.".into());
     }
-    if coins > owned_coins {
+    if coins > 0 && owned_coins <= 0 {
+        return Err(format!(
+            "You cannot offer coins while your balance is {owned_coins} 🪙 (in debt)!"
+        ));
+    }
+    if coins > 0 && (coins as i64) > owned_coins {
         return Err(format!(
             "Not enough coins! You offered {coins} 🪙 but only have {owned_coins} 🪙."
         ));
@@ -1010,11 +1184,19 @@ pub fn execute_atomic_trade_swap(
     )?;
 
     // 2. Check coin & item stack overflow after deducting outgoing and adding incoming
-    let next_a_coins = (user_a.coins - offer_a.coins)
-        .checked_add(offer_b.coins)
+    let offer_a_i64 = i64::try_from(offer_a.coins)
+        .map_err(|_| "Offered coin amount exceeds maximum trade limit.".to_string())?;
+    let offer_b_i64 = i64::try_from(offer_b.coins)
+        .map_err(|_| "Offered coin amount exceeds maximum trade limit.".to_string())?;
+    let next_a_coins = user_a
+        .coins
+        .checked_sub(offer_a_i64)
+        .and_then(|v| v.checked_add(offer_b_i64))
         .ok_or_else(|| "Coin balance overflow for initiator.".to_string())?;
-    let next_b_coins = (user_b.coins - offer_b.coins)
-        .checked_add(offer_a.coins)
+    let next_b_coins = user_b
+        .coins
+        .checked_sub(offer_b_i64)
+        .and_then(|v| v.checked_add(offer_a_i64))
         .ok_or_else(|| "Coin balance overflow for partner.".to_string())?;
 
     let mut next_a_inv = user_a.inventory.clone();
@@ -1068,18 +1250,44 @@ pub fn execute_atomic_trade_swap(
 mod tests {
     use super::*;
 
-    fn dummy_user(username: &str, coins: u64) -> UserAccount {
+    fn dummy_user(username: &str, coins: i64) -> UserAccount {
         UserAccount {
             username: username.into(),
             display_name: username.into(),
             password: "pw".into(),
             role: "friend".into(),
+            token_epoch: 0,
             avatar: AvatarAppearance::default(),
             coins,
             inventory: HashMap::new(),
+            violation_strikes: 0,
+            in_debtors_prison: false,
+            prison_reason: None,
+            prison_tasks_remaining: 0,
+            voice_muted_by_parent: false,
+            chat_mode: "normal".into(),
+            suspended: false,
+            can_build: true,
+            can_trade: true,
             last_pos: None,
             last_pos_saved_at: None,
         }
+    }
+
+    #[test]
+    fn escalating_fines_and_negative_balance_trade_guard() {
+        assert_eq!(calculate_escalating_fine(15, 1), 15);
+        assert_eq!(calculate_escalating_fine(15, 2), 35);
+        assert_eq!(calculate_escalating_fine(15, 3), 75);
+        assert_eq!(calculate_escalating_fine(15, 4), 150);
+        assert_eq!(calculate_escalating_fine(15, 5), 300);
+        assert_eq!(calculate_escalating_fine(15, 6), 500);
+
+        let inv = HashMap::from([("star_shard".to_string(), 2)]);
+        // In-debt player cannot offer positive coins
+        assert!(sanitize_and_validate_offer(5, &inv, -35, &inv).is_err());
+        // In-debt player CAN offer 0 coins if trading items (when outside prison & permitted)
+        assert!(sanitize_and_validate_offer(0, &inv, -35, &inv).is_ok());
     }
 
     #[test]

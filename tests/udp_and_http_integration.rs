@@ -1172,6 +1172,9 @@ async fn chat_persistence_word_filter_and_admin_chat_viewer_work_across_restart(
     assert_eq!(st_bad2, 400);
 
     // 4. Parent Admin login -> inspect /admin/chats?includeBlocked=true and customize blockedWords
+    // Note: each profanity violation also broadcasts a public Judge Starlight court notice (isSystem=true),
+    // so 1 clean message + 2 Judge Starlight notices = 3 persisted chat messages and 2 blocked audit entries.
+    tokio::time::sleep(Duration::from_millis(60)).await;
     let (st_adm, adm_res) = http_json_request(
         running.http_addr,
         "POST",
@@ -1181,7 +1184,7 @@ async fn chat_persistence_word_filter_and_admin_chat_viewer_work_across_restart(
     .await;
     assert_eq!(st_adm, 200);
     let admin_token = adm_res["adminToken"].as_str().unwrap().to_string();
-    assert_eq!(adm_res["dashboard"]["chatCount"], 1);
+    assert_eq!(adm_res["dashboard"]["chatCount"], 3);
     assert_eq!(adm_res["dashboard"]["blockedChatCount"], 2);
 
     let (st_chats, chats_res) = http_json_auth_request(
@@ -1193,11 +1196,21 @@ async fn chat_persistence_word_filter_and_admin_chat_viewer_work_across_restart(
     )
     .await;
     assert_eq!(st_chats, 200);
-    assert_eq!(chats_res["total"], 1);
+    assert_eq!(chats_res["total"], 3);
     assert_eq!(chats_res["blockedTotal"], 2);
-    assert_eq!(
-        chats_res["chats"][0]["text"],
-        "hello bestie! classic butterfly runway look!"
+    let chat_texts: Vec<&str> = chats_res["chats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect();
+    assert!(
+        chat_texts.contains(&"hello bestie! classic butterfly runway look!"),
+        "Clean chat message must be present in persisted chat history"
+    );
+    assert!(
+        chat_texts.iter().any(|t| t.contains("Debtor's Prison")),
+        "Judge Starlight court enforcement notice must be present in chat history"
     );
 
     // Add a custom blocked word via /admin/settings
@@ -1222,6 +1235,7 @@ async fn chat_persistence_word_filter_and_admin_chat_viewer_work_across_restart(
     )
     .await;
     assert_eq!(st_custom_blk, 400);
+    tokio::time::sleep(Duration::from_millis(60)).await;
 
     running.http_task.abort();
 
@@ -1241,7 +1255,7 @@ async fn chat_persistence_word_filter_and_admin_chat_viewer_work_across_restart(
     };
     let reloaded = WorldEngine::new(reload_cfg).expect("reload world");
     let chats_after_restart = reloaded.chats.read().await;
-    assert_eq!(chats_after_restart.len(), 1);
+    assert_eq!(chats_after_restart.len(), 4);
     assert_eq!(
         chats_after_restart[0].text,
         "hello bestie! classic butterfly runway look!"
@@ -1522,7 +1536,7 @@ async fn dungeon_portal_farming_and_live_p2p_trade_end_to_end() {
     )
     .await;
     assert_eq!(st_pick2, 200);
-    let ella_farmed_coins = pick2_res["economy"]["coins"].as_u64().unwrap();
+    let ella_farmed_coins = pick2_res["economy"]["coins"].as_i64().unwrap();
     assert!(ella_farmed_coins >= 22);
 
     // 7. Grant deterministic Obsidian Crown + Speed Potion to Ella & 60 coins to Maya for P2P trade test
@@ -1835,4 +1849,779 @@ async fn male_oblivion_jack_tech49_avatar_api_and_resume_persistence() {
         resume_res["self"]["user"]["avatar"]["accessory"],
         "aviators"
     );
+}
+
+async fn http_json_request_with_headers(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    bearer_token: Option<&str>,
+    body: Option<Value>,
+) -> (u16, String, Value) {
+    let mut stream = TcpStream::connect(addr).await.expect("connect HTTP");
+    let body_bytes = body
+        .map(|v| serde_json::to_vec(&v).unwrap())
+        .unwrap_or_default();
+    let auth_header = bearer_token
+        .map(|t| format!("Authorization: Bearer {t}\r\n"))
+        .unwrap_or_default();
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n{auth_header}Accept-Encoding: identity\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        body_bytes.len()
+    );
+    stream.write_all(req.as_bytes()).await.unwrap();
+    if !body_bytes.is_empty() {
+        stream.write_all(&body_bytes).await.unwrap();
+    }
+    let mut raw_resp = Vec::new();
+    stream.read_to_end(&mut raw_resp).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&raw_resp);
+    let (head, body_part) = resp_str
+        .split_once("\r\n\r\n")
+        .expect("valid HTTP response headers");
+    let status: u16 = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
+    let parsed: Value = serde_json::from_str(body_part.trim()).unwrap_or_else(|_| json!({}));
+    (status, head.to_ascii_lowercase(), parsed)
+}
+
+#[tokio::test]
+async fn password_rollover_and_global_session_revocation_expire_tokens_and_kick_live_transports() {
+    use ella_world::auth::{sign_token, TokenClaims};
+
+    let cfg = make_test_config("session_revoke_and_pw_roll");
+    let hmac_secret = cfg.hmac_secret.clone();
+    let running = start_all_servers(cfg).await.expect("start servers");
+
+    // 1. Verify legacy pre-epoch tokens (missing exp / sessionEpoch / userTokenEpoch / pwdSig) are rejected
+    let legacy_token = sign_token(
+        &TokenClaims {
+            self_id: Some("peer_ella_leg".into()),
+            username: Some("ella".into()),
+            role: Some("host".into()),
+            iat: 1_700_000_000_000,
+            exp: None,
+            session_epoch: None,
+            user_token_epoch: None,
+            pwd_sig: None,
+        },
+        &hmac_secret,
+    );
+    let (leg_status, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/resume",
+        Some(json!({ "token": legacy_token, "clientId": "leg" })),
+    )
+    .await;
+    assert_eq!(
+        leg_status, 401,
+        "Legacy tokens without epoch & password fingerprint must be rejected"
+    );
+
+    let leg_ws_res = tokio_tungstenite::connect_async(format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, legacy_token
+    ))
+    .await;
+    assert!(
+        leg_ws_res.is_err(),
+        "Legacy token must fail WebSocket upgrade"
+    );
+
+    // 2. Ella and Maya log in and connect live WebSocket spines (+ Ella connects Native UDP)
+    let (st_e, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "rev1" })),
+    )
+    .await;
+    assert_eq!(st_e, 200);
+    let ella_old_token = ella_login["token"].as_str().unwrap().to_string();
+
+    let (st_m, maya_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "rev2" })),
+    )
+    .await;
+    assert_eq!(st_m, 200);
+    let maya_old_token = maya_login["token"].as_str().unwrap().to_string();
+
+    let (mut ws_ella, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, ella_old_token
+    ))
+    .await
+    .expect("Ella WS connect");
+    let (mut ws_maya, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, maya_old_token
+    ))
+    .await
+    .expect("Maya WS connect");
+
+    // Drain initial welcome_snapshot frames
+    let _ = tokio::time::timeout(Duration::from_secs(2), ws_ella.next())
+        .await
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), ws_maya.next())
+        .await
+        .unwrap();
+
+    // Connect Native UDP client for Ella as well
+    let udp_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let hello_pkt = encode_native_hello(&ella_old_token);
+    udp_sock
+        .send_to(&hello_pkt, running.native_udp_addr)
+        .await
+        .unwrap();
+    let mut udp_buf = [0u8; 2048];
+    let (n_udp, _) = tokio::time::timeout(Duration::from_secs(2), udp_sock.recv_from(&mut udp_buf))
+        .await
+        .expect("UDP welcome timeout")
+        .unwrap();
+    let (op_udp, _) = unwrap_native_packet(&udp_buf[..n_udp]).unwrap();
+    assert_eq!(op_udp, OP_WELCOME);
+
+    let (_, health_before) =
+        http_json_request(running.http_addr, "GET", "/api/ella-world/health", None).await;
+    assert_eq!(health_before["activePlayers"], 2);
+    assert_eq!(health_before["activeNativeUdpSessions"], 1);
+
+    // 3. Parent logs into Admin API and rotates Ella's password
+    let (adm_st, adm_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/login",
+        Some(json!({ "password": "changeme-parent-admin" })),
+    )
+    .await;
+    assert_eq!(adm_st, 200);
+    let admin_token_1 = adm_login["adminToken"].as_str().unwrap().to_string();
+
+    let (rot_st, _, rot_res) = http_json_request_with_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/users",
+        Some(&admin_token_1),
+        Some(json!({
+            "username": "ella",
+            "displayName": "Ella",
+            "password": "rolled-super-secret-2026"
+        })),
+    )
+    .await;
+    assert_eq!(rot_st, 200);
+    assert_eq!(rot_res["passwordRotated"], true);
+    assert_eq!(rot_res["kickedSessions"], 1);
+
+    // Verify Ella's open WebSocket receives `session_revoked` and closes immediately!
+    let mut saw_ella_revoked_frame = false;
+    let revoke_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < revoke_deadline {
+        match tokio::time::timeout(Duration::from_millis(500), ws_ella.next()).await {
+            Ok(Some(Ok(TungsMessage::Text(txt)))) => {
+                if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                    if v["type"] == "session_revoked" {
+                        saw_ella_revoked_frame = true;
+                    }
+                }
+            }
+            Ok(Some(Ok(TungsMessage::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => break,
+            _ => {}
+        }
+    }
+    assert!(
+        saw_ella_revoked_frame,
+        "Open WebSocket must receive `session_revoked` frame immediately when password is rolled"
+    );
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let (_, health_after_roll) =
+        http_json_request(running.http_addr, "GET", "/api/ella-world/health", None).await;
+    assert_eq!(
+        health_after_roll["activePlayers"], 1,
+        "Kicked player must be removed immediately without 12s grace window while Maya remains online"
+    );
+    assert_eq!(
+        health_after_roll["activeNativeUdpSessions"], 0,
+        "Native UDP session must also be evicted on password rollover"
+    );
+
+    // Verify Ella's old token fails 401 across /resume, /block, /chat, and /ws
+    let (res_old_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/resume",
+        Some(json!({ "token": ella_old_token, "clientId": "rev1" })),
+    )
+    .await;
+    assert_eq!(res_old_st, 401);
+
+    let (blk_old_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({ "token": ella_old_token, "action": "place", "x": 2, "y": 0, "z": 2, "color": "#ec4899" })),
+    )
+    .await;
+    assert_eq!(blk_old_st, 401);
+
+    assert!(
+        tokio_tungstenite::connect_async(format!(
+            "ws://{}/api/ella-world/ws?token={}",
+            running.http_addr, ella_old_token
+        ))
+        .await
+        .is_err(),
+        "Rolled-out token must fail WebSocket reconnect"
+    );
+
+    // Old password login fails; new password login succeeds!
+    let (bad_pw_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "rev1" })),
+    )
+    .await;
+    assert_eq!(bad_pw_st, 401);
+
+    let (new_pw_st, ella_relogin) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "rolled-super-secret-2026", "clientId": "rev1" })),
+    )
+    .await;
+    assert_eq!(new_pw_st, 200);
+    let ella_new_token = ella_relogin["token"].as_str().unwrap().to_string();
+
+    let (mut ws_ella_2, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, ella_new_token
+    ))
+    .await
+    .expect("Ella WS reconnect with new password token");
+    let _ = tokio::time::timeout(Duration::from_secs(2), ws_ella_2.next())
+        .await
+        .unwrap();
+
+    // 4. Parent triggers Global Session Revocation (`POST /api/ella-world/admin/sessions/revoke` with `{}`)
+    let (glob_st, _, glob_res) = http_json_request_with_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/sessions/revoke",
+        Some(&admin_token_1),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(glob_st, 200);
+    assert_eq!(glob_res["scope"], "all");
+    assert_eq!(glob_res["sessionEpoch"], 2);
+    assert_eq!(glob_res["kickedCount"], 2);
+    let admin_token_2 = glob_res["adminToken"].as_str().unwrap().to_string();
+
+    // Both Ella's new WS and Maya's WS receive `session_revoked`!
+    let mut maya_revoked = false;
+    let glob_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < glob_deadline {
+        match tokio::time::timeout(Duration::from_millis(500), ws_maya.next()).await {
+            Ok(Some(Ok(TungsMessage::Text(txt)))) => {
+                if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                    if v["type"] == "session_revoked" {
+                        maya_revoked = true;
+                    }
+                }
+            }
+            Ok(Some(Ok(TungsMessage::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => break,
+            _ => {}
+        }
+    }
+    assert!(
+        maya_revoked,
+        "Global revoke must notify Maya's open WebSocket"
+    );
+    let _ = ws_ella_2.close(None).await;
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let (_, health_after_glob) =
+        http_json_request(running.http_addr, "GET", "/api/ella-world/health", None).await;
+    assert_eq!(health_after_glob["activePlayers"], 0);
+
+    // Both player tokens AND the pre-epoch admin token are now 401; fresh admin_token_2 works!
+    let (e_res_after, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/resume",
+        Some(json!({ "token": ella_new_token, "clientId": "rev1" })),
+    )
+    .await;
+    assert_eq!(e_res_after, 401);
+
+    let (m_res_after, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/resume",
+        Some(json!({ "token": maya_old_token, "clientId": "rev2" })),
+    )
+    .await;
+    assert_eq!(m_res_after, 401);
+
+    let (old_adm_st, _, _) = http_json_request_with_headers(
+        running.http_addr,
+        "GET",
+        "/api/ella-world/admin/state",
+        Some(&admin_token_1),
+        None,
+    )
+    .await;
+    assert_eq!(
+        old_adm_st, 401,
+        "Pre-revoke admin token must also be invalidated when sessionEpoch bumps"
+    );
+
+    let (new_adm_st, _, new_adm_state) = http_json_request_with_headers(
+        running.http_addr,
+        "GET",
+        "/api/ella-world/admin/state",
+        Some(&admin_token_2),
+        None,
+    )
+    .await;
+    assert_eq!(new_adm_st, 200);
+    assert_eq!(new_adm_state["dashboard"]["sessionEpoch"], 2);
+
+    // Verify /logout attaches Clear-Site-Data header
+    let (logout_st, logout_headers, _) = http_json_request_with_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/logout",
+        None,
+        Some(json!({ "token": ella_new_token })),
+    )
+    .await;
+    assert_eq!(logout_st, 200);
+    assert!(
+        logout_headers.contains("clear-site-data: \"cookies\", \"storage\", \"cache\""),
+        "Logout endpoint must emit Clear-Site-Data header"
+    );
+
+    running.http_task.abort();
+}
+
+#[tokio::test]
+async fn parental_controls_escalating_fines_and_debtors_prison_end_to_end() {
+    let cfg = make_test_config("parental_and_debtors_prison");
+    let running = start_all_servers(cfg).await.expect("start servers");
+
+    // 1. Login Ella, Maya, and Parent Admin
+    let (st_e, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "pris1" })),
+    )
+    .await;
+    assert_eq!(st_e, 200);
+    let ella_token = ella_login["token"].as_str().unwrap().to_string();
+    assert_eq!(ella_login["self"]["zone"], 0);
+    assert_eq!(ella_login["economy"]["coins"], 0);
+
+    let (st_m, maya_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "pris2" })),
+    )
+    .await;
+    assert_eq!(st_m, 200);
+    let maya_token = maya_login["token"].as_str().unwrap().to_string();
+
+    let (st_adm, adm_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/login",
+        Some(json!({ "password": "changeme-parent-admin" })),
+    )
+    .await;
+    assert_eq!(st_adm, 200);
+    let admin_token = adm_login["adminToken"].as_str().unwrap().to_string();
+
+    let (mut ws_ella, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, ella_token
+    ))
+    .await
+    .unwrap();
+
+    // 2. Scunthorpe & numeric clean messages MUST pass with 0 strikes and 0 fine
+    for clean_msg in [
+        "hello class! let's pass the grass!",
+        "i saved 455 coins in my classic scrapbook!",
+    ] {
+        let (st_ok, _) = http_json_request(
+            running.http_addr,
+            "POST",
+            "/api/ella-world/chat",
+            Some(json!({ "token": ella_token, "text": clean_msg })),
+        )
+        .await;
+        assert_eq!(
+            st_ok, 200,
+            "Clean text should never be blocked: {clean_msg}"
+        );
+    }
+
+    // 3. Evasion profanity triggers escalating negative-balance fines & auto-sentences to ZONE_PRISON (2)
+    // Strike #1: spaced single-letter evasion ("f u c k") -> -15 coins (balance = -15, still Plaza)
+    let (st_s1, res_s1) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/chat",
+        Some(json!({ "token": ella_token, "text": "what the f u c k is that" })),
+    )
+    .await;
+    assert_eq!(st_s1, 400);
+    assert!(res_s1["error"].as_str().unwrap().contains("-15"));
+
+    // Strike #2: punctuation-split evasion ("s.h.i.t") -> -35 coins (balance = -50 <= -50 threshold -> Debtor's Prison!)
+    let (st_s2, res_s2) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/chat",
+        Some(json!({ "token": ella_token, "text": "this is s.h.i.t right now" })),
+    )
+    .await;
+    assert_eq!(st_s2, 400);
+    assert!(
+        res_s2["error"]
+            .as_str()
+            .unwrap()
+            .contains("Debtor's Prison"),
+        "Dropping to -50 coins must sentence player to Debtor's Prison"
+    );
+
+    // Multi-word leetspeak ("k1ll y0urself") is also caught while inside prison
+    let (st_s3, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/chat",
+        Some(json!({ "token": ella_token, "text": "go k1ll y0urself" })),
+    )
+    .await;
+    assert_eq!(st_s3, 400);
+
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let (_, chats_audit) = http_json_auth_request(
+        running.http_addr,
+        "GET",
+        "/api/ella-world/admin/chats?includeBlocked=true&limit=20",
+        &admin_token,
+        None,
+    )
+    .await;
+    let blocked_arr = chats_audit["blockedChats"].as_array().unwrap();
+    assert_eq!(blocked_arr.len(), 3);
+    assert!(
+        blocked_arr
+            .iter()
+            .any(|b| b["sentencedToPrison"] == true && b["balanceAfter"] == -50),
+        "Blocked chat audit must record strike fine, negative balanceAfter, and sentencedToPrison"
+    );
+
+    // Verify Ella's live runtime zone is ZONE_PRISON (2) and spoofed C2S coords clamp inside [-13.2, 13.2]
+    let spoof_escape = encode_c2s_state(&DecodedC2SState {
+        seq: 1,
+        client_time_ms: 1000,
+        x: 60.0,
+        y: 0.0,
+        z: 60.0,
+        ry: 0.0,
+        anim: "run".into(),
+        emote: None,
+        muted: false,
+        speaking: false,
+        zone: 0, // attempting to spoof zone 0 while imprisoned
+    });
+    ws_ella
+        .send(TungsMessage::Binary(spoof_escape.to_vec()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    {
+        let p_map = running.world.players.read().await;
+        let ella_rt = p_map.get("peer_ella_pris1").expect("ella runtime");
+        assert_eq!(
+            ella_rt.zone, 2,
+            "Server must force imprisoned peer to stay in ZONE_PRISON (2)"
+        );
+        assert!(
+            ella_rt.x <= 13.25 && ella_rt.z <= 13.25,
+            "Prison bounds must clamp movement"
+        );
+    }
+
+    // 4. Verify Prisoner Containment: portal exit, block placement, item use, and trading are all rejected!
+    let (st_esc, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/portal",
+        Some(json!({ "token": ella_token, "targetZone": 0 })),
+    )
+    .await;
+    assert_eq!(
+        st_esc, 400,
+        "Prisoner with negative debt & chores must not exit portal"
+    );
+
+    let (st_blk, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({ "token": ella_token, "action": "place", "x": 1, "y": 1, "z": 1, "color": "#f472b6" })),
+    )
+    .await;
+    assert_eq!(st_blk, 400, "Prisoner cannot place blocks");
+
+    let (st_trd, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/trade/invite",
+        Some(json!({ "token": ella_token, "targetPeerId": "peer_maya_pris2" })),
+    )
+    .await;
+    assert_eq!(st_trd, 400, "Prisoner cannot initiate P2P trade");
+
+    // 5. Test Community Service Work Stations (+5 toward clearing negative debt, strictly capped at 0!)
+    // Set Ella to -3 coins and 1 chore remaining so we verify the strict 0-coin ceiling (no positive farming!)
+    {
+        let mut cfg_w = running.world.users_cfg.write().await;
+        let ella_u = cfg_w
+            .users
+            .iter_mut()
+            .find(|u| u.username == "ella")
+            .unwrap();
+        ella_u.coins = -3;
+        ella_u.prison_tasks_remaining = 1;
+    }
+    // Walk Ella next to chore_sweep_1 (-7.5, 0.0, -4.5)
+    let move_to_chore = encode_c2s_state(&DecodedC2SState {
+        seq: 2,
+        client_time_ms: 1200,
+        x: -7.5,
+        y: 0.0,
+        z: -4.5,
+        ry: 0.0,
+        anim: "walk".into(),
+        emote: None,
+        muted: false,
+        speaking: false,
+        zone: 2,
+    });
+    ws_ella
+        .send(TungsMessage::Binary(move_to_chore.to_vec()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let (st_work, work_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/prison/work",
+        Some(json!({ "token": ella_token, "nodeId": "prison_rock_1" })),
+    )
+    .await;
+    assert_eq!(st_work, 200);
+    assert_eq!(
+        work_res["earnedTowardDebt"], 3,
+        "Work reward must strictly cap at 0 coins with zero positive coin farming"
+    );
+    assert_eq!(work_res["economy"]["coins"], 0);
+    assert_eq!(work_res["moderation"]["prisonTasksRemaining"], 0);
+    assert_eq!(work_res["readyForRelease"], true);
+
+    // Now Ella can step through the Release Gate back to Starlight Plaza (zone 0)!
+    let (st_rel, rel_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/portal",
+        Some(json!({ "token": ella_token, "targetZone": 0 })),
+    )
+    .await;
+    assert_eq!(st_rel, 200);
+    assert_eq!(rel_res["zone"], 0);
+    assert_eq!(rel_res["moderation"]["inDebtorsPrison"], false);
+
+    // 6. Parental Controls: Parent Sentence & Parent Pardon on Maya
+    let (st_sent_m, sent_m_res) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/moderate",
+        &admin_token,
+        Some(json!({
+            "username": "maya",
+            "action": "sentence_prison",
+            "prisonTasks": 5,
+            "coinDelta": -40,
+            "reason": "Testing Parent Judge sentence"
+        })),
+    )
+    .await;
+    assert_eq!(st_sent_m, 200);
+    assert_eq!(sent_m_res["economy"]["coins"], -40);
+    assert_eq!(sent_m_res["moderation"]["inDebtorsPrison"], true);
+    assert_eq!(sent_m_res["moderation"]["prisonTasksRemaining"], 5);
+
+    let (st_pard_m, pard_m_res) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/moderate",
+        &admin_token,
+        Some(json!({
+            "username": "maya",
+            "action": "pardon_prison"
+        })),
+    )
+    .await;
+    assert_eq!(st_pard_m, 200);
+    assert_eq!(
+        pard_m_res["economy"]["coins"], 0,
+        "Parent Pardon must forgive negative debt back to 0"
+    );
+    assert_eq!(pard_m_res["moderation"]["inDebtorsPrison"], false);
+    assert_eq!(pard_m_res["moderation"]["prisonTasksRemaining"], 0);
+
+    // 7. Safe Quick-Chat-Only Mode & Server-Enforced Voice Mute over Native UDP
+    let (st_qc, _) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/moderate",
+        &admin_token,
+        Some(json!({
+            "username": "ella",
+            "action": "update_controls",
+            "chatMode": "quick_only",
+            "voiceMutedByParent": true
+        })),
+    )
+    .await;
+    assert_eq!(st_qc, 200);
+
+    // Approved quick-chat phrase succeeds, arbitrary free-text is rejected
+    let (st_qp_ok, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/chat",
+        Some(json!({ "token": ella_token, "text": "⭐⭐⭐⭐⭐ 5 STARS! Slay!!" })),
+    )
+    .await;
+    assert_eq!(st_qp_ok, 200);
+
+    let (st_qp_bad, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/chat",
+        Some(json!({ "token": ella_token, "text": "custom free text message" })),
+    )
+    .await;
+    assert_eq!(st_qp_bad, 400);
+
+    // Verify server drops OP_VOICE_OPUS packets when voiceMutedByParent == true
+    let sock_ella = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let sock_maya = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    sock_ella.connect(running.native_udp_addr).await.unwrap();
+    sock_maya.connect(running.native_udp_addr).await.unwrap();
+    sock_ella
+        .send(&encode_native_hello(&ella_token))
+        .await
+        .unwrap();
+    sock_maya
+        .send(&encode_native_hello(&maya_token))
+        .await
+        .unwrap();
+
+    let mut udp_buf = [0u8; 2048];
+    let _ = tokio::time::timeout(Duration::from_secs(1), sock_ella.recv(&mut udp_buf)).await;
+    let _ = tokio::time::timeout(Duration::from_secs(1), sock_maya.recv(&mut udp_buf)).await;
+
+    let mut voice_body = BytesMut::new();
+    voice_body.put_u16_le(1);
+    voice_body.put_u32_le(960);
+    voice_body.extend_from_slice(&[0xF8, 0xFF, 0xFE, 0x11, 0x22]);
+    let voice_pkt = wrap_native_packet(OP_VOICE_OPUS, &voice_body);
+    sock_ella.send(&voice_pkt).await.unwrap();
+
+    // Drain Maya's UDP socket for 180ms and assert NO OP_VOICE_OPUS packet arrives while Ella is parent-muted
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(180);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Ok(n)) =
+            tokio::time::timeout(Duration::from_millis(40), sock_maya.recv(&mut udp_buf)).await
+        {
+            if let Some((pkt_type, _)) = unwrap_native_packet(&udp_buf[..n]) {
+                assert_ne!(
+                    pkt_type, OP_VOICE_OPUS,
+                    "Server must drop OP_VOICE_OPUS frames from parent-muted account"
+                );
+            }
+        }
+    }
+
+    // 8. Account Pause (`suspended: true`) & Global World Lock (`worldLocked: true`) return 403 Forbidden
+    let (st_susp, _) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/moderate",
+        &admin_token,
+        Some(json!({
+            "username": "maya",
+            "action": "update_controls",
+            "suspended": true
+        })),
+    )
+    .await;
+    assert_eq!(st_susp, 200);
+
+    let (st_maya_blocked, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "pris3" })),
+    )
+    .await;
+    assert_eq!(
+        st_maya_blocked, 403,
+        "Paused child account must receive 403 Forbidden on login"
+    );
+
+    let (st_wlock, _) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/settings",
+        &admin_token,
+        Some(json!({ "worldLocked": true })),
+    )
+    .await;
+    assert_eq!(st_wlock, 200);
+
+    let (st_ella_wlocked, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "pris4" })),
+    )
+    .await;
+    assert_eq!(
+        st_ella_wlocked, 403,
+        "World lock must block logins with 403 Forbidden"
+    );
+
+    running.http_task.abort();
 }

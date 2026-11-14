@@ -29,6 +29,7 @@ pub const ZONE_FLAG_MASK: u8 = 0b1111_1100;
 
 pub const ZONE_PLAZA: u8 = 0;
 pub const ZONE_DUNGEON: u8 = 1;
+pub const ZONE_PRISON: u8 = 2;
 
 pub fn pack_state_flags(muted: bool, speaking: bool, zone: u8) -> u8 {
     let mut flags = (zone << ZONE_FLAG_SHIFT) & ZONE_FLAG_MASK;
@@ -161,10 +162,10 @@ pub fn decode_c2s_state(raw: &[u8]) -> Option<DecodedC2SState> {
     let emote = code_to_emote(raw[26]).map(str::to_string);
     let flags = raw[27];
     let raw_zone = unpack_zone_from_flags(flags);
-    let zone = if raw_zone == ZONE_DUNGEON {
-        ZONE_DUNGEON
-    } else {
-        ZONE_PLAZA
+    let zone = match raw_zone {
+        ZONE_DUNGEON => ZONE_DUNGEON,
+        ZONE_PRISON => ZONE_PRISON,
+        _ => ZONE_PLAZA,
     };
     Some(DecodedC2SState {
         seq,
@@ -482,6 +483,14 @@ mod tests {
         assert_eq!(decoded, input);
         assert_eq!(decoded.zone, ZONE_DUNGEON);
 
+        let prison_input = DecodedC2SState {
+            zone: ZONE_PRISON,
+            ..input.clone()
+        };
+        let prison_decoded =
+            decode_c2s_state(&encode_c2s_state(&prison_input)).expect("valid prison C2S state");
+        assert_eq!(prison_decoded.zone, ZONE_PRISON);
+
         let players = vec![
             PlayerRuntimeState {
                 id: "peer_ella_tab1".into(),
@@ -490,6 +499,7 @@ mod tests {
                     display_name: "Ella".into(),
                     role: "host".into(),
                     avatar: AvatarAppearance::default(),
+                    moderation: Default::default(),
                 },
                 avatar_hash: AvatarAppearance::default().short_hash(),
                 zone: decoded.zone,
@@ -511,6 +521,7 @@ mod tests {
                 disconnected_at_ms: None,
                 speed_boost_until_ms: 0,
                 jump_boost_until_ms: 0,
+                server_voice_muted: false,
             },
             PlayerRuntimeState {
                 id: "peer_maya_tab1".into(),
@@ -519,6 +530,7 @@ mod tests {
                     display_name: "Maya".into(),
                     role: "friend".into(),
                     avatar: AvatarAppearance::default(),
+                    moderation: Default::default(),
                 },
                 avatar_hash: AvatarAppearance::default().short_hash(),
                 zone: ZONE_PLAZA,
@@ -540,6 +552,7 @@ mod tests {
                 disconnected_at_ms: None,
                 speed_boost_until_ms: 0,
                 jump_boost_until_ms: 0,
+                server_voice_muted: false,
             },
         ];
 
@@ -568,6 +581,7 @@ mod tests {
                     display_name: format!("Student {i:03}"),
                     role: "friend".into(),
                     avatar: base_av.clone(),
+                    moderation: Default::default(),
                 },
                 avatar_hash: base_av.short_hash(),
                 zone: ZONE_PLAZA,
@@ -589,6 +603,7 @@ mod tests {
                 disconnected_at_ms: None,
                 speed_boost_until_ms: 0,
                 jump_boost_until_ms: 0,
+                server_voice_muted: false,
             };
             entries.push((p.id.clone(), encode_player_binary_entry(&p)));
         }

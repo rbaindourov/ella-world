@@ -17,6 +17,33 @@ pub struct TokenClaims {
     #[serde(default)]
     pub role: Option<String>,
     pub iat: u64,
+    #[serde(default)]
+    pub exp: Option<u64>,
+    #[serde(default)]
+    pub session_epoch: Option<u64>,
+    #[serde(default)]
+    pub user_token_epoch: Option<u64>,
+    #[serde(default)]
+    pub pwd_sig: Option<String>,
+}
+
+/// Computes a 64-bit HMAC-SHA256 fingerprint binding a session token to `(subject, current_password)`
+/// without exposing the password in token claims. Any password rollover automatically invalidates
+/// all prior tokens for that subject across restarts and transports.
+pub fn password_token_sig(subject: &str, password: &str, secret: &str) -> String {
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts keys of any size");
+    mac.update(b"ewld-pwd-v1|");
+    mac.update(subject.trim().to_ascii_lowercase().as_bytes());
+    mac.update(b"|");
+    mac.update(password.as_bytes());
+    let sig_bytes = mac.finalize().into_bytes();
+    let mut hex = String::with_capacity(16);
+    for b in &sig_bytes[..8] {
+        use std::fmt::Write;
+        let _ = write!(&mut hex, "{b:02x}");
+    }
+    hex
 }
 
 pub fn sign_token(claims: &TokenClaims, secret: &str) -> String {

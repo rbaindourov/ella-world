@@ -19,13 +19,17 @@ export class WorldSpineClient {
     onWorldStateSnapshot,
     onWorldEvent,
     onTransportStatus,
-    onClockOffset
+    onClockOffset,
+    onSessionRevoked,
+    onHandshakeFailed
   }) {
     this.nextSeq = nextSeq || (() => 1);
     this.onWorldStateSnapshot = onWorldStateSnapshot || (() => {});
     this.onWorldEvent = onWorldEvent || (() => {});
     this.onTransportStatus = onTransportStatus || (() => {});
     this.onClockOffset = onClockOffset || (() => {});
+    this.onSessionRevoked = onSessionRevoked || (() => {});
+    this.onHandshakeFailed = onHandshakeFailed || (() => {});
 
     this.sessionToken = '';
     this.wsPath = '/api/ella-world/ws';
@@ -111,9 +115,11 @@ export class WorldSpineClient {
     sock.binaryType = 'arraybuffer';
     this.ws = sock;
     this._reportedUdpFastLane = null;
+    let openedOnce = false;
 
     sock.onopen = () => {
       if (sock !== this.ws) return;
+      openedOnce = true;
       this.reconnectAttempt = 0;
       this.onTransportStatus({
         state: 'connected',
@@ -142,6 +148,10 @@ export class WorldSpineClient {
       this.ws = null;
       this._reportedUdpFastLane = null;
       if (!this.activeSession) return;
+      if (!openedOnce) {
+        this.onHandshakeFailed();
+        if (!this.activeSession) return;
+      }
       this.onTransportStatus({
         state: 'reconnecting',
         rttMs: null
@@ -192,6 +202,13 @@ export class WorldSpineClient {
       return;
     }
     if (!msg || typeof msg !== 'object') return;
+
+    if (msg.type === 'session_revoked') {
+      const reason = msg.reason || 'Your session has expired. Please sign in again.';
+      this.disconnect();
+      this.onSessionRevoked(reason);
+      return;
+    }
 
     if (msg.type === 'pong') {
       const nowWall = Date.now();

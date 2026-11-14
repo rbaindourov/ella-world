@@ -247,6 +247,7 @@ const seenChatIds = new Set();
 
 const ZONE_PLAZA = 0;
 const ZONE_DUNGEON = 1;
+const ZONE_PRISON = 2;
 
 function nextOutboundSeq() {
   sharedOutboundSeq = (sharedOutboundSeq + 1) >>> 0;
@@ -267,8 +268,28 @@ let localVoiceMuted = false;
 let localVoiceSpeaking = false;
 let toastTimer = null;
 
-// Crystal Cavern Dungeon, Persistent Economy & Live P2P Trade State
+// Crystal Cavern Dungeon, Persistent Economy, Parental Moderation & Debtor's Prison State
 let playerEconomy = { coins: 0, inventory: {} };
+let playerModeration = {
+  violationStrikes: 0,
+  inDebtorsPrison: false,
+  prisonReason: null,
+  prisonTasksRemaining: 0,
+  voiceMutedByParent: false,
+  chatMode: 'normal',
+  suspended: false,
+  canBuild: true,
+  canTrade: true
+};
+let parentalWorldSettings = {
+  globalVoiceEnabled: true,
+  globalChatMode: 'normal',
+  safeQuickChatPhrases: [],
+  profanityFineBase: 15,
+  debtPrisonThreshold: -50,
+  prisonStrikeThreshold: 3
+};
+let prisonWorkInFlight = false;
 let itemCatalog = [];
 const catalogById = new Map();
 let activeSpeedBoostUntilMs = 0;
@@ -281,6 +302,21 @@ let tradeOfferDebounceTimer = null;
 let zonePortalInFlight = false;
 let pendingPostPortalWarp = null;
 const pickupInFlightIds = new Set();
+
+function isSelfEligibleForPrisonRelease() {
+  return (
+    Number(playerEconomy.coins || 0) >= 0 &&
+    Number(playerModeration.prisonTasksRemaining || 0) === 0
+  );
+}
+
+function effectiveChatModeForSelf() {
+  const gMode = String(parentalWorldSettings.globalChatMode || 'normal');
+  const uMode = String(playerModeration.chatMode || 'normal');
+  if (gMode === 'muted' || uMode === 'muted') return 'muted';
+  if (gMode === 'quick_only' || uMode === 'quick_only') return 'quick_only';
+  return 'normal';
+}
 
 // Map of peerId -> player state object
 const playersMap = new Map();
@@ -304,6 +340,7 @@ const loginErrorEl = document.getElementById('login-error');
 const hudWorldTitle = document.getElementById('hud-world-title');
 const hudPlayerBadge = document.getElementById('hud-player-badge');
 const hudZonePill = document.getElementById('hud-zone-pill');
+const hudCoinsPill = document.getElementById('hud-coins-pill');
 const hudCoinsCount = document.getElementById('hud-coins-count');
 const hudBuffPill = document.getElementById('hud-buff-pill');
 const hudItemCount = document.getElementById('hud-item-count');
@@ -315,6 +352,13 @@ const hudChatPanel = document.querySelector('.hud-chat-panel');
 const warpDungeonBtn = document.getElementById('warp-dungeon-btn');
 const openBackpackBtn = document.getElementById('open-backpack-btn');
 const touchActionBtn = document.getElementById('touch-action-btn');
+
+const prisonSentenceBanner = document.getElementById('prison-sentence-banner');
+const prisonBannerTitle = document.getElementById('prison-banner-title');
+const prisonBannerReason = document.getElementById('prison-banner-reason');
+const prisonDebtPill = document.getElementById('prison-debt-pill');
+const prisonChoresPill = document.getElementById('prison-chores-pill');
+const prisonGatePill = document.getElementById('prison-gate-pill');
 
 const runwayHudBar = document.getElementById('runway-hud-bar');
 const runwayThemeLabel = document.getElementById('runway-theme-label');
@@ -354,6 +398,7 @@ function updateBuildSaveStatus(blockCount, saving = false) {
 const chatMessagesEl = document.getElementById('chat-messages');
 const chatForm = document.getElementById('chat-form');
 const chatInput = document.getElementById('chat-input');
+const chatSendBtn = document.getElementById('chat-send-btn');
 
 // Dialogs & Popover
 const avatarDialog = document.getElementById('avatar-dialog');
@@ -385,6 +430,107 @@ const tradeCancelBtn = document.getElementById('trade-cancel-btn');
 const tradeLockBtn = document.getElementById('trade-lock-btn');
 const tradeConfirmBtn = document.getElementById('trade-confirm-btn');
 
+let wsHandshakeProbeInFlight = false;
+let lastWsHandshakeProbeAt = 0;
+
+function forceSessionRevokedToLogin(reason) {
+  const alertMessage =
+    reason || 'Your session has expired or your password was updated. Please sign in again.';
+
+  // Close player modals/popovers first so #login-screen is not inert when announcing
+  if (isSalonOpen) closeGlamSalon(false);
+  hideTradeInvitePopover();
+  pendingInviteTrade = null;
+  activeTrade = null;
+  draftTradeCoins = 0;
+  draftTradeItems = {};
+  if (tradeDialog && tradeDialog.open) tradeDialog.close('cancelled');
+  if (backpackDialog && backpackDialog.open) backpackDialog.close();
+  if (audioDialog && audioDialog.open) audioDialog.close();
+  if (helpDialog && helpDialog.open) helpDialog.close();
+
+  localStorage.removeItem('ella_world_token');
+  sessionToken = '';
+  for (const [pid] of Array.from(playersMap.entries())) {
+    if (pid !== selfId) {
+      world3d.removeRemotePlayer(pid);
+      voiceManager.removePeer(pid);
+    }
+  }
+  selfId = null;
+  selfUser = null;
+  playersMap.clear();
+
+  if (udpTimer) {
+    clearInterval(udpTimer);
+    udpTimer = null;
+  }
+  spineClient.disconnect();
+  voiceManager.disconnectSession();
+  lastAnnouncedTransportState = '';
+  wsTransportState = { state: 'connecting', rttMs: null };
+  udpTransportState = { state: 'connecting', rttMs: null, port: 44444 };
+
+  gameHud.hidden = true;
+  loginScreen.hidden = false;
+  if (loginPasswordInput) {
+    loginPasswordInput.value = '';
+  }
+
+  const showLoginAlertAndFocus = () => {
+    if (loginErrorEl) {
+      loginErrorEl.textContent = alertMessage;
+      loginErrorEl.hidden = false;
+    }
+    if (loginPasswordInput) {
+      loginPasswordInput.focus();
+    }
+  };
+
+  // Coordinate live-region updates with modal dialog / inert state (modern-web-guidance: accessibility)
+  if (adminDialog && adminDialog.open) {
+    adminDialog.addEventListener('close', showLoginAlertAndFocus, { once: true });
+  } else {
+    showLoginAlertAndFocus();
+  }
+  loadPublicMeta();
+}
+
+async function handleHttpAuthCheck(res) {
+  if (!res || (res.status !== 401 && res.status !== 403)) return false;
+  let errMsg = 'Your session has expired or your password was updated. Please sign in again.';
+  try {
+    const body = await res.clone().json();
+    if (body && body.error) errMsg = body.error;
+  } catch {
+    // ignore JSON parse failure
+  }
+  forceSessionRevokedToLogin(errMsg);
+  return true;
+}
+
+async function probeSessionValidityAfterWsFailure() {
+  if (!sessionToken || wsHandshakeProbeInFlight) return;
+  const now = Date.now();
+  if (now - lastWsHandshakeProbeAt < 1500) return;
+  wsHandshakeProbeInFlight = true;
+  lastWsHandshakeProbeAt = now;
+  try {
+    const res = await fetch('/api/ella-world/resume', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, clientId })
+    });
+    if (res.status === 401 || res.status === 403) {
+      await handleHttpAuthCheck(res);
+    }
+  } catch {
+    // network temporarily offline — keep normal WS reconnect backoff
+  } finally {
+    wsHandshakeProbeInFlight = false;
+  }
+}
+
 // 1. Initialize 3D World
 const world3d = new BlockyWorld3D({
   container: document.getElementById('canvas-container'),
@@ -413,13 +559,23 @@ const world3d = new BlockyWorld3D({
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, action: 'place', ...block })
     }).catch(() => null);
+    if (await handleHttpAuthCheck(res)) return;
     if (res && res.ok) {
       const data = await res.json();
       currentBlocksVersion = data.blocksVersion;
       updateBuildSaveStatus(Array.isArray(data.blocks) ? data.blocks.length : world3d.voxelMap.size, false);
+    } else {
+      world3d.removeBlockMesh({ x: block.x, y: block.y, z: block.z });
+      updateBuildSaveStatus(world3d.voxelMap.size, false);
+      if (res) {
+        const err = await res.json().catch(() => ({}));
+        if (err && err.error) showToast(`⚠️ ${err.error}`);
+      }
     }
   },
   onRemoveBlock: async (coords) => {
+    const prevEntry = world3d.voxelMap.get(`${coords.x},${coords.y},${coords.z}`);
+    const prevBlock = prevEntry ? { ...prevEntry.data } : null;
     world3d.removeBlockMesh(coords);
     updateBuildSaveStatus(world3d.voxelMap.size, true);
     const res = await fetch('/api/ella-world/block', {
@@ -427,10 +583,18 @@ const world3d = new BlockyWorld3D({
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, action: 'remove', ...coords })
     }).catch(() => null);
+    if (await handleHttpAuthCheck(res)) return;
     if (res && res.ok) {
       const data = await res.json();
       currentBlocksVersion = data.blocksVersion;
       updateBuildSaveStatus(Array.isArray(data.blocks) ? data.blocks.length : world3d.voxelMap.size, false);
+    } else {
+      if (prevBlock) world3d.addBlockMesh(prevBlock);
+      updateBuildSaveStatus(world3d.voxelMap.size, false);
+      if (res) {
+        const err = await res.json().catch(() => ({}));
+        if (err && err.error) showToast(`⚠️ ${err.error}`);
+      }
     }
   },
   onObbyCheckpoint: (cpIndex) => {
@@ -438,11 +602,12 @@ const world3d = new BlockyWorld3D({
   },
   onTrophyWin: async () => {
     showToast('🏆 YOU CONQUERED THE SKY OBBY! Celebration sent to all friends! 🎉', 6000);
-    await fetch('/api/ella-world/chat', {
+    const res = await fetch('/api/ella-world/chat', {
       method: 'POST',
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, isTrophyWin: true })
-    }).catch(() => {});
+    }).catch(() => null);
+    await handleHttpAuthCheck(res);
   },
   onRunwayProximity: (isNear) => {
     if (runwayHudBar) {
@@ -457,6 +622,9 @@ const world3d = new BlockyWorld3D({
   },
   onInteractNode: (nodeId) => {
     interactDungeonNode(nodeId);
+  },
+  onPrisonWork: (nodeId) => {
+    performPrisonWork(nodeId);
   },
   onAttackMob: (mobId, mode) => {
     attackDungeonMob(mobId, mode);
@@ -583,6 +751,12 @@ const spineClient = new WorldSpineClient({
   },
   onClockOffset: (offsetMs) => {
     world3d.setServerClockOffset(offsetMs);
+  },
+  onSessionRevoked: (reason) => {
+    forceSessionRevokedToLogin(reason);
+  },
+  onHandshakeFailed: () => {
+    probeSessionValidityAfterWsFailure();
   }
 });
 
@@ -630,6 +804,9 @@ const voiceManager = new VoiceChatManager({
     if (statusEl) {
       statusEl.textContent = ok ? 'Mic Ready (UDP Opus)' : 'Check Permission';
     }
+  },
+  onAuthRejected: (reason) => {
+    forceSessionRevokedToLogin(reason);
   }
 });
 
@@ -714,6 +891,7 @@ function bindPasswordToggle(btn, inputEl) {
     const isPassword = inputEl.type === 'password';
     inputEl.type = isPassword ? 'text' : 'password';
     btn.textContent = isPassword ? 'Hide password' : 'Show password';
+    btn.setAttribute('aria-pressed', String(isPassword));
   });
 }
 bindPasswordToggle(toggleLoginPasswordBtn, loginPasswordInput);
@@ -731,10 +909,14 @@ async function loadPublicMeta() {
     const data = await res.json();
     applyWorldMeta(data);
     if (data.runway) applyRunwaySummary(data.runway);
-    loginOnlineCount.textContent =
-      data.onlineCount === 1
-        ? '1 friend in world right now'
-        : `${data.onlineCount || 0} friends in world right now`;
+    if (data.worldLocked) {
+      loginOnlineCount.textContent = '⏸️ World paused by parent';
+    } else {
+      loginOnlineCount.textContent =
+        data.onlineCount === 1
+          ? '1 friend in world right now'
+          : `${data.onlineCount || 0} friends in world right now`;
+    }
   } catch {
     // ignore offline error
   }
@@ -779,8 +961,14 @@ async function tryAutoResumeSession() {
       body: JSON.stringify({ token: sessionToken, clientId })
     });
     if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
       localStorage.removeItem('ella_world_token');
       sessionToken = '';
+      if ((res.status === 401 || res.status === 403) && loginErrorEl) {
+        loginErrorEl.textContent =
+          errData.error || 'Your session has expired or your password was updated. Please sign in again.';
+        loginErrorEl.hidden = false;
+      }
       return;
     }
     const data = await res.json();
@@ -872,11 +1060,23 @@ async function enterGameWorld(loginData) {
   if (loginData.economy) {
     applyEconomySnapshot(loginData.economy);
   }
+  if (loginData.parentalWorld) {
+    applyParentalWorldSettings(loginData.parentalWorld);
+  }
+  if (loginData.moderation || loginData.user?.moderation) {
+    applyModerationSnapshot(loginData.moderation || loginData.user.moderation);
+  } else {
+    applyModerationAndParentalUi();
+  }
 
   world3d.initSelfPlayer(loginData.self);
   if (loginData.dungeon) {
     world3d.syncDungeonSnapshot(loginData.dungeon);
   }
+  if (loginData.prison) {
+    world3d.syncPrisonSnapshot(loginData.prison, isSelfEligibleForPrisonRelease());
+  }
+  world3d.setZone(currentZone, loginData.self);
   renderZoneHud(currentZone);
   world3d.loadBlocks(loginData.blocks || []);
   currentBlocksVersion = loginData.blocksVersion || 1;
@@ -896,6 +1096,7 @@ async function enterGameWorld(loginData) {
     voiceSlotCount: loginData.worldMeta?.voiceSlotCount || 8,
     defaultMode: defaultProximity ? 'proximity' : 'party'
   });
+  applyModerationAndParentalUi();
 
   for (const p of loginData.players || []) {
     playersMap.set(p.id, p);
@@ -915,7 +1116,10 @@ async function enterGameWorld(loginData) {
   }
   appendChatMessage({
     isSystem: true,
-    text: `👑 Welcome to ${loginData.worldMeta?.worldName || "Ella's Starlight Glam Plaza"}, ${selfUser.displayName}! Enter the Crystal Cavern (G), open Backpack (I), Glam Closet (C), or Runway (F)!`
+    text:
+      currentZone === ZONE_PRISON
+        ? `⚖️ Welcome back, ${selfUser.displayName}. Complete glowing courtyard chores (E) to clear your debt and unlock the South Release Gate!`
+        : `👑 Welcome to ${loginData.worldMeta?.worldName || "Ella's Starlight Glam Plaza"}, ${selfUser.displayName}! Enter the Crystal Cavern (G), open Backpack (I), Glam Closet (C), or Runway (F)!`
   });
 
   // 1. Immediately connect persistent `:443` WebSocket spine (zero wait on microphone dialog!)
@@ -947,6 +1151,7 @@ async function enterGameWorld(loginData) {
   // 3. Connect Zero-Renegotiation UDP SFU + initialize microphone in parallel without blocking world sync
   (async () => {
     await voiceManager.initLocalMicrophone();
+    applyModerationAndParentalUi();
     await populateMicDeviceSelect();
   })().catch(() => {});
   voiceManager.connectServerUdp().catch(() => {});
@@ -1073,8 +1278,17 @@ function handleIncomingUdpWorldEvent(ev) {
       if (ev.economy) {
         applyEconomySnapshot(ev.economy);
       }
+      if (ev.parentalWorld) {
+        applyParentalWorldSettings(ev.parentalWorld);
+      }
+      if (ev.moderation || ev.self?.user?.moderation) {
+        applyModerationSnapshot(ev.moderation || ev.self.user.moderation);
+      }
       if (ev.dungeon) {
         world3d.syncDungeonSnapshot(ev.dungeon);
+      }
+      if (ev.prison) {
+        world3d.syncPrisonSnapshot(ev.prison, isSelfEligibleForPrisonRelease());
       }
       if (ev.self && typeof ev.self.zone === 'number' && ev.self.zone !== currentZone) {
         applyLocalZoneTransition({
@@ -1082,7 +1296,8 @@ function handleIncomingUdpWorldEvent(ev) {
           x: ev.self.x,
           y: ev.self.y,
           z: ev.self.z,
-          dungeon: ev.dungeon
+          dungeon: ev.dungeon,
+          prison: ev.prison
         });
       }
       reconcileAuthoritativeRoster(ev.players || [], true);
@@ -1177,12 +1392,16 @@ function handleIncomingUdpWorldEvent(ev) {
       if (ev.id && ev.id !== selfId) {
         const existing = playersMap.get(ev.id);
         if (existing) {
-          existing.zone = ev.zone || ZONE_PLAZA;
+          existing.zone = typeof ev.zone === 'number' ? ev.zone : ZONE_PLAZA;
           if (typeof ev.x === 'number') existing.x = ev.x;
           if (typeof ev.y === 'number') existing.y = ev.y;
           if (typeof ev.z === 'number') existing.z = ev.z;
         }
-        world3d.setRemotePlayerZone(ev.id, ev.zone || ZONE_PLAZA, ev);
+        world3d.setRemotePlayerZone(
+          ev.id,
+          typeof ev.zone === 'number' ? ev.zone : ZONE_PLAZA,
+          ev
+        );
         renderFriendsList();
       }
       break;
@@ -1200,6 +1419,33 @@ function handleIncomingUdpWorldEvent(ev) {
     case 'dungeon_sync': {
       if (ev.dungeon) {
         world3d.syncDungeonSnapshot(ev.dungeon);
+      }
+      break;
+    }
+    case 'prison_sync': {
+      if (ev.prison) {
+        world3d.syncPrisonSnapshot(ev.prison, isSelfEligibleForPrisonRelease());
+      }
+      break;
+    }
+    case 'moderation_update': {
+      if (ev.economy) {
+        applyEconomySnapshot(ev.economy);
+      }
+      if (ev.moderation) {
+        applyModerationSnapshot(ev.moderation);
+      }
+      if (ev.reason === 'admin:pardon_prison') {
+        showToast('🕊️ You received a Parent Pardon! Debt cleared — welcome back to Starlight Plaza!', 5200);
+      } else if (ev.reason === 'admin:update_controls') {
+        showToast('🛡️ Parental safety settings updated for your account.');
+      }
+      break;
+    }
+    case 'parental_settings_update': {
+      if (ev.parentalWorld) {
+        applyParentalWorldSettings(ev.parentalWorld);
+        showToast('🛡️ Parent updated global world safety settings.');
       }
       break;
     }
@@ -1347,7 +1593,7 @@ function handleIncomingUdpWorldEvent(ev) {
 }
 
 // ============================================================================
-// Crystal Cavern Dungeon, Persistent Economy, Backpack & Live P2P Trade Client
+// Crystal Cavern Dungeon, Economy, Parental Controls & Debtor's Prison Client
 // ============================================================================
 
 function setItemCatalog(items) {
@@ -1370,19 +1616,139 @@ function applyEconomySnapshot(econ) {
   renderEconomyHud();
 }
 
+function applyModerationSnapshot(mod) {
+  if (!mod || typeof mod !== 'object') return;
+  playerModeration = {
+    ...playerModeration,
+    ...mod
+  };
+  if (selfUser) {
+    selfUser.moderation = { ...playerModeration };
+  }
+  applyModerationAndParentalUi();
+  renderPrisonBanner();
+  renderFriendsList();
+  world3d.setPrisonReleaseEligible(isSelfEligibleForPrisonRelease());
+}
+
+function applyParentalWorldSettings(pw) {
+  if (!pw || typeof pw !== 'object') return;
+  parentalWorldSettings = {
+    ...parentalWorldSettings,
+    ...pw
+  };
+  applyModerationAndParentalUi();
+}
+
+function applyModerationAndParentalUi() {
+  const forceVoiceMuted =
+    parentalWorldSettings.globalVoiceEnabled === false ||
+    Boolean(playerModeration.voiceMutedByParent);
+  voiceManager.setServerForceMuted(forceVoiceMuted);
+  if (micToggleBtn) {
+    micToggleBtn.classList.toggle('is-parent-locked', forceVoiceMuted);
+    micToggleBtn.setAttribute('aria-disabled', String(forceVoiceMuted));
+    if (!parentalWorldSettings.globalVoiceEnabled) {
+      micToggleBtn.title = 'Global Voice Chat is currently turned off by a parent';
+    } else if (playerModeration.voiceMutedByParent) {
+      micToggleBtn.title = 'Your microphone is muted by a parent';
+    } else {
+      micToggleBtn.title = 'Toggle Microphone (Shortcut: M)';
+    }
+  }
+  updateLocalMicUI(forceVoiceMuted ? true : localVoiceMuted, forceVoiceMuted ? false : localVoiceSpeaking);
+
+  const effChat = effectiveChatModeForSelf();
+  if (chatInput && chatSendBtn) {
+    if (effChat === 'muted') {
+      chatInput.disabled = true;
+      chatInput.placeholder = '🔇 Text chat is muted by a parent';
+      chatSendBtn.disabled = true;
+    } else if (effChat === 'quick_only') {
+      chatInput.disabled = true;
+      chatInput.placeholder = '🛡️ Safe Quick-Chat Only — tap a preset phrase above!';
+      chatSendBtn.disabled = true;
+    } else {
+      chatInput.disabled = false;
+      chatInput.placeholder = 'Say something (shows bubble above your head)...';
+      chatSendBtn.disabled = false;
+    }
+  }
+  for (const rBtn of document.querySelectorAll('.reaction-btn')) {
+    rBtn.disabled = effChat === 'muted';
+  }
+
+  const buildForbidden = !playerModeration.canBuild || currentZone !== ZONE_PLAZA;
+  if (toggleBuildBtn) {
+    toggleBuildBtn.classList.toggle('is-locked-chip', !playerModeration.canBuild);
+  }
+  if (buildForbidden && world3d.buildMode) {
+    world3d.buildMode = false;
+    world3d.ghostMesh.visible = false;
+    if (buildToolbar) buildToolbar.hidden = true;
+    if (toggleBuildBtn) toggleBuildBtn.classList.remove('active');
+  }
+}
+
+function renderPrisonBanner() {
+  if (!prisonSentenceBanner) return;
+  const inPrison = currentZone === ZONE_PRISON;
+  prisonSentenceBanner.hidden = !inPrison;
+  if (!inPrison) return;
+
+  const coins = Number(playerEconomy.coins || 0);
+  const chores = Number(playerModeration.prisonTasksRemaining || 0);
+  const ready = isSelfEligibleForPrisonRelease();
+
+  if (prisonBannerTitle) {
+    prisonBannerTitle.textContent = ready
+      ? '🔓 Sentence Served! Walk Through the South Release Gate!'
+      : `Community Service Active${playerModeration.violationStrikes ? ` • Strike #${playerModeration.violationStrikes}` : ''}`;
+  }
+  if (prisonBannerReason) {
+    prisonBannerReason.textContent = ready
+      ? 'Great job clearing your debt and chores! Step into the glowing green South Release Gate or click 🔓 Release Gate above.'
+      : playerModeration.prisonReason ||
+        'Keep ELLA World kind! Press E at glowing courtyard chores (+5 🪙 toward negative debt) or ask a parent for a pardon.';
+  }
+  if (prisonDebtPill) {
+    prisonDebtPill.classList.toggle('is-debt', coins < 0);
+    prisonDebtPill.classList.toggle('is-cleared', coins >= 0);
+    prisonDebtPill.textContent =
+      coins < 0 ? `🪙 Debt Balance: ${coins.toLocaleString()}` : `✅ Debt Cleared (${coins.toLocaleString()} 🪙)`;
+  }
+  if (prisonChoresPill) {
+    prisonChoresPill.classList.toggle('is-cleared', chores === 0);
+    prisonChoresPill.textContent =
+      chores > 0 ? `🪨 Chores Left: ${chores}` : '✅ All Chores Complete';
+  }
+  if (prisonGatePill) {
+    prisonGatePill.classList.toggle('is-cleared', ready);
+    prisonGatePill.textContent = ready ? '🔓 South Gate Unlocked!' : '🔒 Gate Locked';
+  }
+}
+
 function renderEconomyHud() {
   const coins = Number(playerEconomy.coins || 0);
+  const inDebt = coins < 0;
   const inv = playerEconomy.inventory || {};
   let totalItems = 0;
   for (const qty of Object.values(inv)) {
     totalItems += Number(qty || 0);
   }
 
+  if (hudCoinsPill) hudCoinsPill.classList.toggle('is-in-debt', inDebt);
   if (hudCoinsCount) hudCoinsCount.textContent = coins.toLocaleString();
   if (hudItemCount) hudItemCount.textContent = String(totalItems);
-  if (backpackCoinsValue) backpackCoinsValue.textContent = `🪙 ${coins.toLocaleString()}`;
+  if (backpackCoinsValue) {
+    backpackCoinsValue.classList.toggle('is-in-debt', inDebt);
+    backpackCoinsValue.textContent = `🪙 ${coins.toLocaleString()}`;
+  }
   if (tradeSelfWallet) tradeSelfWallet.textContent = coins.toLocaleString();
   if (tradeCoinsInput) tradeCoinsInput.max = String(Math.max(0, coins));
+
+  world3d.setPrisonReleaseEligible(isSelfEligibleForPrisonRelease());
+  renderPrisonBanner();
 
   // Sync Glam Salon exclusive relic lock/unlock badges
   for (const card of avatarDialog.querySelectorAll('.glam-item-card[data-req-item]')) {
@@ -1407,26 +1773,44 @@ function renderEconomyHud() {
 
 function renderZoneHud(zone) {
   const inDungeon = zone === ZONE_DUNGEON;
+  const inPrison = zone === ZONE_PRISON;
   if (hudZonePill) {
     hudZonePill.classList.toggle('is-dungeon', inDungeon);
-    hudZonePill.textContent = inDungeon ? '🏰 Crystal Cavern' : '⛲ Starlight Plaza';
+    hudZonePill.classList.toggle('is-prison', inPrison);
+    hudZonePill.textContent = inPrison
+      ? "⚖️ Debtor's Prison"
+      : inDungeon
+        ? '🏰 Crystal Cavern'
+        : '⛲ Starlight Plaza';
   }
   if (warpDungeonBtn) {
-    warpDungeonBtn.textContent = inDungeon ? '⛲ Exit Dungeon' : '🌀 Dungeon';
+    warpDungeonBtn.textContent = inPrison
+      ? '🔓 Release Gate'
+      : inDungeon
+        ? '⛲ Exit Dungeon'
+        : '🌀 Dungeon';
   }
-  if (inDungeon && world3d.buildMode) {
+  if (touchActionBtn) {
+    touchActionBtn.textContent = inPrison ? '🪨 WORK (E)' : '✨ BLAST (E)';
+  }
+  if ((inDungeon || inPrison) && world3d.buildMode) {
     world3d.buildMode = false;
     world3d.ghostMesh.visible = false;
     if (buildToolbar) buildToolbar.hidden = true;
     if (toggleBuildBtn) toggleBuildBtn.classList.remove('active');
   }
-  if (inDungeon && runwayHudBar) {
-    runwayHudBar.classList.remove('near-runway');
+  if (runwayHudBar) {
+    runwayHudBar.hidden = inPrison;
+    if (inDungeon || inPrison) {
+      runwayHudBar.classList.remove('near-runway');
+    }
   }
+  renderPrisonBanner();
 }
 
 function applyLocalZoneTransition(payload) {
   if (!payload || typeof payload.zone !== 'number') return;
+  const prevZone = currentZone;
   const nextZone = payload.zone;
   const changed = nextZone !== currentZone;
   currentZone = nextZone;
@@ -1447,7 +1831,21 @@ function applyLocalZoneTransition(payload) {
   if (payload.dungeon) {
     world3d.syncDungeonSnapshot(payload.dungeon);
   }
+  if (payload.prison) {
+    world3d.syncPrisonSnapshot(payload.prison, isSelfEligibleForPrisonRelease());
+  }
+  if (payload.moderation) {
+    playerModeration = {
+      ...playerModeration,
+      ...payload.moderation
+    };
+  } else if (prevZone === ZONE_PRISON && nextZone === ZONE_PLAZA) {
+    playerModeration.inDebtorsPrison = false;
+    playerModeration.prisonReason = null;
+    playerModeration.prisonTasksRemaining = 0;
+  }
   renderZoneHud(nextZone);
+  applyModerationAndParentalUi();
   renderFriendsList();
 
   if (nextZone === ZONE_PLAZA && pendingPostPortalWarp) {
@@ -1466,11 +1864,69 @@ function applyLocalZoneTransition(payload) {
   }
 
   if (changed) {
-    showToast(
-      nextZone === ZONE_DUNGEON
-        ? '🏰 Entered the Crystal Cavern! Press E or Jump-Stomp Slimes & Crystal Veins for loot!'
-        : '⛲ Returned to Starlight Glam Plaza!'
-    );
+    if (nextZone === ZONE_PRISON) {
+      showToast(
+        "⚖️ Sentenced to Debtor's Prison! Walk to glowing courtyard chores and press E (+5 🪙 toward debt) to earn your release!",
+        6000
+      );
+    } else if (prevZone === ZONE_PRISON && nextZone === ZONE_PLAZA) {
+      if (world3d.selfAvatar) {
+        world3d.spawnCelebrationConfetti(world3d.selfAvatar.group.position);
+      }
+      showToast('🕊️ Released from Debtor\'s Prison! Welcome back to Starlight Glam Plaza!', 5200);
+    } else {
+      showToast(
+        nextZone === ZONE_DUNGEON
+          ? '🏰 Entered the Crystal Cavern! Press E or Jump-Stomp Slimes & Crystal Veins for loot!'
+          : '⛲ Returned to Starlight Glam Plaza!'
+      );
+    }
+  }
+}
+
+async function performPrisonWork(nodeId) {
+  if (!sessionToken || !nodeId || prisonWorkInFlight) return;
+  prisonWorkInFlight = true;
+  try {
+    const res = await fetch('/api/ella-world/prison/work', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, nodeId })
+    });
+    if (await handleHttpAuthCheck(res)) return;
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      if (data.economy) applyEconomySnapshot(data.economy);
+      if (data.moderation) applyModerationSnapshot(data.moderation);
+      if (data.prison) {
+        world3d.syncPrisonSnapshot(
+          data.prison,
+          Boolean(data.readyForRelease || isSelfEligibleForPrisonRelease())
+        );
+      }
+      if (data.readyForRelease || isSelfEligibleForPrisonRelease()) {
+        if (world3d.selfAvatar) {
+          world3d.spawnCelebrationConfetti(world3d.selfAvatar.group.position);
+        }
+        showToast(
+          '🔓 Debt cleared & community service complete! Walk through the glowing green South Release Gate!',
+          5600
+        );
+      } else {
+        const gainText =
+          Number(data.earnedTowardDebt || 0) > 0 ? `+${data.earnedTowardDebt} 🪙 toward debt • ` : '';
+        showToast(
+          `🪨 Completed ${data.stationLabel || 'Chore'}! ${gainText}Balance: ${Number(playerEconomy.coins || 0)} 🪙 • Chores left: ${Number(playerModeration.prisonTasksRemaining || 0)}`,
+          4200
+        );
+      }
+    } else if (data.error) {
+      showToast(`⚖️ ${data.error}`);
+    }
+  } catch {
+    // ignore transient network error
+  } finally {
+    prisonWorkInFlight = false;
   }
 }
 
@@ -1483,6 +1939,7 @@ async function requestZoneTransition(targetZone) {
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, zone: targetZone, targetZone })
     });
+    if (await handleHttpAuthCheck(res)) return;
     const data = await res.json().catch(() => ({}));
     if (res.ok && typeof data.zone === 'number') {
       applyLocalZoneTransition(data);
@@ -1504,6 +1961,7 @@ async function interactDungeonNode(nodeId) {
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, nodeId })
     });
+    if (await handleHttpAuthCheck(res)) return;
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       if (data.dungeon) world3d.syncDungeonSnapshot(data.dungeon);
@@ -1524,6 +1982,7 @@ async function attackDungeonMob(mobId, mode = 'blast') {
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, mobId, mode })
     });
+    if (await handleHttpAuthCheck(res)) return;
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.dungeon) {
       world3d.syncDungeonSnapshot(data.dungeon);
@@ -1544,6 +2003,7 @@ async function pickupDungeonDrop(dropId) {
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, dropId })
     });
+    if (await handleHttpAuthCheck(res)) return;
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       if (data.dungeon) world3d.syncDungeonSnapshot(data.dungeon);
@@ -1563,6 +2023,7 @@ async function useInventoryItem(itemId) {
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, itemId })
     });
+    if (await handleHttpAuthCheck(res)) return;
     const data = await res.json().catch(() => ({}));
     if (!res.ok && data.error) {
       showToast(`⚠️ ${data.error}`);
@@ -1699,6 +2160,7 @@ async function sendTradeInviteToPeer(targetPeerId, displayName) {
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, targetPeerId })
     });
+    if (await handleHttpAuthCheck(res)) return;
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       showToast(`⚠️ ${data.error || `Could not invite ${displayName}.`}`);
@@ -1722,6 +2184,7 @@ async function respondToPendingTradeInvite(accept) {
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, tradeId, accept: Boolean(accept) })
     });
+    if (await handleHttpAuthCheck(res)) return;
     const data = await res.json().catch(() => ({}));
     if (res.ok && accept && data.trade) {
       applyTradeSessionState(data.trade);
@@ -1950,6 +2413,7 @@ async function pushTradeOfferNow() {
         items: draftTradeItems
       })
     });
+    if (await handleHttpAuthCheck(res)) return false;
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.trade) {
       applyTradeSessionState(data.trade);
@@ -1982,6 +2446,7 @@ async function toggleMyTradeLock() {
         locked: nextLocked
       })
     });
+    if (await handleHttpAuthCheck(res)) return;
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.trade) {
       applyTradeSessionState(data.trade);
@@ -2001,6 +2466,7 @@ async function confirmActiveTrade() {
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, tradeId: activeTrade.tradeId })
     });
+    if (await handleHttpAuthCheck(res)) return;
     const data = await res.json().catch(() => ({}));
     if (!res.ok && data.error) {
       showToast(`⚠️ ${data.error}`);
@@ -2050,7 +2516,9 @@ function renderFriendsList() {
 
   for (const [pid, p] of playersMap.entries()) {
     const isMe = pid === selfId;
-    const inDungeon = (p.zone || ZONE_PLAZA) === ZONE_DUNGEON;
+    const pZone = p.zone || ZONE_PLAZA;
+    const inDungeon = pZone === ZONE_DUNGEON;
+    const inPrison = pZone === ZONE_PRISON;
     const li = document.createElement('li');
     li.className = `friend-card${p.speaking ? ' speaking' : ''}`;
     li.id = `friend-card-${pid}`;
@@ -2074,8 +2542,12 @@ function renderFriendsList() {
     metaRow.className = 'friend-meta-row';
 
     const zoneBadge = document.createElement('span');
-    zoneBadge.className = `friend-zone-tag${inDungeon ? ' in-dungeon' : ''}`;
-    zoneBadge.textContent = inDungeon ? '🏰 Crystal Cavern' : '⛲ Plaza';
+    zoneBadge.className = `friend-zone-tag${inDungeon ? ' in-dungeon' : ''}${inPrison ? ' in-prison' : ''}`;
+    zoneBadge.textContent = inPrison
+      ? "⚖️ Debtor's Prison"
+      : inDungeon
+        ? '🏰 Crystal Cavern'
+        : '⛲ Plaza';
     metaRow.appendChild(zoneBadge);
 
     const sameAccount =
@@ -2086,8 +2558,18 @@ function renderFriendsList() {
       const tradeBtn = document.createElement('button');
       tradeBtn.type = 'button';
       tradeBtn.className = 'friend-trade-btn';
-      tradeBtn.textContent = '🤝 Trade';
-      tradeBtn.title = `Invite ${p.user.displayName} to swap items & coins`;
+      const tradeBlocked =
+        currentZone === ZONE_PRISON ||
+        inPrison ||
+        !playerModeration.canTrade;
+      tradeBtn.disabled = tradeBlocked;
+      tradeBtn.textContent = tradeBlocked ? '🔒 Trade' : '🤝 Trade';
+      tradeBtn.title =
+        currentZone === ZONE_PRISON || inPrison
+          ? "Trading is locked during a Debtor's Prison sentence"
+          : !playerModeration.canTrade
+            ? 'Trading is locked by a parent'
+            : `Invite ${p.user.displayName} to swap items & coins`;
       tradeBtn.addEventListener('click', () => {
         sendTradeInviteToPeer(pid, p.user.displayName);
       });
@@ -2157,21 +2639,29 @@ function updateFriendCardVoiceIndicator(pid, muted, speaking) {
 }
 
 function updateLocalMicUI(muted, speaking, level = 0) {
-  micToggleBtn.classList.toggle('mic-muted', muted);
-  micToggleBtn.classList.toggle('mic-unmuted', !muted);
-  micToggleBtn.classList.toggle('is-speaking', Boolean(speaking && !muted));
-  micIcon.textContent = muted ? '🔇' : '🎤';
-  if (voiceManager.pushToTalk) {
-    micLabel.textContent = muted ? 'Hold V to Talk' : 'Talking (PTT)';
+  const parentLocked =
+    parentalWorldSettings.globalVoiceEnabled === false ||
+    Boolean(playerModeration.voiceMutedByParent);
+  const effectiveMuted = parentLocked || muted;
+  micToggleBtn.classList.toggle('mic-muted', effectiveMuted);
+  micToggleBtn.classList.toggle('mic-unmuted', !effectiveMuted);
+  micToggleBtn.classList.toggle('is-speaking', Boolean(speaking && !effectiveMuted));
+  micIcon.textContent = parentLocked ? '🔒' : effectiveMuted ? '🔇' : '🎤';
+  if (parentalWorldSettings.globalVoiceEnabled === false) {
+    micLabel.textContent = 'Voice Off (Parent)';
+  } else if (playerModeration.voiceMutedByParent) {
+    micLabel.textContent = 'Muted by Parent';
+  } else if (voiceManager.pushToTalk) {
+    micLabel.textContent = effectiveMuted ? 'Hold V to Talk' : 'Talking (PTT)';
   } else {
-    micLabel.textContent = muted ? 'Mic Muted' : 'Mic On';
+    micLabel.textContent = effectiveMuted ? 'Mic Muted' : 'Mic On';
   }
   const scale = 1 + Math.min(1.6, level * 5);
-  localSpeakingMeter.style.transform = `scale(${muted ? 0.6 : scale})`;
+  localSpeakingMeter.style.transform = `scale(${effectiveMuted ? 0.6 : scale})`;
 
   const dialogFill = document.getElementById('mic-dialog-meter-fill');
   if (dialogFill) {
-    dialogFill.style.width = `${muted ? 4 : Math.min(100, Math.round(level * 260) + 5)}%`;
+    dialogFill.style.width = `${effectiveMuted ? 4 : Math.min(100, Math.round(level * 260) + 5)}%`;
   }
 }
 
@@ -2180,8 +2670,21 @@ function updateVoiceModeBadge() {
   voiceModeBadge.textContent = isProx ? '3D Proximity' : 'Party Voice';
 }
 
+function notifyVoiceLockIfNeeded() {
+  if (parentalWorldSettings.globalVoiceEnabled === false) {
+    showToast('🔒 Live Voice Chat is currently turned off globally by a parent.');
+    return true;
+  }
+  if (playerModeration.voiceMutedByParent) {
+    showToast('🔒 Your microphone is currently muted by a parent.');
+    return true;
+  }
+  return false;
+}
+
 // 8. Voice Controls Events
 micToggleBtn.addEventListener('click', () => {
+  if (notifyVoiceLockIfNeeded()) return;
   pttVoiceSwitch.checked = false;
   voiceManager.toggleMute();
 });
@@ -2259,6 +2762,7 @@ async function submitChatText(text) {
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, text })
     });
+    if (await handleHttpAuthCheck(res)) return;
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       const c = data.message;
@@ -2335,6 +2839,10 @@ document.getElementById('warp-plaza-btn').addEventListener('click', () => {
 if (warpDungeonBtn) {
   warpDungeonBtn.addEventListener('click', () => {
     pendingPostPortalWarp = null;
+    if (currentZone === ZONE_PRISON) {
+      requestZoneTransition(ZONE_PLAZA);
+      return;
+    }
     requestZoneTransition(currentZone === ZONE_DUNGEON ? ZONE_PLAZA : ZONE_DUNGEON);
   });
 }
@@ -2367,6 +2875,10 @@ if (openBackpackBtn) {
 
 if (backpackEnterDungeonBtn) {
   backpackEnterDungeonBtn.addEventListener('click', () => {
+    if (currentZone === ZONE_PRISON) {
+      showToast("⚖️ Clear your Debtor's Prison chores & negative debt before warping to Crystal Cavern!");
+      return;
+    }
     if (backpackDialog && backpackDialog.open) backpackDialog.close();
     if (currentZone !== ZONE_DUNGEON) {
       requestZoneTransition(ZONE_DUNGEON);
@@ -2406,6 +2918,7 @@ document.getElementById('runway-next-theme-btn').addEventListener('click', async
     headers: JSON_HEADERS,
     body: JSON.stringify({ token: sessionToken, action: 'theme' })
   }).catch(() => null);
+  if (await handleHttpAuthCheck(res)) return;
   if (res && res.ok) {
     const data = await res.json();
     applyRunwaySummary(data.runway);
@@ -2424,6 +2937,7 @@ for (const starBtn of document.querySelectorAll('.star-vote-btn')) {
       body: JSON.stringify({ token: sessionToken, action: 'vote', targetUsername, stars })
     }).catch(() => null);
 
+    if (await handleHttpAuthCheck(res)) return;
     if (res && res.ok) {
       const data = await res.json();
       applyRunwaySummary(data.runway);
@@ -2454,6 +2968,14 @@ BLOCK_COLORS.forEach((c, idx) => {
 });
 
 function toggleBuildMode() {
+  if (currentZone === ZONE_PRISON) {
+    showToast("⚖️ Block building is locked while serving a Debtor's Prison sentence!");
+    return;
+  }
+  if (!playerModeration.canBuild) {
+    showToast('🔒 Block building is currently locked for your account by a parent.');
+    return;
+  }
   if (currentZone !== ZONE_PLAZA) {
     showToast('🔨 Co-Op Block Building is in Starlight Plaza! Exit the Dungeon (G) to build.');
     return;
@@ -2495,9 +3017,11 @@ window.addEventListener('keydown', (e) => {
 
   const k = e.key.toLowerCase();
   if (k === 'm') {
+    if (notifyVoiceLockIfNeeded()) return;
     pttVoiceSwitch.checked = false;
     voiceManager.toggleMute();
   } else if (k === 'v') {
+    if (notifyVoiceLockIfNeeded()) return;
     voiceManager.setPttKeyActive(true);
   } else if (k === 'c') {
     if (isSalonOpen) closeGlamSalon(false);
@@ -2506,7 +3030,11 @@ window.addEventListener('keydown', (e) => {
     openBackpackModal();
   } else if (!isSalonOpen && k === 'g') {
     pendingPostPortalWarp = null;
-    requestZoneTransition(currentZone === ZONE_DUNGEON ? ZONE_PLAZA : ZONE_DUNGEON);
+    if (currentZone === ZONE_PRISON) {
+      requestZoneTransition(ZONE_PLAZA);
+    } else {
+      requestZoneTransition(currentZone === ZONE_DUNGEON ? ZONE_PLAZA : ZONE_DUNGEON);
+    }
   } else if (!isSalonOpen && k === 'b') {
     toggleBuildMode();
   } else if (!isSalonOpen && k === 'h') {
@@ -2738,6 +3266,7 @@ async function persistAvatarDraftNow(showSuccessToast = false) {
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, avatar: avatarPayload })
     });
+    if (await handleHttpAuthCheck(res)) return false;
     if (!res.ok) return false;
     const data = await res.json();
     selfUser = data.user;
@@ -3046,9 +3575,53 @@ async function refreshAdminDashboard() {
   const res = await fetch('/api/ella-world/admin/state', {
     headers: { Authorization: `Bearer ${adminToken}` }
   });
+  if (res.status === 401) {
+    adminToken = '';
+    adminAuthForm.hidden = false;
+    adminDashboardContent.hidden = true;
+    return;
+  }
   if (res.ok) {
     const data = await res.json();
     renderAdminDashboard(data.dashboard);
+  }
+}
+
+function showAdminSessionFeedback(message) {
+  const banner = document.getElementById('admin-session-feedback');
+  if (!banner) return;
+  banner.textContent = message;
+  banner.hidden = false;
+}
+
+async function adminModerateUser(payload, successMsg) {
+  if (!adminToken) return;
+  const res = await fetch('/api/ella-world/admin/moderate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`
+    },
+    body: JSON.stringify(payload)
+  });
+  if (res.status === 401) {
+    adminToken = '';
+    adminAuthForm.hidden = false;
+    adminDashboardContent.hidden = true;
+    return;
+  }
+  const out = await res.json().catch(() => ({}));
+  if (res.ok) {
+    if (out.dashboard) {
+      renderAdminDashboard(out.dashboard);
+    } else {
+      await refreshAdminDashboard();
+    }
+    if (successMsg) {
+      showAdminSessionFeedback(successMsg);
+    }
+  } else {
+    showAdminSessionFeedback(`❌ ${out.error || 'Moderation update failed.'}`);
   }
 }
 
@@ -3059,9 +3632,51 @@ function renderAdminDashboard(dashboard) {
   document.getElementById('admin-world-name').value = dashboard.worldName || '';
   document.getElementById('admin-default-voice').value = dashboard.voiceDefaultMode || 'party';
 
+  const epochEl = document.getElementById('admin-session-epoch');
+  if (epochEl) {
+    epochEl.textContent = String(dashboard.sessionEpoch || 1);
+  }
+
+  const worldLockedEl = document.getElementById('admin-world-locked');
+  if (worldLockedEl) {
+    worldLockedEl.checked = Boolean(dashboard.worldLocked);
+  }
+  const globalVoiceEl = document.getElementById('admin-global-voice-enabled');
+  if (globalVoiceEl) {
+    globalVoiceEl.checked = dashboard.globalVoiceEnabled !== false;
+  }
+  const globalChatEl = document.getElementById('admin-global-chat-mode');
+  if (globalChatEl) {
+    globalChatEl.value = dashboard.globalChatMode || 'normal';
+  }
+  const curfewEnabledEl = document.getElementById('admin-curfew-enabled');
+  if (curfewEnabledEl) {
+    curfewEnabledEl.checked = Boolean(dashboard.curfewEnabled);
+  }
+  const curfewStartEl = document.getElementById('admin-curfew-start');
+  if (curfewStartEl && dashboard.curfewStart) {
+    curfewStartEl.value = dashboard.curfewStart;
+  }
+  const curfewEndEl = document.getElementById('admin-curfew-end');
+  if (curfewEndEl && dashboard.curfewEnd) {
+    curfewEndEl.value = dashboard.curfewEnd;
+  }
+
   const filterCheckbox = document.getElementById('admin-chat-filter-enabled');
   if (filterCheckbox) {
     filterCheckbox.checked = dashboard.chatFilterEnabled !== false;
+  }
+  const fineBaseEl = document.getElementById('admin-profanity-fine-base');
+  if (fineBaseEl && dashboard.profanityFineBase !== undefined) {
+    fineBaseEl.value = String(dashboard.profanityFineBase);
+  }
+  const debtThreshEl = document.getElementById('admin-debt-prison-threshold');
+  if (debtThreshEl && dashboard.debtPrisonThreshold !== undefined) {
+    debtThreshEl.value = String(dashboard.debtPrisonThreshold);
+  }
+  const strikeThreshEl = document.getElementById('admin-prison-strike-threshold');
+  if (strikeThreshEl && dashboard.prisonStrikeThreshold !== undefined) {
+    strikeThreshEl.value = String(dashboard.prisonStrikeThreshold);
   }
   const blockedWordsBox = document.getElementById('admin-blocked-words');
   if (blockedWordsBox && Array.isArray(dashboard.blockedWords)) {
@@ -3081,29 +3696,250 @@ function renderAdminDashboard(dashboard) {
 
   for (const u of dashboard.users || []) {
     const tr = document.createElement('tr');
+    const coins = Number(u.coins || 0);
+    const strikes = Number(u.violationStrikes || 0);
+    const inPrison = Boolean(u.inDebtorsPrison);
 
-    const tdUser = document.createElement('td');
-    tdUser.innerHTML = `<strong>${u.username}</strong>`;
+    // 1. Row Header (<th scope="row">): Friend Display Name + @username
+    const thFriend = document.createElement('th');
+    thFriend.scope = 'row';
+    thFriend.className = 'admin-friend-cell';
+    const nameStrong = document.createElement('strong');
+    nameStrong.textContent = u.displayName || u.username;
+    const handleSub = document.createElement('span');
+    handleSub.className = 'admin-handle-sub';
+    handleSub.textContent = `@${u.username}`;
+    thFriend.append(nameStrong, handleSub);
 
-    const tdDisplay = document.createElement('td');
-    tdDisplay.textContent = u.displayName;
-
+    // 2. Coins / Negative Debt + +/-25 Quick Fine/Bonus Buttons
     const tdEcon = document.createElement('td');
-    tdEcon.textContent = `🪙 ${Number(u.coins || 0).toLocaleString()} • 🎒 ${u.itemCount || 0}`;
+    const econTop = document.createElement('div');
+    econTop.className = 'admin-econ-top';
+    const coinBadge = document.createElement('span');
+    coinBadge.className = `coin-balance-pill${coins < 0 ? ' is-in-debt' : ''}`;
+    coinBadge.textContent = `🪙 ${coins.toLocaleString()}`;
+    const itemSub = document.createElement('span');
+    itemSub.className = 'admin-item-sub';
+    itemSub.textContent = `🎒 ${u.itemCount || 0}`;
+    econTop.append(coinBadge, itemSub);
 
+    const stepRow = document.createElement('div');
+    stepRow.className = 'mod-coin-step-row';
+    const minusBtn = document.createElement('button');
+    minusBtn.type = 'button';
+    minusBtn.className = 'mod-pill-btn warn-pill';
+    minusBtn.textContent = '-25 🪙';
+    minusBtn.title = `Deduct 25 coins from @${u.username}`;
+    minusBtn.addEventListener('click', () =>
+      adminModerateUser(
+        { username: u.username, action: 'adjust_coins', coinDelta: -25 },
+        `💸 Deducted 25 🪙 from @${u.username}.`
+      )
+    );
+    const plusBtn = document.createElement('button');
+    plusBtn.type = 'button';
+    plusBtn.className = 'mod-pill-btn';
+    plusBtn.textContent = '+25 🪙';
+    plusBtn.title = `Grant 25 bonus coins to @${u.username}`;
+    plusBtn.addEventListener('click', () =>
+      adminModerateUser(
+        { username: u.username, action: 'adjust_coins', coinDelta: 25 },
+        `✨ Granted +25 🪙 to @${u.username}.`
+      )
+    );
+    stepRow.append(minusBtn, plusBtn);
+    tdEcon.append(econTop, stepRow);
+
+    // 3. Password
     const tdPass = document.createElement('td');
     const code = document.createElement('code');
     code.textContent = u.password;
     tdPass.appendChild(code);
 
+    // 4. Safety & Status Badges
     const tdStatus = document.createElement('td');
-    tdStatus.textContent = u.online ? '🟢 Online' : '⚪ Offline';
+    const statusStack = document.createElement('div');
+    statusStack.className = 'admin-status-stack';
+    const onlineSpan = document.createElement('span');
+    onlineSpan.className = 'admin-online-pill';
+    onlineSpan.textContent = u.online ? '🟢 Online' : '⚪ Offline';
+    statusStack.appendChild(onlineSpan);
 
+    if (inPrison) {
+      const pBadge = document.createElement('span');
+      pBadge.className = 'prison-badge';
+      pBadge.textContent = `⚖️ Prison (${u.prisonTasksRemaining || 0} chores)`;
+      if (u.prisonReason) pBadge.title = u.prisonReason;
+      statusStack.appendChild(pBadge);
+    }
+    if (strikes > 0) {
+      const sBadge = document.createElement('span');
+      sBadge.className = 'strike-badge';
+      sBadge.textContent = `⚠️ ${strikes} strike${strikes === 1 ? '' : 's'}`;
+      statusStack.appendChild(sBadge);
+    }
+    if (u.suspended) {
+      const gBadge = document.createElement('span');
+      gBadge.className = 'suspended-badge';
+      gBadge.textContent = '🚫 Paused';
+      statusStack.appendChild(gBadge);
+    }
+    tdStatus.appendChild(statusStack);
+
+    // 5. Parental & Court Controls
+    const tdControls = document.createElement('td');
+    const controlsWrap = document.createElement('div');
+    controlsWrap.className = 'mod-controls-wrap';
+
+    const micBtn = document.createElement('button');
+    micBtn.type = 'button';
+    micBtn.className = `mod-pill-btn${u.voiceMutedByParent ? ' is-locked' : ''}`;
+    micBtn.textContent = u.voiceMutedByParent ? '🔇 Muted' : '🎤 Mic';
+    micBtn.title = u.voiceMutedByParent ? 'Unmute child microphone' : 'Server-mute child microphone';
+    micBtn.addEventListener('click', () =>
+      adminModerateUser(
+        {
+          username: u.username,
+          action: 'update_controls',
+          voiceMutedByParent: !u.voiceMutedByParent
+        },
+        `${!u.voiceMutedByParent ? '🔇 Server-muted' : '🎤 Re-enabled'} microphone for @${u.username}.`
+      )
+    );
+
+    const chatSelect = document.createElement('select');
+    chatSelect.className = 'mod-chat-select';
+    chatSelect.setAttribute('aria-label', `Chat mode for ${u.username}`);
+    [
+      ['normal', '💬 Normal'],
+      ['quick_only', '🛡️ Safe Quick'],
+      ['muted', '🔇 Chat Off']
+    ].forEach(([val, label]) => {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if ((u.chatMode || 'normal') === val) opt.selected = true;
+      chatSelect.appendChild(opt);
+    });
+    chatSelect.addEventListener('change', () =>
+      adminModerateUser(
+        {
+          username: u.username,
+          action: 'update_controls',
+          chatMode: chatSelect.value
+        },
+        `💬 Updated chat policy for @${u.username} to "${chatSelect.value}".`
+      )
+    );
+
+    const buildLocked = u.canBuild === false;
+    const buildBtn = document.createElement('button');
+    buildBtn.type = 'button';
+    buildBtn.className = `mod-pill-btn${buildLocked ? ' is-locked' : ''}`;
+    buildBtn.textContent = buildLocked ? '🚫 Build' : '🔨 Build';
+    buildBtn.addEventListener('click', () =>
+      adminModerateUser(
+        {
+          username: u.username,
+          action: 'update_controls',
+          canBuild: buildLocked
+        },
+        `${buildLocked ? '🔨 Allowed' : '🚫 Locked'} block building for @${u.username}.`
+      )
+    );
+
+    const tradeLocked = u.canTrade === false;
+    const tradeBtn = document.createElement('button');
+    tradeBtn.type = 'button';
+    tradeBtn.className = `mod-pill-btn${tradeLocked ? ' is-locked' : ''}`;
+    tradeBtn.textContent = tradeLocked ? '🚫 Trade' : '🤝 Trade';
+    tradeBtn.addEventListener('click', () =>
+      adminModerateUser(
+        {
+          username: u.username,
+          action: 'update_controls',
+          canTrade: tradeLocked
+        },
+        `${tradeLocked ? '🤝 Allowed' : '🚫 Locked'} P2P trading for @${u.username}.`
+      )
+    );
+
+    const pauseBtn = document.createElement('button');
+    pauseBtn.type = 'button';
+    pauseBtn.className = `mod-pill-btn${u.suspended ? ' is-locked' : ''}`;
+    pauseBtn.textContent = u.suspended ? '▶️ Allow' : '⏸️ Pause';
+    pauseBtn.title = u.suspended ? 'Unpause account login' : 'Pause/ground account & sign out active session';
+    pauseBtn.addEventListener('click', () =>
+      adminModerateUser(
+        {
+          username: u.username,
+          action: 'update_controls',
+          suspended: !u.suspended
+        },
+        `${!u.suspended ? '⏸️ Paused access for' : '▶️ Restored access for'} @${u.username}.`
+      )
+    );
+
+    const sentenceBtn = document.createElement('button');
+    sentenceBtn.type = 'button';
+    sentenceBtn.className = 'mod-pill-btn warn-pill';
+    sentenceBtn.textContent = '⚖️ Prison';
+    sentenceBtn.title = `Send @${u.username} to 3D Debtor's Prison (4 community-service chores)`;
+    sentenceBtn.addEventListener('click', () =>
+      adminModerateUser(
+        {
+          username: u.username,
+          action: 'sentence_prison',
+          prisonTasks: 4,
+          reason: "Sentenced to Debtor's Prison by Parent Judge."
+        },
+        `⚖️ Sentenced @${u.username} to Debtor's Prison (4 chores).`
+      )
+    );
+
+    controlsWrap.append(micBtn, chatSelect, buildBtn, tradeBtn, pauseBtn, sentenceBtn);
+
+    if (inPrison || coins < 0) {
+      const pardonBtn = document.createElement('button');
+      pardonBtn.type = 'button';
+      pardonBtn.className = 'mod-pill-btn pardon-pill';
+      pardonBtn.textContent = '🕊️ Pardon';
+      pardonBtn.title = `Clear negative debt & release @${u.username} to Starlight Plaza`;
+      pardonBtn.addEventListener('click', () =>
+        adminModerateUser(
+          { username: u.username, action: 'pardon_prison' },
+          `🕊️ Pardoned @${u.username} — negative debt cleared & released to Starlight Plaza!`
+        )
+      );
+      controlsWrap.appendChild(pardonBtn);
+    }
+
+    if (strikes > 0) {
+      const resetStrikesBtn = document.createElement('button');
+      resetStrikesBtn.type = 'button';
+      resetStrikesBtn.className = 'mod-pill-btn';
+      resetStrikesBtn.textContent = '🧹 0 Strikes';
+      resetStrikesBtn.addEventListener('click', () =>
+        adminModerateUser(
+          { username: u.username, action: 'reset_strikes' },
+          `🧹 Cleared violation strikes for @${u.username}.`
+        )
+      );
+      controlsWrap.appendChild(resetStrikesBtn);
+    }
+
+    tdControls.appendChild(controlsWrap);
+
+    // 6. Account Management Actions
     const tdActions = document.createElement('td');
+    const actionsRow = document.createElement('div');
+    actionsRow.className = 'admin-account-actions';
+
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.className = 'small-action-btn';
     editBtn.textContent = 'Edit';
+    editBtn.setAttribute('aria-label', `Edit ${u.username}`);
     editBtn.addEventListener('click', () => {
       document.getElementById('admin-friend-username').value = u.username;
       document.getElementById('admin-friend-display').value = u.displayName;
@@ -3111,11 +3947,34 @@ function renderAdminDashboard(dashboard) {
       document.getElementById('admin-friend-hat').value = (u.avatar && u.avatar.hat) || 'crown';
     });
 
+    const expireBtn = document.createElement('button');
+    expireBtn.type = 'button';
+    expireBtn.className = 'small-action-btn warn-action';
+    expireBtn.textContent = 'Expire';
+    expireBtn.setAttribute('aria-label', `Expire ${u.username}`);
+    expireBtn.addEventListener('click', async () => {
+      const res = await fetch('/api/ella-world/admin/sessions/revoke', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`
+        },
+        body: JSON.stringify({ username: u.username })
+      });
+      if (res.ok) {
+        const out = await res.json();
+        renderAdminDashboard(out.dashboard);
+        showAdminSessionFeedback(
+          `🔒 Expired all tokens for "${u.username}" (signed out ${out.kickedCount || 0} active session(s)).`
+        );
+      }
+    });
+
     const delBtn = document.createElement('button');
     delBtn.type = 'button';
     delBtn.className = 'small-action-btn danger-action';
-    delBtn.style.marginLeft = '4px';
     delBtn.textContent = 'Remove';
+    delBtn.setAttribute('aria-label', `Remove ${u.username}`);
     delBtn.addEventListener('click', async () => {
       const res = await fetch(`/api/ella-world/admin/users/${encodeURIComponent(u.username.toLowerCase())}`, {
         method: 'DELETE',
@@ -3127,13 +3986,39 @@ function renderAdminDashboard(dashboard) {
       }
     });
 
-    tdActions.append(editBtn, delBtn);
-    tr.append(tdUser, tdDisplay, tdEcon, tdPass, tdStatus, tdActions);
+    actionsRow.append(editBtn, expireBtn, delBtn);
+    tdActions.appendChild(actionsRow);
+
+    tr.append(thFriend, tdEcon, tdPass, tdStatus, tdControls, tdActions);
     tbody.appendChild(tr);
   }
 
   refreshAdminChats();
 }
+
+document.getElementById('admin-revoke-all-btn')?.addEventListener('click', async () => {
+  if (!adminToken) return;
+  const res = await fetch('/api/ella-world/admin/sessions/revoke', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`
+    },
+    body: JSON.stringify({})
+  });
+  const out = await res.json().catch(() => ({}));
+  if (res.ok) {
+    if (out.adminToken) {
+      adminToken = out.adminToken;
+    }
+    renderAdminDashboard(out.dashboard);
+    showAdminSessionFeedback(
+      `🔒 Expired ALL logged-in tokens (Session Epoch #${out.sessionEpoch}) and disconnected ${out.kickedCount || 0} live player session(s)!`
+    );
+  } else {
+    showAdminSessionFeedback(`❌ ${out.error || 'Could not expire sessions.'}`);
+  }
+});
 
 async function refreshAdminChats() {
   if (!adminToken) return;
@@ -3181,30 +4066,65 @@ async function refreshAdminChats() {
   for (const item of combined.slice(0, 250)) {
     const tr = document.createElement('tr');
 
+    // 1. Row Header (<th scope="row">): Player
+    const thPlayer = document.createElement('th');
+    thPlayer.scope = 'row';
+    thPlayer.textContent = `${item.displayName || item.username} (@${item.username})`;
+
+    // 2. Time
     const tdTime = document.createElement('td');
     tdTime.textContent = item.ts ? new Date(item.ts).toLocaleString() : '—';
 
-    const tdPlayer = document.createElement('td');
-    tdPlayer.textContent = `${item.displayName || item.username} (@${item.username})`;
-
+    // 3. Message
     const tdMsg = document.createElement('td');
     tdMsg.textContent = item.text || '';
 
+    // 4. Enforcement & Fine
     const tdStatus = document.createElement('td');
+    const statusWrap = document.createElement('div');
+    statusWrap.className = 'admin-chat-enforcement-wrap';
+
     const badge = document.createElement('span');
     if (item._blocked) {
       badge.className = 'admin-chat-badge-blocked';
       badge.textContent =
         item.reason === 'blocked_word'
           ? `Blocked (${item.matchedWord || 'filter'})`
-          : `Blocked (${item.reason || 'rate'})`;
+          : `Blocked (${item.reason || 'policy'})`;
+      statusWrap.appendChild(badge);
+
+      if (item.strikeNumber) {
+        const strikeSpan = document.createElement('span');
+        strikeSpan.className = 'strike-badge';
+        strikeSpan.textContent = `Strike #${item.strikeNumber}`;
+        statusWrap.appendChild(strikeSpan);
+      }
+      if (item.fineCoins) {
+        const fineSpan = document.createElement('span');
+        fineSpan.className = 'coin-balance-pill is-in-debt';
+        fineSpan.textContent = `-${item.fineCoins} 🪙`;
+        statusWrap.appendChild(fineSpan);
+      }
+      if (item.balanceAfter !== undefined && item.balanceAfter !== null) {
+        const balSpan = document.createElement('span');
+        balSpan.className = 'admin-item-sub';
+        balSpan.textContent = `Bal: ${item.balanceAfter} 🪙`;
+        statusWrap.appendChild(balSpan);
+      }
+      if (item.sentencedToPrison) {
+        const prisonSpan = document.createElement('span');
+        prisonSpan.className = 'prison-badge';
+        prisonSpan.textContent = '⚖️ Sentenced!';
+        statusWrap.appendChild(prisonSpan);
+      }
     } else {
       badge.className = 'admin-chat-badge-ok';
       badge.textContent = item.isSystem ? 'System' : 'Sent';
+      statusWrap.appendChild(badge);
     }
-    tdStatus.appendChild(badge);
+    tdStatus.appendChild(statusWrap);
 
-    tr.append(tdTime, tdPlayer, tdMsg, tdStatus);
+    tr.append(thPlayer, tdTime, tdMsg, tdStatus);
     tbody.appendChild(tr);
   }
 }
@@ -3239,7 +4159,11 @@ document.getElementById('admin-upsert-user-form').addEventListener('submit', asy
   const data = await res.json();
   if (res.ok) {
     renderAdminDashboard(data.dashboard);
-    feedback.textContent = `✅ Saved friend account "${payload.username}" to data/world_users.json!`;
+    if (data.passwordRotated) {
+      feedback.textContent = `✅ Updated "${payload.username}" password, expired prior tokens, and signed out ${data.kickedSessions || 0} active session(s)!`;
+    } else {
+      feedback.textContent = `✅ Saved friend account "${payload.username}" to data/world_users.json!`;
+    }
     feedback.hidden = false;
     document.getElementById('admin-friend-username').value = '';
     document.getElementById('admin-friend-display').value = '';
@@ -3252,14 +4176,31 @@ document.getElementById('admin-upsert-user-form').addEventListener('submit', asy
 
 document.getElementById('admin-settings-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const settingsFeedback = document.getElementById('admin-settings-feedback');
+  if (settingsFeedback) settingsFeedback.hidden = true;
+
   const rawWords = document.getElementById('admin-blocked-words')?.value || '';
   const blockedWords = rawWords
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter((s) => s.length >= 2);
+
+  const profanityFineBase = Number(document.getElementById('admin-profanity-fine-base')?.value || 15);
+  const debtPrisonThreshold = Number(document.getElementById('admin-debt-prison-threshold')?.value || -50);
+  const prisonStrikeThreshold = Number(document.getElementById('admin-prison-strike-threshold')?.value || 3);
+
   const payload = {
     worldName: document.getElementById('admin-world-name').value.trim(),
     voiceDefaultMode: document.getElementById('admin-default-voice').value,
+    worldLocked: Boolean(document.getElementById('admin-world-locked')?.checked),
+    globalVoiceEnabled: Boolean(document.getElementById('admin-global-voice-enabled')?.checked),
+    globalChatMode: document.getElementById('admin-global-chat-mode')?.value || 'normal',
+    curfewEnabled: Boolean(document.getElementById('admin-curfew-enabled')?.checked),
+    curfewStart: document.getElementById('admin-curfew-start')?.value || '21:00',
+    curfewEnd: document.getElementById('admin-curfew-end')?.value || '07:00',
+    profanityFineBase: Number.isFinite(profanityFineBase) ? profanityFineBase : 15,
+    debtPrisonThreshold: Number.isFinite(debtPrisonThreshold) ? debtPrisonThreshold : -50,
+    prisonStrikeThreshold: Number.isFinite(prisonStrikeThreshold) ? prisonStrikeThreshold : 3,
     newAdminPassword: document.getElementById('admin-new-master-password').value.trim(),
     chatFilterEnabled: Boolean(document.getElementById('admin-chat-filter-enabled')?.checked),
     blockedWords
@@ -3273,11 +4214,21 @@ document.getElementById('admin-settings-form').addEventListener('submit', async 
     },
     body: JSON.stringify(payload)
   });
+  const data = await res.json().catch(() => ({}));
   if (res.ok) {
-    const data = await res.json();
+    if (data.adminToken) {
+      adminToken = data.adminToken;
+    }
     renderAdminDashboard(data.dashboard);
     document.getElementById('admin-new-master-password').value = '';
-    showToast('✅ World settings saved!');
+    if (settingsFeedback) {
+      settingsFeedback.textContent = '✅ Saved world, curfew & Debtor\'s Prison policies!';
+      settingsFeedback.hidden = false;
+    }
+    showToast('✅ World & parental safety settings saved!');
+  } else if (settingsFeedback) {
+    settingsFeedback.textContent = `❌ ${data.error || 'Failed to save settings.'}`;
+    settingsFeedback.hidden = false;
   }
 });
 

@@ -380,11 +380,61 @@ pub struct IceServerConfig {
     pub credential: Option<String>,
 }
 
+pub const SAFE_QUICK_CHAT_PHRASES: &[&str] = &[
+    "⭐⭐⭐⭐⭐ 5 STARS! Slay!!",
+    "💃 Meet me at the Fashion Runway!",
+    "🎉 Let's race the Sky Obby!",
+    "👗 Check out my new Glam Closet look!",
+    "👋 Hi besties!!",
+    "💎 Let's explore Crystal Cavern!",
+    "🙏 Sorry! Working hard!",
+    "👍 Good game!",
+];
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayerEconomySnapshot {
-    pub coins: u64,
+    pub coins: i64,
     pub inventory: HashMap<String, u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerModerationSnapshot {
+    #[serde(default)]
+    pub violation_strikes: u32,
+    #[serde(default)]
+    pub in_debtors_prison: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prison_reason: Option<String>,
+    #[serde(default)]
+    pub prison_tasks_remaining: u32,
+    #[serde(default)]
+    pub voice_muted_by_parent: bool,
+    #[serde(default = "default_chat_mode")]
+    pub chat_mode: String,
+    #[serde(default)]
+    pub suspended: bool,
+    #[serde(default = "default_true")]
+    pub can_build: bool,
+    #[serde(default = "default_true")]
+    pub can_trade: bool,
+}
+
+impl Default for PlayerModerationSnapshot {
+    fn default() -> Self {
+        Self {
+            violation_strikes: 0,
+            in_debtors_prison: false,
+            prison_reason: None,
+            prison_tasks_remaining: 0,
+            voice_muted_by_parent: false,
+            chat_mode: default_chat_mode(),
+            suspended: false,
+            can_build: true,
+            can_trade: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -397,11 +447,31 @@ pub struct UserAccount {
     #[serde(default = "default_role")]
     pub role: String,
     #[serde(default)]
+    pub token_epoch: u64,
+    #[serde(default)]
     pub avatar: AvatarAppearance,
     #[serde(default)]
-    pub coins: u64,
+    pub coins: i64,
     #[serde(default)]
     pub inventory: HashMap<String, u32>,
+    #[serde(default)]
+    pub violation_strikes: u32,
+    #[serde(default)]
+    pub in_debtors_prison: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prison_reason: Option<String>,
+    #[serde(default)]
+    pub prison_tasks_remaining: u32,
+    #[serde(default)]
+    pub voice_muted_by_parent: bool,
+    #[serde(default = "default_chat_mode")]
+    pub chat_mode: String,
+    #[serde(default)]
+    pub suspended: bool,
+    #[serde(default = "default_true")]
+    pub can_build: bool,
+    #[serde(default = "default_true")]
+    pub can_trade: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_pos: Option<SavedPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -410,6 +480,18 @@ pub struct UserAccount {
 
 fn default_role() -> String {
     "friend".into()
+}
+
+pub fn default_chat_mode() -> String {
+    "normal".into()
+}
+
+pub fn normalize_chat_mode(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "quick_only" | "quick" | "safe" => "quick_only".into(),
+        "muted" | "off" | "disabled" => "muted".into(),
+        _ => "normal".into(),
+    }
 }
 
 impl UserAccount {
@@ -427,6 +509,7 @@ impl UserAccount {
                 self.role.clone()
             },
             avatar: self.avatar.clone(),
+            moderation: self.moderation_snapshot(),
         }
     }
 
@@ -434,6 +517,20 @@ impl UserAccount {
         PlayerEconomySnapshot {
             coins: self.coins,
             inventory: self.inventory.clone(),
+        }
+    }
+
+    pub fn moderation_snapshot(&self) -> PlayerModerationSnapshot {
+        PlayerModerationSnapshot {
+            violation_strikes: self.violation_strikes,
+            in_debtors_prison: self.in_debtors_prison,
+            prison_reason: self.prison_reason.clone(),
+            prison_tasks_remaining: self.prison_tasks_remaining,
+            voice_muted_by_parent: self.voice_muted_by_parent,
+            chat_mode: normalize_chat_mode(&self.chat_mode),
+            suspended: self.suspended,
+            can_build: self.can_build,
+            can_trade: self.can_trade,
         }
     }
 }
@@ -445,6 +542,8 @@ pub struct SanitizedUser {
     pub display_name: String,
     pub role: String,
     pub avatar: AvatarAppearance,
+    #[serde(default)]
+    pub moderation: PlayerModerationSnapshot,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -454,6 +553,8 @@ pub struct UsersConfigFile {
     pub world_name: String,
     #[serde(default = "default_admin_password")]
     pub admin_password: String,
+    #[serde(default = "default_session_epoch")]
+    pub session_epoch: u64,
     #[serde(default = "default_voice_mode")]
     pub voice_default_mode: String,
     #[serde(default = "default_ice_servers")]
@@ -462,18 +563,88 @@ pub struct UsersConfigFile {
     pub chat_filter_enabled: bool,
     #[serde(default = "default_blocked_words")]
     pub blocked_words: Vec<String>,
+    #[serde(default = "default_true")]
+    pub global_voice_enabled: bool,
+    #[serde(default = "default_chat_mode")]
+    pub global_chat_mode: String,
+    #[serde(default)]
+    pub world_locked: bool,
+    #[serde(default)]
+    pub curfew_enabled: bool,
+    #[serde(default = "default_curfew_start")]
+    pub curfew_start: String,
+    #[serde(default = "default_curfew_end")]
+    pub curfew_end: String,
+    #[serde(default = "default_profanity_fine_base")]
+    pub profanity_fine_base: u64,
+    #[serde(default = "default_debt_prison_threshold")]
+    pub debt_prison_threshold: i64,
+    #[serde(default = "default_prison_strike_threshold")]
+    pub prison_strike_threshold: u32,
     #[serde(default)]
     pub users: Vec<UserAccount>,
+}
+
+pub fn default_session_epoch() -> u64 {
+    1
 }
 
 fn default_true() -> bool {
     true
 }
 
+pub fn default_curfew_start() -> String {
+    "21:00".into()
+}
+
+pub fn default_curfew_end() -> String {
+    "07:00".into()
+}
+
+pub fn default_profanity_fine_base() -> u64 {
+    15
+}
+
+pub fn default_debt_prison_threshold() -> i64 {
+    -50
+}
+
+pub fn default_prison_strike_threshold() -> u32 {
+    3
+}
+
 pub fn default_blocked_words() -> Vec<String> {
     vec![
-        "fuck", "fucking", "shit", "bitch", "asshole", "bastard", "cunt", "dick", "cock", "pussy",
-        "whore", "slut", "nigger", "nigga", "faggot", "fag", "retard", "kys",
+        "fuck",
+        "fucking",
+        "fucker",
+        "motherfucker",
+        "shit",
+        "bullshit",
+        "dipshit",
+        "bitch",
+        "asshole",
+        "jackass",
+        "dumbass",
+        "bastard",
+        "cunt",
+        "dick",
+        "cock",
+        "pussy",
+        "whore",
+        "slut",
+        "twat",
+        "prick",
+        "wanker",
+        "nigger",
+        "nigga",
+        "faggot",
+        "fag",
+        "retard",
+        "kys",
+        "stfu",
+        "gtfo",
+        "kill yourself",
     ]
     .into_iter()
     .map(String::from)
@@ -648,6 +819,8 @@ pub struct PlayerRuntimeState {
     pub speed_boost_until_ms: u64,
     #[serde(skip)]
     pub jump_boost_until_ms: u64,
+    #[serde(skip)]
+    pub server_voice_muted: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -675,6 +848,14 @@ pub struct BlockedChatEntry {
     pub reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_word: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strike_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fine_coins: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance_after: Option<i64>,
+    #[serde(default)]
+    pub sentenced_to_prison: bool,
     pub ts: u64,
 }
 

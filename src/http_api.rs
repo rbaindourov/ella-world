@@ -1,12 +1,17 @@
-use crate::auth::{constant_time_str_eq, TokenClaims};
+use crate::auth::constant_time_str_eq;
 use crate::economy::ITEM_CATALOG;
-use crate::models::{now_ms, AvatarAppearance, UserAccount};
+use crate::models::{
+    normalize_chat_mode, now_ms, AvatarAppearance, UserAccount, SAFE_QUICK_CHAT_PHRASES,
+};
 use crate::udp_native::NativeUdpServer;
 use crate::webrtc_sfu::WebRtcSfu;
-use crate::world::WorldEngine;
+use crate::world::{
+    is_within_curfew_window, local_minutes_since_midnight, parse_hhmm_minutes,
+    AdminModerateUserInput, WorldEngine,
+};
 use crate::ws_spine::{ws_upgrade_handler, WsSpineHub};
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -48,6 +53,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dungeon/interact", post(dungeon_interact_handler))
         .route("/dungeon/attack", post(dungeon_attack_handler))
         .route("/dungeon/pickup", post(dungeon_pickup_handler))
+        .route("/prison/work", post(prison_work_handler))
         .route("/trade/invite", post(trade_invite_handler))
         .route("/trade/respond", post(trade_respond_handler))
         .route("/trade/offer", post(trade_offer_handler))
@@ -59,6 +65,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/chats", get(admin_chats_handler))
         .route("/admin/users", post(admin_upsert_user_handler))
         .route("/admin/users/:username", delete(admin_delete_user_handler))
+        .route("/admin/moderate", post(admin_moderate_handler))
+        .route(
+            "/admin/sessions/revoke",
+            post(admin_revoke_sessions_handler),
+        )
         .route("/admin/settings", post(admin_settings_handler))
         .route("/admin/world/reset", post(admin_reset_world_handler));
 
@@ -79,22 +90,17 @@ fn json_err(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({ "ok": false, "error": msg }))).into_response()
 }
 
-fn extract_player_claims(world: &WorldEngine, token: &str) -> Option<(String, String)> {
-    let claims = world.verify_session_token(token)?;
-    let self_id = claims.self_id?;
-    let username = claims.username?;
+async fn extract_player_claims(world: &WorldEngine, token: &str) -> Option<(String, String)> {
+    let (self_id, username, _, _, _) = world.verify_active_player_token(token).await?;
     Some((self_id, username))
 }
 
-fn verify_admin_bearer(world: &WorldEngine, headers: &HeaderMap) -> bool {
+async fn verify_admin_bearer(world: &WorldEngine, headers: &HeaderMap) -> bool {
     let Some(raw) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
         return false;
     };
     let token = raw.strip_prefix("Bearer ").unwrap_or(raw).trim();
-    let Some(claims) = world.verify_session_token(token) else {
-        return false;
-    };
-    claims.role.as_deref() == Some("admin")
+    world.verify_active_admin_token(token).await
 }
 
 async fn build_admin_dashboard(world: &WorldEngine) -> Value {
@@ -114,8 +120,18 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
                 "displayName": if u.display_name.is_empty() { &u.username } else { &u.display_name },
                 "password": u.password,
                 "role": u.role,
+                "tokenEpoch": u.token_epoch,
                 "coins": u.coins,
                 "itemCount": u.inventory.values().sum::<u32>(),
+                "violationStrikes": u.violation_strikes,
+                "inDebtorsPrison": u.in_debtors_prison,
+                "prisonReason": u.prison_reason,
+                "prisonTasksRemaining": u.prison_tasks_remaining,
+                "voiceMutedByParent": u.voice_muted_by_parent,
+                "chatMode": normalize_chat_mode(&u.chat_mode),
+                "suspended": u.suspended,
+                "canBuild": u.can_build,
+                "canTrade": u.can_trade,
                 "avatar": u.avatar,
                 "online": online
             })
@@ -124,7 +140,18 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
 
     json!({
         "worldName": cfg.world_name,
+        "sessionEpoch": cfg.session_epoch,
         "voiceDefaultMode": cfg.voice_default_mode,
+        "globalVoiceEnabled": cfg.global_voice_enabled,
+        "globalChatMode": normalize_chat_mode(&cfg.global_chat_mode),
+        "worldLocked": cfg.world_locked,
+        "curfewEnabled": cfg.curfew_enabled,
+        "curfewStart": cfg.curfew_start,
+        "curfewEnd": cfg.curfew_end,
+        "profanityFineBase": cfg.profanity_fine_base,
+        "debtPrisonThreshold": cfg.debt_prison_threshold,
+        "prisonStrikeThreshold": cfg.prison_strike_threshold,
+        "safeQuickChatPhrases": SAFE_QUICK_CHAT_PHRASES,
         "blockCount": blocks_count,
         "chatFilterEnabled": cfg.chat_filter_enabled,
         "blockedWords": cfg.blocked_words,
@@ -175,6 +202,11 @@ async fn meta_handler(State(st): State<AppState>) -> Json<Value> {
         "worldName": cfg.world_name,
         "onlineCount": online_count,
         "voiceDefaultMode": cfg.voice_default_mode,
+        "globalVoiceEnabled": cfg.global_voice_enabled,
+        "worldLocked": cfg.world_locked,
+        "curfewEnabled": cfg.curfew_enabled,
+        "curfewStart": cfg.curfew_start,
+        "curfewEnd": cfg.curfew_end,
         "iceServers": cfg.ice_servers,
         "runway": runway,
         "transport": "hybrid-ws-spine-plus-udp-sfu",
@@ -221,6 +253,10 @@ async fn login_handler(State(st): State<AppState>, Json(body): Json<LoginPayload
         );
     };
 
+    if let Err(reason) = st.world.check_world_access_for_user(&user).await {
+        return json_err(StatusCode::FORBIDDEN, &reason);
+    }
+
     let session_doc = st
         .world
         .create_or_resume_session(&user, body.client_id.as_deref())
@@ -236,24 +272,18 @@ struct ResumePayload {
 }
 
 async fn resume_handler(State(st): State<AppState>, Json(body): Json<ResumePayload>) -> Response {
-    let Some((_old_id, username)) = extract_player_claims(&st.world, &body.token) else {
+    let Some((_old_id, _username, user, _, _)) =
+        st.world.verify_player_token_claims_only(&body.token).await
+    else {
         return json_err(
             StatusCode::UNAUTHORIZED,
-            "Invalid or expired session token.",
+            "Your session has expired or your password was updated. Please sign in again.",
         );
     };
 
-    let found_user = {
-        let cfg = st.world.users_cfg.read().await;
-        cfg.users
-            .iter()
-            .find(|u| u.username.eq_ignore_ascii_case(&username))
-            .cloned()
-    };
-
-    let Some(user) = found_user else {
-        return json_err(StatusCode::UNAUTHORIZED, "Account no longer active.");
-    };
+    if let Err(reason) = st.world.check_world_access_for_user(&user).await {
+        return json_err(StatusCode::FORBIDDEN, &reason);
+    }
 
     let session_doc = st
         .world
@@ -271,11 +301,25 @@ async fn logout_handler(
     State(st): State<AppState>,
     Json(body): Json<TokenOnlyPayload>,
 ) -> Response {
-    if let Some((self_id, _)) = extract_player_claims(&st.world, &body.token) {
+    if let Some((self_id, _)) = extract_player_claims(&st.world, &body.token).await {
         st.sfu.cleanup_session(&self_id).await;
-        st.world.remove_player_immediately(&self_id).await;
+        st.native_udp.evict_sessions_for_peer(&self_id).await;
+        st.world
+            .kick_and_remove_peer(&self_id, "Signed out of ELLA World.")
+            .await;
+    } else if let Some(unverified) = st.world.verify_session_token(body.token.trim()) {
+        if let Some(self_id) = unverified.self_id {
+            st.sfu.cleanup_session(&self_id).await;
+            st.native_udp.evict_sessions_for_peer(&self_id).await;
+            st.world.remove_player_immediately(&self_id).await;
+        }
     }
-    Json(json!({ "ok": true })).into_response()
+    let mut resp = Json(json!({ "ok": true })).into_response();
+    resp.headers_mut().insert(
+        header::HeaderName::from_static("clear-site-data"),
+        HeaderValue::from_static("\"cookies\", \"storage\", \"cache\""),
+    );
+    resp
 }
 
 #[derive(Deserialize)]
@@ -288,10 +332,10 @@ async fn rtc_offer_handler(
     State(st): State<AppState>,
     Json(body): Json<RtcOfferPayload>,
 ) -> Response {
-    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
         return json_err(
             StatusCode::UNAUTHORIZED,
-            "Invalid session token for UDP WebRTC.",
+            "Invalid or expired session token for UDP WebRTC.",
         );
     };
     if body.sdp.trim().is_empty() {
@@ -336,8 +380,11 @@ async fn block_handler(
     State(st): State<AppState>,
     Json(body): Json<BlockMutationPayload>,
 ) -> Response {
-    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
 
     match st
@@ -371,8 +418,11 @@ async fn avatar_handler(
     State(st): State<AppState>,
     Json(body): Json<AvatarUpdatePayload>,
 ) -> Response {
-    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
 
     match st
@@ -399,8 +449,11 @@ struct ChatPostPayload {
 }
 
 async fn chat_handler(State(st): State<AppState>, Json(body): Json<ChatPostPayload>) -> Response {
-    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
 
     match st
@@ -441,8 +494,11 @@ async fn runway_handler(
     State(st): State<AppState>,
     Json(body): Json<RunwayActionPayload>,
 ) -> Response {
-    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
 
     let runway = st
@@ -484,12 +540,7 @@ async fn admin_login_handler(
         );
     }
 
-    let admin_token = st.world.sign_session_token(&TokenClaims {
-        self_id: None,
-        username: Some("admin".into()),
-        role: Some("admin".into()),
-        iat: now_ms(),
-    });
+    let admin_token = st.world.mint_admin_token().await;
     let dashboard = build_admin_dashboard(&st.world).await;
 
     Json(json!({
@@ -501,7 +552,7 @@ async fn admin_login_handler(
 }
 
 async fn admin_state_handler(State(st): State<AppState>, headers: HeaderMap) -> Response {
-    if !verify_admin_bearer(&st.world, &headers) {
+    if !verify_admin_bearer(&st.world, &headers).await {
         return json_err(StatusCode::UNAUTHORIZED, "Unauthorized admin token.");
     }
     let dashboard = build_admin_dashboard(&st.world).await;
@@ -524,7 +575,7 @@ async fn admin_upsert_user_handler(
     headers: HeaderMap,
     Json(body): Json<AdminUpsertUserPayload>,
 ) -> Response {
-    if !verify_admin_bearer(&st.world, &headers) {
+    if !verify_admin_bearer(&st.world, &headers).await {
         return json_err(StatusCode::UNAUTHORIZED, "Unauthorized admin token.");
     }
 
@@ -537,7 +588,8 @@ async fn admin_upsert_user_handler(
         .take(24)
         .collect();
 
-    if clean_username.len() < 2 || body.password.trim().is_empty() {
+    let clean_pw = body.password.trim().to_string();
+    if clean_username.len() < 2 || clean_pw.is_empty() {
         return json_err(
             StatusCode::BAD_REQUEST,
             "Username (2+ alphanumeric chars) and password are required.",
@@ -550,6 +602,7 @@ async fn admin_upsert_user_handler(
         body.display_name.trim().chars().take(32).collect()
     };
 
+    let mut password_rotated = false;
     {
         let mut cfg = st.world.users_cfg.write().await;
         if let Some(existing) = cfg
@@ -557,8 +610,12 @@ async fn admin_upsert_user_handler(
             .iter_mut()
             .find(|u| u.username.eq_ignore_ascii_case(&clean_username))
         {
+            if !constant_time_str_eq(&existing.password, &clean_pw) {
+                password_rotated = true;
+                existing.token_epoch = existing.token_epoch.wrapping_add(1);
+            }
             existing.display_name = display_name;
-            existing.password = body.password.trim().to_string();
+            existing.password = clean_pw;
             if let Some(r) = &body.role {
                 existing.role = r.clone();
             }
@@ -571,13 +628,23 @@ async fn admin_upsert_user_handler(
                 av.apply_patch(av_patch);
             }
             cfg.users.push(UserAccount {
-                username: clean_username,
+                username: clean_username.clone(),
                 display_name,
-                password: body.password.trim().to_string(),
+                password: clean_pw,
                 role: body.role.unwrap_or_else(|| "friend".into()),
+                token_epoch: 0,
                 avatar: av,
                 coins: 0,
                 inventory: HashMap::new(),
+                violation_strikes: 0,
+                in_debtors_prison: false,
+                prison_reason: None,
+                prison_tasks_remaining: 0,
+                voice_muted_by_parent: false,
+                chat_mode: "normal".into(),
+                suspended: false,
+                can_build: true,
+                can_trade: true,
                 last_pos: None,
                 last_pos_saved_at: None,
             });
@@ -585,8 +652,30 @@ async fn admin_upsert_user_handler(
     }
     st.world.persist_users_async().await;
 
+    let mut kicked_sessions = 0usize;
+    if password_rotated {
+        st.sfu.cleanup_sessions_for_username(&clean_username).await;
+        st.native_udp
+            .evict_sessions_for_username(&clean_username)
+            .await;
+        let kicked = st
+            .world
+            .kick_and_remove_user_sessions(
+                &clean_username,
+                "Your password was updated by a parent. Please sign in with your new password.",
+            )
+            .await;
+        kicked_sessions = kicked.len();
+    }
+
     let dashboard = build_admin_dashboard(&st.world).await;
-    Json(json!({ "ok": true, "dashboard": dashboard })).into_response()
+    Json(json!({
+        "ok": true,
+        "passwordRotated": password_rotated,
+        "kickedSessions": kicked_sessions,
+        "dashboard": dashboard
+    }))
+    .into_response()
 }
 
 async fn admin_delete_user_handler(
@@ -594,7 +683,7 @@ async fn admin_delete_user_handler(
     headers: HeaderMap,
     Path(username): Path<String>,
 ) -> Response {
-    if !verify_admin_bearer(&st.world, &headers) {
+    if !verify_admin_bearer(&st.world, &headers).await {
         return json_err(StatusCode::UNAUTHORIZED, "Unauthorized admin token.");
     }
 
@@ -606,20 +695,113 @@ async fn admin_delete_user_handler(
     }
     st.world.persist_users_async().await;
 
-    let peer_ids_to_kick: Vec<String> = {
-        let map = st.world.players.read().await;
-        map.values()
-            .filter(|p| p.user.username.eq_ignore_ascii_case(&target))
-            .map(|p| p.id.clone())
-            .collect()
-    };
-    for pid in peer_ids_to_kick {
-        st.sfu.cleanup_session(&pid).await;
-        st.world.remove_player_immediately(&pid).await;
-    }
+    st.sfu.cleanup_sessions_for_username(&target).await;
+    st.native_udp.evict_sessions_for_username(&target).await;
+    let kicked = st
+        .world
+        .kick_and_remove_user_sessions(&target, "Your account was removed by a parent.")
+        .await;
 
     let dashboard = build_admin_dashboard(&st.world).await;
-    Json(json!({ "ok": true, "dashboard": dashboard })).into_response()
+    Json(json!({
+        "ok": true,
+        "kickedSessions": kicked.len(),
+        "dashboard": dashboard
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct AdminRevokeSessionsPayload {
+    username: Option<String>,
+    reason: Option<String>,
+}
+
+async fn admin_revoke_sessions_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AdminRevokeSessionsPayload>,
+) -> Response {
+    if !verify_admin_bearer(&st.world, &headers).await {
+        return json_err(StatusCode::UNAUTHORIZED, "Unauthorized admin token.");
+    }
+
+    let target_user = body
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase);
+
+    if let Some(uname) = target_user {
+        let maybe_epoch = {
+            let mut cfg = st.world.users_cfg.write().await;
+            if let Some(u) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(&uname))
+            {
+                u.token_epoch = u.token_epoch.wrapping_add(1);
+                Some(u.token_epoch)
+            } else {
+                None
+            }
+        };
+        let Some(token_epoch) = maybe_epoch else {
+            return json_err(StatusCode::NOT_FOUND, "User account not found.");
+        };
+        st.world.persist_users_async().await;
+
+        let reason = body
+            .reason
+            .as_deref()
+            .unwrap_or("Your session was signed out by a parent. Please log in again.");
+        st.sfu.cleanup_sessions_for_username(&uname).await;
+        st.native_udp.evict_sessions_for_username(&uname).await;
+        let kicked = st.world.kick_and_remove_user_sessions(&uname, reason).await;
+        let dashboard = build_admin_dashboard(&st.world).await;
+
+        Json(json!({
+            "ok": true,
+            "scope": "user",
+            "username": uname,
+            "tokenEpoch": token_epoch,
+            "kickedCount": kicked.len(),
+            "dashboard": dashboard
+        }))
+        .into_response()
+    } else {
+        let new_session_epoch = {
+            let mut cfg = st.world.users_cfg.write().await;
+            cfg.session_epoch = cfg.session_epoch.wrapping_add(1).max(1);
+            for u in &mut cfg.users {
+                u.token_epoch = u.token_epoch.wrapping_add(1);
+            }
+            cfg.session_epoch
+        };
+        st.world.persist_users_async().await;
+
+        let reason = body
+            .reason
+            .as_deref()
+            .unwrap_or("All active sessions were expired by a parent. Please sign in again.");
+        st.sfu.cleanup_all_sessions().await;
+        st.native_udp.evict_all_sessions().await;
+        let kicked = st.world.kick_and_remove_all_sessions(reason).await;
+        let admin_token = st.world.mint_admin_token().await;
+        let dashboard = build_admin_dashboard(&st.world).await;
+
+        Json(json!({
+            "ok": true,
+            "scope": "all",
+            "sessionEpoch": new_session_epoch,
+            "kickedCount": kicked.len(),
+            "adminToken": admin_token,
+            "dashboard": dashboard
+        }))
+        .into_response()
+    }
 }
 
 #[derive(Deserialize)]
@@ -637,7 +819,7 @@ async fn admin_chats_handler(
     headers: HeaderMap,
     Query(query): Query<AdminChatsQuery>,
 ) -> Response {
-    if !verify_admin_bearer(&st.world, &headers) {
+    if !verify_admin_bearer(&st.world, &headers).await {
         return json_err(StatusCode::UNAUTHORIZED, "Unauthorized admin token.");
     }
 
@@ -674,6 +856,15 @@ async fn admin_chats_handler(
 struct AdminSettingsPayload {
     world_name: Option<String>,
     voice_default_mode: Option<String>,
+    global_voice_enabled: Option<bool>,
+    global_chat_mode: Option<String>,
+    world_locked: Option<bool>,
+    curfew_enabled: Option<bool>,
+    curfew_start: Option<String>,
+    curfew_end: Option<String>,
+    profanity_fine_base: Option<u64>,
+    debt_prison_threshold: Option<i64>,
+    prison_strike_threshold: Option<u32>,
     new_admin_password: Option<String>,
     chat_filter_enabled: Option<bool>,
     blocked_words: Option<Vec<String>>,
@@ -684,10 +875,12 @@ async fn admin_settings_handler(
     headers: HeaderMap,
     Json(body): Json<AdminSettingsPayload>,
 ) -> Response {
-    if !verify_admin_bearer(&st.world, &headers) {
+    if !verify_admin_bearer(&st.world, &headers).await {
         return json_err(StatusCode::UNAUTHORIZED, "Unauthorized admin token.");
     }
 
+    let mut admin_pw_changed = false;
+    let mut should_evict_all = false;
     {
         let mut cfg = st.world.users_cfg.write().await;
         if let Some(name) = body
@@ -702,11 +895,45 @@ async fn admin_settings_handler(
                 cfg.voice_default_mode = mode;
             }
         }
+        if let Some(gv) = body.global_voice_enabled {
+            cfg.global_voice_enabled = gv;
+        }
+        if let Some(gcm) = body.global_chat_mode {
+            cfg.global_chat_mode = normalize_chat_mode(&gcm);
+        }
+        if let Some(wl) = body.world_locked {
+            cfg.world_locked = wl;
+        }
+        if let Some(ce) = body.curfew_enabled {
+            cfg.curfew_enabled = ce;
+        }
+        if let Some(cs) = body.curfew_start {
+            if parse_hhmm_minutes(&cs).is_some() {
+                cfg.curfew_start = cs.trim().to_string();
+            }
+        }
+        if let Some(ce_str) = body.curfew_end {
+            if parse_hhmm_minutes(&ce_str).is_some() {
+                cfg.curfew_end = ce_str.trim().to_string();
+            }
+        }
+        if let Some(fine) = body.profanity_fine_base {
+            cfg.profanity_fine_base = fine.clamp(1, 500);
+        }
+        if let Some(debt_thresh) = body.debt_prison_threshold {
+            cfg.debt_prison_threshold = debt_thresh.clamp(-5_000, -5);
+        }
+        if let Some(strike_thresh) = body.prison_strike_threshold {
+            cfg.prison_strike_threshold = strike_thresh.clamp(1, 20);
+        }
         if let Some(new_pw) = body
             .new_admin_password
             .map(|s| s.trim().to_string())
             .filter(|s| s.len() >= 4)
         {
+            if !constant_time_str_eq(&cfg.admin_password, &new_pw) {
+                admin_pw_changed = true;
+            }
             cfg.admin_password = new_pw;
         }
         if let Some(enabled) = body.chat_filter_enabled {
@@ -723,11 +950,73 @@ async fn admin_settings_handler(
             }
             cfg.blocked_words = clean;
         }
+        if cfg.world_locked
+            || (cfg.curfew_enabled
+                && is_within_curfew_window(
+                    local_minutes_since_midnight(),
+                    &cfg.curfew_start,
+                    &cfg.curfew_end,
+                ))
+        {
+            should_evict_all = true;
+        }
     }
     st.world.persist_users_async().await;
+    st.world.broadcast_parental_world_settings().await;
+    if should_evict_all {
+        st.sfu.cleanup_all_sessions().await;
+        st.native_udp.evict_all_sessions().await;
+    }
+    st.world.enforce_live_world_access().await;
 
     let dashboard = build_admin_dashboard(&st.world).await;
-    Json(json!({ "ok": true, "dashboard": dashboard })).into_response()
+    if admin_pw_changed {
+        let admin_token = st.world.mint_admin_token().await;
+        Json(json!({
+            "ok": true,
+            "adminToken": admin_token,
+            "dashboard": dashboard
+        }))
+        .into_response()
+    } else {
+        Json(json!({ "ok": true, "dashboard": dashboard })).into_response()
+    }
+}
+
+async fn admin_moderate_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AdminModerateUserInput>,
+) -> Response {
+    if !verify_admin_bearer(&st.world, &headers).await {
+        return json_err(StatusCode::UNAUTHORIZED, "Unauthorized admin token.");
+    }
+
+    let target_uname = body.username.trim().to_lowercase();
+    let mut res = match st.world.admin_moderate_user(body).await {
+        Ok(v) => v,
+        Err(msg) => return json_err(StatusCode::BAD_REQUEST, &msg),
+    };
+
+    if res.get("suspended").and_then(Value::as_bool) == Some(true) {
+        st.sfu.cleanup_sessions_for_username(&target_uname).await;
+        st.native_udp
+            .evict_sessions_for_username(&target_uname)
+            .await;
+        let kicked = st
+            .world
+            .kick_and_remove_user_sessions(&target_uname, "🚫 Your account was paused by a parent.")
+            .await;
+        if let Some(obj) = res.as_object_mut() {
+            obj.insert("kickedCount".into(), json!(kicked.len()));
+        }
+    }
+
+    let dashboard = build_admin_dashboard(&st.world).await;
+    if let Some(obj) = res.as_object_mut() {
+        obj.insert("dashboard".into(), dashboard);
+    }
+    Json(res).into_response()
 }
 
 #[derive(Deserialize)]
@@ -741,7 +1030,7 @@ async fn admin_reset_world_handler(
     headers: HeaderMap,
     Json(body): Json<AdminResetWorldPayload>,
 ) -> Response {
-    if !verify_admin_bearer(&st.world, &headers) {
+    if !verify_admin_bearer(&st.world, &headers).await {
         return json_err(StatusCode::UNAUTHORIZED, "Unauthorized admin token.");
     }
 
@@ -775,8 +1064,11 @@ async fn economy_use_handler(
     State(st): State<AppState>,
     Json(body): Json<EconomyUsePayload>,
 ) -> Response {
-    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
     match st
         .world
@@ -800,8 +1092,11 @@ async fn dungeon_portal_handler(
     State(st): State<AppState>,
     Json(body): Json<DungeonPortalPayload>,
 ) -> Response {
-    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
     match st
         .world
@@ -824,8 +1119,11 @@ async fn dungeon_interact_handler(
     State(st): State<AppState>,
     Json(body): Json<DungeonInteractPayload>,
 ) -> Response {
-    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
     match st
         .world
@@ -854,8 +1152,11 @@ async fn dungeon_attack_handler(
     State(st): State<AppState>,
     Json(body): Json<DungeonAttackPayload>,
 ) -> Response {
-    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
     match st
         .world
@@ -878,12 +1179,42 @@ async fn dungeon_pickup_handler(
     State(st): State<AppState>,
     Json(body): Json<DungeonPickupPayload>,
 ) -> Response {
-    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
     match st
         .world
         .dungeon_pickup_drop(&self_id, &username, body.drop_id.trim())
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrisonWorkPayload {
+    token: String,
+    node_id: String,
+}
+
+async fn prison_work_handler(
+    State(st): State<AppState>,
+    Json(body): Json<PrisonWorkPayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
+    };
+    match st
+        .world
+        .prison_perform_work(&self_id, &username, body.node_id.trim())
         .await
     {
         Ok(res) => Json(res).into_response(),
@@ -902,8 +1233,11 @@ async fn trade_invite_handler(
     State(st): State<AppState>,
     Json(body): Json<TradeInvitePayload>,
 ) -> Response {
-    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
     match st
         .world
@@ -927,8 +1261,11 @@ async fn trade_respond_handler(
     State(st): State<AppState>,
     Json(body): Json<TradeRespondPayload>,
 ) -> Response {
-    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
     match st
         .world
@@ -957,8 +1294,11 @@ async fn trade_offer_handler(
     State(st): State<AppState>,
     Json(body): Json<TradeOfferPayload>,
 ) -> Response {
-    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
     match st
         .world
@@ -988,8 +1328,11 @@ async fn trade_lock_handler(
     State(st): State<AppState>,
     Json(body): Json<TradeLockPayload>,
 ) -> Response {
-    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
     match st
         .world
@@ -1012,8 +1355,11 @@ async fn trade_confirm_handler(
     State(st): State<AppState>,
     Json(body): Json<TradeIdOnlyPayload>,
 ) -> Response {
-    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
     match st.world.trade_confirm(&self_id, body.trade_id.trim()).await {
         Ok(res) => Json(res).into_response(),
@@ -1032,8 +1378,11 @@ async fn trade_cancel_handler(
     State(st): State<AppState>,
     Json(body): Json<TradeCancelPayload>,
 ) -> Response {
-    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token) else {
-        return json_err(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    let Some((self_id, _username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
     };
     match st
         .world

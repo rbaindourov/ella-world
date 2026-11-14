@@ -1,21 +1,27 @@
-use crate::auth::{sign_token, verify_token, TokenClaims};
+use crate::auth::{
+    constant_time_str_eq, password_token_sig, sign_token, verify_token, TokenClaims,
+};
 use crate::config::ServerConfig;
 use crate::economy::{
-    add_inventory_item, execute_atomic_trade_swap, find_item_def, reconcile_equipped_cosmetics,
-    remove_inventory_item, roll_crystal_loot, roll_golden_chest_loot, roll_mob_loot,
-    roll_wooden_chest_loot, sanitize_and_validate_offer, DungeonMob, DungeonSnapshot, DungeonState,
-    TradeSession, TradeSideOffer, DUNGEON_RETURN_PORTAL_POS, DUNGEON_SPAWN_POS, ITEM_CATALOG,
-    PLAZA_PORTAL_POS, PLAZA_RETURN_SPAWN_POS, TRADE_ACTIVE_IDLE_TTL_MS, TRADE_INVITE_TTL_MS,
+    add_inventory_item, calculate_escalating_fine, execute_atomic_trade_swap, find_item_def,
+    reconcile_equipped_cosmetics, remove_inventory_item, roll_crystal_loot, roll_golden_chest_loot,
+    roll_mob_loot, roll_wooden_chest_loot, sanitize_and_validate_offer, DungeonMob,
+    DungeonSnapshot, DungeonState, PrisonSnapshot, PrisonState, TradeSession, TradeSideOffer,
+    DUNGEON_RETURN_PORTAL_POS, DUNGEON_SPAWN_POS, ITEM_CATALOG, PLAZA_PORTAL_POS,
+    PLAZA_RETURN_SPAWN_POS, PRISON_RELEASE_PORTAL_POS, PRISON_SPAWN_POS, PRISON_WORK_REWARD_COINS,
+    TRADE_ACTIVE_IDLE_TTL_MS, TRADE_INVITE_TTL_MS,
 };
 use crate::models::{
-    default_starter_blocks, is_valid_hex_color, now_ms, BlockedChatEntry, BlocksDataFile,
-    ChatMessage, PlayerEconomySnapshot, PlayerRuntimeState, RunwayPublicSummary, RunwayState,
-    SanitizedUser, SavedPosition, UserAccount, UsersConfigFile, VoxelBlock, RUNWAY_THEMES,
+    default_starter_blocks, is_valid_hex_color, normalize_chat_mode, now_ms, BlockedChatEntry,
+    BlocksDataFile, ChatMessage, PlayerEconomySnapshot, PlayerModerationSnapshot,
+    PlayerRuntimeState, RunwayPublicSummary, RunwayState, SanitizedUser, SavedPosition,
+    UserAccount, UsersConfigFile, VoxelBlock, RUNWAY_THEMES, SAFE_QUICK_CHAT_PHRASES,
 };
 use crate::persistence::PersistenceStore;
 use crate::udp_wire::{
     assemble_s2c_world_state_chunks, assemble_s2c_world_state_scheduled_chunk,
     encode_player_binary_entry, DecodedC2SState, MAX_SNAPSHOT_MTU_BYTES, ZONE_DUNGEON, ZONE_PLAZA,
+    ZONE_PRISON,
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -124,6 +130,30 @@ pub enum UdpWorldEvent {
         actor_id: Option<String>,
         dungeon: DungeonSnapshot,
     },
+    PrisonSync {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event: Option<String>,
+        #[serde(rename = "actorId", skip_serializing_if = "Option::is_none")]
+        actor_id: Option<String>,
+        prison: PrisonSnapshot,
+    },
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminModerateUserInput {
+    pub username: String,
+    pub action: String, // "update_controls" | "sentence_prison" | "pardon_prison" | "adjust_coins" | "reset_strikes"
+    pub voice_muted_by_parent: Option<bool>,
+    pub chat_mode: Option<String>,
+    pub can_build: Option<bool>,
+    pub can_trade: Option<bool>,
+    pub suspended: Option<bool>,
+    pub coin_delta: Option<i64>,
+    pub prison_tasks: Option<u32>,
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -133,6 +163,43 @@ pub struct BridgedOpusFrame {
     pub seq: u16,
     pub timestamp: u32,
     pub payload: Bytes,
+}
+
+#[derive(Clone, Debug)]
+pub enum SessionRevokeSignal {
+    All {
+        reason: String,
+    },
+    Username {
+        username_lower: String,
+        reason: String,
+    },
+    PeerId {
+        self_id: String,
+        reason: String,
+    },
+}
+
+impl SessionRevokeSignal {
+    pub fn matches(&self, self_id: &str, username: &str) -> bool {
+        match self {
+            Self::All { .. } => true,
+            Self::Username { username_lower, .. } => {
+                username.trim().eq_ignore_ascii_case(username_lower)
+            }
+            Self::PeerId {
+                self_id: target_id, ..
+            } => self_id == target_id,
+        }
+    }
+
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::All { reason } | Self::Username { reason, .. } | Self::PeerId { reason, .. } => {
+                reason
+            }
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -154,7 +221,10 @@ pub struct WorldEngine {
     pub chat_cooldowns: RwLock<HashMap<String, VecDeque<u64>>>,
     pub runway: RwLock<RunwayState>,
     pub dungeon: RwLock<DungeonState>,
+    pub prison: RwLock<PrisonState>,
+    pub prison_work_cooldowns: RwLock<HashMap<String, u64>>,
     pub trades: RwLock<HashMap<String, TradeSession>>,
+    pub global_voice_enabled: AtomicBool,
     pub server_tick: AtomicU32,
     pub state_seq: AtomicU64,
     pub disconnect_grace_ms: AtomicU64,
@@ -167,6 +237,7 @@ pub struct WorldEngine {
     pub peer_json_txs: RwLock<HashMap<String, mpsc::UnboundedSender<String>>>,
     pub udp_event_tx: broadcast::Sender<UdpWorldEvent>,
     pub opus_bridge_tx: broadcast::Sender<BridgedOpusFrame>,
+    pub session_revoke_tx: broadcast::Sender<SessionRevokeSignal>,
 }
 
 impl WorldEngine {
@@ -186,9 +257,11 @@ impl WorldEngine {
         }
         let (udp_event_tx, _) = broadcast::channel(4096);
         let (opus_bridge_tx, _) = broadcast::channel(2048);
+        let (session_revoke_tx, _) = broadcast::channel(256);
         let initial_tick_arc = Arc::new(PreEncodedWorldTick::default());
         let (pre_encoded_tick_tx, _) = watch::channel(Arc::clone(&initial_tick_arc));
 
+        let initial_global_voice = users_cfg.global_voice_enabled;
         let engine = Arc::new(Self {
             config,
             store,
@@ -199,7 +272,10 @@ impl WorldEngine {
             chat_cooldowns: RwLock::new(HashMap::new()),
             runway: RwLock::new(RunwayState::default()),
             dungeon: RwLock::new(DungeonState::new()),
+            prison: RwLock::new(PrisonState::new()),
+            prison_work_cooldowns: RwLock::new(HashMap::new()),
             trades: RwLock::new(HashMap::new()),
+            global_voice_enabled: AtomicBool::new(initial_global_voice),
             server_tick: AtomicU32::new(1),
             state_seq: AtomicU64::new(1),
             disconnect_grace_ms: AtomicU64::new(DEFAULT_DISCONNECT_GRACE_MS),
@@ -212,6 +288,7 @@ impl WorldEngine {
             peer_json_txs: RwLock::new(HashMap::new()),
             udp_event_tx,
             opus_bridge_tx,
+            session_revoke_tx,
         });
 
         let bg = Arc::clone(&engine);
@@ -229,6 +306,10 @@ impl WorldEngine {
                 }
                 if tick_counter.is_multiple_of(5) {
                     bg.tick_dungeon_if_occupied().await;
+                    bg.tick_prison_if_occupied().await;
+                }
+                if tick_counter.is_multiple_of(40) {
+                    bg.enforce_live_world_access().await;
                 }
                 bg.rebuild_pre_encoded_tick(tick).await;
                 if tick_counter.is_multiple_of(100) {
@@ -270,6 +351,287 @@ impl WorldEngine {
 
     pub fn sign_session_token(&self, claims: &TokenClaims) -> String {
         sign_token(claims, &self.config.hmac_secret)
+    }
+
+    pub fn player_password_sig(&self, user: &UserAccount) -> String {
+        password_token_sig(&user.username, &user.password, &self.config.hmac_secret)
+    }
+
+    pub fn admin_password_sig(&self, admin_password: &str) -> String {
+        password_token_sig("__admin__", admin_password, &self.config.hmac_secret)
+    }
+
+    pub fn mint_player_token(
+        &self,
+        self_id: &str,
+        user: &UserAccount,
+        session_epoch: u64,
+    ) -> String {
+        let now = now_ms();
+        let exp = now.saturating_add(self.config.token_ttl_ms());
+        let pwd_sig = self.player_password_sig(user);
+        self.sign_session_token(&TokenClaims {
+            self_id: Some(self_id.to_string()),
+            username: Some(user.username.clone()),
+            role: Some(user.role.clone()),
+            iat: now,
+            exp: Some(exp),
+            session_epoch: Some(session_epoch),
+            user_token_epoch: Some(user.token_epoch),
+            pwd_sig: Some(pwd_sig),
+        })
+    }
+
+    pub async fn mint_admin_token(&self) -> String {
+        let (session_epoch, admin_pw) = {
+            let cfg = self.users_cfg.read().await;
+            (cfg.session_epoch, cfg.admin_password.clone())
+        };
+        let now = now_ms();
+        let exp = now.saturating_add(self.config.token_ttl_ms());
+        let pwd_sig = self.admin_password_sig(&admin_pw);
+        self.sign_session_token(&TokenClaims {
+            self_id: None,
+            username: Some("admin".into()),
+            role: Some("admin".into()),
+            iat: now,
+            exp: Some(exp),
+            session_epoch: Some(session_epoch),
+            user_token_epoch: Some(0),
+            pwd_sig: Some(pwd_sig),
+        })
+    }
+
+    pub async fn verify_player_token_claims_only(
+        &self,
+        token: &str,
+    ) -> Option<(String, String, UserAccount, u64, String)> {
+        let claims = self.verify_session_token(token.trim())?;
+        let exp = claims.exp?;
+        if now_ms() > exp {
+            return None;
+        }
+        let self_id = claims.self_id?.trim().to_string();
+        let username = claims.username?.trim().to_string();
+        if self_id.is_empty() || username.is_empty() {
+            return None;
+        }
+        let claim_sess_epoch = claims.session_epoch?;
+        let claim_user_epoch = claims.user_token_epoch?;
+        let claim_pwd_sig = claims.pwd_sig?;
+
+        let cfg = self.users_cfg.read().await;
+        if claim_sess_epoch != cfg.session_epoch {
+            return None;
+        }
+        let found = cfg
+            .users
+            .iter()
+            .find(|u| u.username.eq_ignore_ascii_case(&username))?
+            .clone();
+        drop(cfg);
+
+        if claim_user_epoch != found.token_epoch {
+            return None;
+        }
+        let expected_sig = self.player_password_sig(&found);
+        if !constant_time_str_eq(&claim_pwd_sig, &expected_sig) {
+            return None;
+        }
+
+        Some((
+            self_id,
+            found.username.clone(),
+            found,
+            claim_sess_epoch,
+            expected_sig,
+        ))
+    }
+
+    /// Authoritatively verifies a player session token against:
+    /// 1. HMAC-SHA256 signature (`ELLA_HMAC_SECRET`)
+    /// 2. Expiration window (`exp`)
+    /// 3. Global server `session_epoch` (invalidates all tokens on global revoke)
+    /// 4. Account existence + per-user `token_epoch`
+    /// 5. Current password HMAC fingerprint (`pwd_sig`) — so rolling a password immediately expires old tokens!
+    /// 6. Parental controls (`world_locked`, `curfew_enabled`, and per-child `suspended`)
+    pub async fn verify_active_player_token(
+        &self,
+        token: &str,
+    ) -> Option<(String, String, UserAccount, u64, String)> {
+        let verified = self.verify_player_token_claims_only(token).await?;
+        if self.check_world_access_for_user(&verified.2).await.is_err() {
+            return None;
+        }
+        Some(verified)
+    }
+
+    pub async fn check_world_access_for_user(&self, user: &UserAccount) -> Result<(), String> {
+        let cfg = self.users_cfg.read().await;
+        check_world_access_for_cfg(&cfg, user)
+    }
+
+    pub async fn is_voice_allowed_for(&self, self_id: &str) -> bool {
+        if !self.global_voice_enabled.load(Ordering::Relaxed) {
+            return false;
+        }
+        self.players
+            .read()
+            .await
+            .get(self_id)
+            .map(|p| !p.server_voice_muted)
+            .unwrap_or(false)
+    }
+
+    pub async fn enforce_live_world_access(&self) {
+        if self.players.read().await.is_empty() {
+            return;
+        }
+        let (global_block_reason, suspended_users) = {
+            let cfg = self.users_cfg.read().await;
+            let global_reason = if cfg.world_locked {
+                Some(
+                    "⏸️ ELLA World was paused by a parent for a break! Check back soon."
+                        .to_string(),
+                )
+            } else if cfg.curfew_enabled
+                && is_within_curfew_window(
+                    local_minutes_since_midnight(),
+                    &cfg.curfew_start,
+                    &cfg.curfew_end,
+                )
+            {
+                Some(format!(
+                    "🌙 Bedtime curfew is active ({} – {})! Sweet dreams — see you tomorrow!",
+                    cfg.curfew_start, cfg.curfew_end
+                ))
+            } else {
+                None
+            };
+            let suspended: Vec<String> = cfg
+                .users
+                .iter()
+                .filter(|u| u.suspended)
+                .map(|u| u.username.clone())
+                .collect();
+            (global_reason, suspended)
+        };
+
+        if let Some(reason) = global_block_reason {
+            let _ = self.kick_and_remove_all_sessions(&reason).await;
+            return;
+        }
+
+        for uname in suspended_users {
+            let is_online = self
+                .players
+                .read()
+                .await
+                .values()
+                .any(|p| p.user.username.eq_ignore_ascii_case(&uname));
+            if is_online {
+                let _ = self
+                    .kick_and_remove_user_sessions(&uname, "Your account was paused by a parent.")
+                    .await;
+            }
+        }
+    }
+
+    pub async fn verify_active_admin_token(&self, token: &str) -> bool {
+        let Some(claims) = self.verify_session_token(token.trim()) else {
+            return false;
+        };
+        if claims.role.as_deref() != Some("admin") {
+            return false;
+        }
+        let Some(exp) = claims.exp else {
+            return false;
+        };
+        if now_ms() > exp {
+            return false;
+        }
+        let (Some(claim_sess_epoch), Some(claim_pwd_sig)) = (claims.session_epoch, claims.pwd_sig)
+        else {
+            return false;
+        };
+        let (sess_epoch, admin_pw) = {
+            let cfg = self.users_cfg.read().await;
+            (cfg.session_epoch, cfg.admin_password.clone())
+        };
+        if claim_sess_epoch != sess_epoch {
+            return false;
+        }
+        let expected_sig = self.admin_password_sig(&admin_pw);
+        constant_time_str_eq(&claim_pwd_sig, &expected_sig)
+    }
+
+    pub async fn is_session_still_authorized(
+        &self,
+        username: &str,
+        session_epoch: u64,
+        user_token_epoch: u64,
+        pwd_sig: &str,
+    ) -> bool {
+        let cfg = self.users_cfg.read().await;
+        if cfg.session_epoch != session_epoch {
+            return false;
+        }
+        let Some(user) = cfg
+            .users
+            .iter()
+            .find(|u| u.username.eq_ignore_ascii_case(username))
+        else {
+            return false;
+        };
+        if user.token_epoch != user_token_epoch {
+            return false;
+        }
+        if check_world_access_for_cfg(&cfg, user).is_err() {
+            return false;
+        }
+        let expected_sig = self.player_password_sig(user);
+        constant_time_str_eq(pwd_sig, &expected_sig)
+    }
+
+    pub async fn kick_and_remove_peer(&self, self_id: &str, reason: &str) {
+        let _ = self.session_revoke_tx.send(SessionRevokeSignal::PeerId {
+            self_id: self_id.to_string(),
+            reason: reason.to_string(),
+        });
+        self.remove_player_immediately(self_id).await;
+    }
+
+    pub async fn kick_and_remove_user_sessions(&self, username: &str, reason: &str) -> Vec<String> {
+        let clean = username.trim().to_lowercase();
+        let _ = self.session_revoke_tx.send(SessionRevokeSignal::Username {
+            username_lower: clean.clone(),
+            reason: reason.to_string(),
+        });
+        let peer_ids: Vec<String> = {
+            let map = self.players.read().await;
+            map.values()
+                .filter(|p| p.user.username.eq_ignore_ascii_case(&clean))
+                .map(|p| p.id.clone())
+                .collect()
+        };
+        for pid in &peer_ids {
+            self.remove_player_immediately(pid).await;
+        }
+        peer_ids
+    }
+
+    pub async fn kick_and_remove_all_sessions(&self, reason: &str) -> Vec<String> {
+        let _ = self.session_revoke_tx.send(SessionRevokeSignal::All {
+            reason: reason.to_string(),
+        });
+        let peer_ids: Vec<String> = {
+            let map = self.players.read().await;
+            map.keys().cloned().collect()
+        };
+        for pid in &peer_ids {
+            self.remove_player_immediately(pid).await;
+        }
+        peer_ids
     }
 
     pub async fn prune_stale_players(&self) {
@@ -373,25 +735,42 @@ impl WorldEngine {
         if let Some(existing) = map.get_mut(self_id) {
             existing.user = sanitized;
             existing.avatar_hash = avatar_hash;
+            existing.server_voice_muted = found_user.voice_muted_by_parent;
+            if found_user.in_debtors_prison && existing.zone != ZONE_PRISON {
+                existing.zone = ZONE_PRISON;
+                existing.x = PRISON_SPAWN_POS.0;
+                existing.y = PRISON_SPAWN_POS.1;
+                existing.z = PRISON_SPAWN_POS.2;
+            }
             existing.last_seen = now;
             existing.disconnected_at_ms = None;
             return Some(existing.clone());
         }
 
-        let (spawn_x, spawn_y, spawn_z, spawn_ry) =
-            Self::spawn_coords_for_user(map.len(), &found_user);
+        let (initial_zone, spawn_x, spawn_y, spawn_z, spawn_ry) = if found_user.in_debtors_prison {
+            (
+                ZONE_PRISON,
+                PRISON_SPAWN_POS.0,
+                PRISON_SPAWN_POS.1,
+                PRISON_SPAWN_POS.2,
+                0.0,
+            )
+        } else {
+            let (sx, sy, sz, sry) = Self::spawn_coords_for_user(map.len(), &found_user);
+            (ZONE_PLAZA, sx, sy, sz, sry)
+        };
         let player_doc = PlayerRuntimeState {
             id: self_id.to_string(),
             user: sanitized,
             avatar_hash,
-            zone: ZONE_PLAZA,
+            zone: initial_zone,
             x: spawn_x,
             y: spawn_y,
             z: spawn_z,
             ry: spawn_ry,
             anim: "idle".into(),
             emote: None,
-            muted: false,
+            muted: found_user.voice_muted_by_parent,
             speaking: false,
             last_seen: now,
             last_seq: 0,
@@ -403,6 +782,7 @@ impl WorldEngine {
             disconnected_at_ms: None,
             speed_boost_until_ms: 0,
             jump_boost_until_ms: 0,
+            server_voice_muted: found_user.voice_muted_by_parent,
         };
         map.insert(self_id.to_string(), player_doc.clone());
         drop(map);
@@ -484,12 +864,8 @@ impl WorldEngine {
             format!("peer_{clean_user}_{clean_cid}")
         };
 
-        let token = self.sign_session_token(&TokenClaims {
-            self_id: Some(self_id.clone()),
-            username: Some(found_user.username.clone()),
-            role: Some(found_user.role.clone()),
-            iat: now_ms(),
-        });
+        let session_epoch = self.users_cfg.read().await.session_epoch;
+        let token = self.mint_player_token(&self_id, found_user, session_epoch);
 
         let sanitized = found_user.sanitized();
         let avatar_hash = sanitized.avatar.short_hash();
@@ -500,25 +876,43 @@ impl WorldEngine {
             if let Some(existing) = map.get_mut(&self_id) {
                 existing.user = sanitized.clone();
                 existing.avatar_hash = avatar_hash;
+                existing.server_voice_muted = found_user.voice_muted_by_parent;
+                if found_user.in_debtors_prison && existing.zone != ZONE_PRISON {
+                    existing.zone = ZONE_PRISON;
+                    existing.x = PRISON_SPAWN_POS.0;
+                    existing.y = PRISON_SPAWN_POS.1;
+                    existing.z = PRISON_SPAWN_POS.2;
+                }
                 existing.last_seen = now;
                 existing.last_seq = 0;
                 existing.disconnected_at_ms = None;
                 (existing.clone(), false)
             } else {
-                let (spawn_x, spawn_y, spawn_z, spawn_ry) =
-                    Self::spawn_coords_for_user(map.len(), found_user);
+                let (initial_zone, spawn_x, spawn_y, spawn_z, spawn_ry) =
+                    if found_user.in_debtors_prison {
+                        (
+                            ZONE_PRISON,
+                            PRISON_SPAWN_POS.0,
+                            PRISON_SPAWN_POS.1,
+                            PRISON_SPAWN_POS.2,
+                            0.0,
+                        )
+                    } else {
+                        let (sx, sy, sz, sry) = Self::spawn_coords_for_user(map.len(), found_user);
+                        (ZONE_PLAZA, sx, sy, sz, sry)
+                    };
                 let doc = PlayerRuntimeState {
                     id: self_id.clone(),
                     user: sanitized.clone(),
                     avatar_hash,
-                    zone: ZONE_PLAZA,
+                    zone: initial_zone,
                     x: spawn_x,
                     y: spawn_y,
                     z: spawn_z,
                     ry: spawn_ry,
                     anim: "idle".into(),
                     emote: None,
-                    muted: false,
+                    muted: found_user.voice_muted_by_parent,
                     speaking: false,
                     last_seen: now,
                     last_seq: 0,
@@ -530,6 +924,7 @@ impl WorldEngine {
                     disconnected_at_ms: None,
                     speed_boost_until_ms: 0,
                     jump_boost_until_ms: 0,
+                    server_voice_muted: found_user.voice_muted_by_parent,
                 };
                 map.insert(self_id.clone(), doc.clone());
                 (doc, true)
@@ -566,7 +961,9 @@ impl WorldEngine {
             .collect();
         let runway_summary = self.runway.read().await.summary();
         let dungeon_snapshot = self.dungeon.read().await.snapshot();
+        let prison_snapshot = self.prison.read().await.snapshot();
         let economy_snapshot = found_user.economy_snapshot();
+        let moderation_snapshot = found_user.moderation_snapshot();
         let cfg = self.users_cfg.read().await;
 
         serde_json::json!({
@@ -575,8 +972,10 @@ impl WorldEngine {
             "self": player_doc,
             "user": sanitized,
             "economy": economy_snapshot,
+            "moderation": moderation_snapshot,
             "itemCatalog": ITEM_CATALOG,
             "dungeon": dungeon_snapshot,
+            "prison": prison_snapshot,
             "players": other_players,
             "blocks": blocks_snapshot.blocks,
             "blocksVersion": blocks_snapshot.version,
@@ -584,6 +983,14 @@ impl WorldEngine {
             "runway": runway_summary,
             "stateSeq": self.current_state_seq(),
             "serverTimeMs": now,
+            "parentalWorld": {
+                "globalVoiceEnabled": cfg.global_voice_enabled,
+                "globalChatMode": normalize_chat_mode(&cfg.global_chat_mode),
+                "safeQuickChatPhrases": SAFE_QUICK_CHAT_PHRASES,
+                "profanityFineBase": cfg.profanity_fine_base,
+                "debtPrisonThreshold": cfg.debt_prison_threshold,
+                "prisonStrikeThreshold": cfg.prison_strike_threshold,
+            },
             "worldMeta": {
                 "worldName": cfg.world_name,
                 "voiceDefaultMode": cfg.voice_default_mode,
@@ -624,7 +1031,25 @@ impl WorldEngine {
             .collect();
         let runway_summary = self.runway.read().await.summary();
         let dungeon_snapshot = self.dungeon.read().await.snapshot();
-        let economy_snapshot = self.get_player_economy(username).await.unwrap_or_default();
+        let prison_snapshot = self.prison.read().await.snapshot();
+        let (economy_snapshot, moderation_snapshot, parental_world) = {
+            let cfg = self.users_cfg.read().await;
+            let (econ, mod_snap) = cfg
+                .users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+                .map(|u| (u.economy_snapshot(), u.moderation_snapshot()))
+                .unwrap_or_default();
+            let pw = serde_json::json!({
+                "globalVoiceEnabled": cfg.global_voice_enabled,
+                "globalChatMode": normalize_chat_mode(&cfg.global_chat_mode),
+                "safeQuickChatPhrases": SAFE_QUICK_CHAT_PHRASES,
+                "profanityFineBase": cfg.profanity_fine_base,
+                "debtPrisonThreshold": cfg.debt_prison_threshold,
+                "prisonStrikeThreshold": cfg.prison_strike_threshold,
+            });
+            (econ, mod_snap, pw)
+        };
 
         Some(serde_json::json!({
             "type": "welcome_snapshot",
@@ -633,8 +1058,11 @@ impl WorldEngine {
             "selfId": self_id,
             "self": me,
             "economy": economy_snapshot,
+            "moderation": moderation_snapshot,
+            "parentalWorld": parental_world,
             "itemCatalog": ITEM_CATALOG,
             "dungeon": dungeon_snapshot,
+            "prison": prison_snapshot,
             "players": others,
             "blocks": blocks_snapshot.blocks,
             "blocksVersion": blocks_snapshot.version,
@@ -730,6 +1158,7 @@ impl WorldEngine {
         decoded: DecodedC2SState,
     ) {
         let now = now_ms();
+        let global_voice_ok = self.global_voice_enabled.load(Ordering::Relaxed);
         {
             let mut map = self.players.write().await;
             if let Some(p) = map.get_mut(self_id) {
@@ -747,15 +1176,26 @@ impl WorldEngine {
                 p.last_seq = decoded.seq;
                 p.last_client_time_ms = decoded.client_time_ms;
                 if decoded.zone == p.zone {
-                    p.x = decoded.x;
-                    p.y = decoded.y;
-                    p.z = decoded.z;
+                    if p.zone == ZONE_PRISON {
+                        p.x = decoded.x.clamp(-13.2, 13.2);
+                        p.y = decoded.y.clamp(0.0, 12.0);
+                        p.z = decoded.z.clamp(-13.2, 13.2);
+                    } else {
+                        p.x = decoded.x;
+                        p.y = decoded.y;
+                        p.z = decoded.z;
+                    }
                     p.ry = decoded.ry;
                     p.anim = decoded.anim;
                     p.emote = decoded.emote;
                 }
-                p.muted = decoded.muted;
-                p.speaking = decoded.speaking;
+                if !global_voice_ok || p.server_voice_muted {
+                    p.muted = true;
+                    p.speaking = false;
+                } else {
+                    p.muted = decoded.muted;
+                    p.speaking = decoded.speaking;
+                }
                 p.last_seen = now;
                 p.disconnected_at_ms = None;
                 if from_udp {
@@ -774,15 +1214,26 @@ impl WorldEngine {
                     p.last_seq = decoded.seq;
                     p.last_client_time_ms = decoded.client_time_ms;
                     if decoded.zone == p.zone {
-                        p.x = decoded.x;
-                        p.y = decoded.y;
-                        p.z = decoded.z;
+                        if p.zone == ZONE_PRISON {
+                            p.x = decoded.x.clamp(-13.2, 13.2);
+                            p.y = decoded.y.clamp(0.0, 12.0);
+                            p.z = decoded.z.clamp(-13.2, 13.2);
+                        } else {
+                            p.x = decoded.x;
+                            p.y = decoded.y;
+                            p.z = decoded.z;
+                        }
                         p.ry = decoded.ry;
                         p.anim = decoded.anim;
                         p.emote = decoded.emote;
                     }
-                    p.muted = decoded.muted;
-                    p.speaking = decoded.speaking;
+                    if !global_voice_ok || p.server_voice_muted {
+                        p.muted = true;
+                        p.speaking = false;
+                    } else {
+                        p.muted = decoded.muted;
+                        p.speaking = decoded.speaking;
+                    }
                     p.last_seen = now;
                     p.disconnected_at_ms = None;
                     if from_udp {
@@ -987,6 +1438,22 @@ impl WorldEngine {
         coords: (i32, i32, i32),
         color: Option<&str>,
     ) -> Result<(u64, Vec<VoxelBlock>), &'static str> {
+        {
+            let cfg = self.users_cfg.read().await;
+            if let Some(u) = cfg
+                .users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            {
+                if u.in_debtors_prison {
+                    return Err("Block building is disabled while in Debtor's Prison!");
+                }
+                if !u.can_build {
+                    return Err("Block building is currently locked for your account by a parent.");
+                }
+            }
+        }
+
         let (x, y, z) = coords;
         if !(-45..=45).contains(&x) || !(1..=60).contains(&y) || !(-45..=45).contains(&z) {
             return Err("Invalid block coordinates");
@@ -1068,6 +1535,41 @@ impl WorldEngine {
         Some(sanitized)
     }
 
+    pub async fn broadcast_system_chat_notice(&self, text: String) -> ChatMessage {
+        let ts = now_ms();
+        let entry = ChatMessage {
+            id: format!("{ts}-{:06x}", rand::random::<u32>() & 0xffffff),
+            sender_id: "judge_starlight".into(),
+            username: "judge_starlight".into(),
+            display_name: "⚖️ Judge Starlight".into(),
+            role: "system".into(),
+            text,
+            is_system: true,
+            is_trophy_win: false,
+            ts,
+        };
+        {
+            let mut chats = self.chats.write().await;
+            if chats.len() >= 60 {
+                chats.pop_front();
+            }
+            chats.push_back(entry.clone());
+        }
+        self.cached_chat_count.fetch_add(1, Ordering::Relaxed);
+        let store = Arc::clone(&self.store);
+        let entry_for_disk = entry.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = store.append_chat(&entry_for_disk);
+        });
+
+        let seq = self.next_state_seq();
+        let _ = self.udp_event_tx.send(UdpWorldEvent::Chat {
+            state_seq: seq,
+            chat: entry.clone(),
+        });
+        entry
+    }
+
     pub async fn post_chat(
         &self,
         self_id: &str,
@@ -1075,7 +1577,14 @@ impl WorldEngine {
         raw_text: Option<&str>,
         is_trophy_win: bool,
     ) -> Result<ChatMessage, String> {
-        let (disp_name, role, filter_enabled, blocked_words) = {
+        let (
+            disp_name,
+            role,
+            filter_enabled,
+            blocked_words,
+            effective_chat_mode,
+            in_debtors_prison,
+        ) = {
             let cfg = self.users_cfg.read().await;
             let Some(u) = cfg
                 .users
@@ -1084,14 +1593,30 @@ impl WorldEngine {
             else {
                 return Err("Account is no longer active.".into());
             };
+            check_world_access_for_cfg(&cfg, u)?;
+            let global_mode = normalize_chat_mode(&cfg.global_chat_mode);
+            let user_mode = normalize_chat_mode(&u.chat_mode);
+            let eff_mode = if global_mode == "muted" || user_mode == "muted" {
+                "muted".to_string()
+            } else if global_mode == "quick_only" || user_mode == "quick_only" {
+                "quick_only".to_string()
+            } else {
+                "normal".to_string()
+            };
             let s = u.sanitized();
             (
                 s.display_name,
                 s.role,
                 cfg.chat_filter_enabled,
                 cfg.blocked_words.clone(),
+                eff_mode,
+                u.in_debtors_prison,
             )
         };
+
+        if is_trophy_win && in_debtors_prison {
+            return Err("Trophy celebrations are disabled inside Debtor's Prison.".into());
+        }
 
         let ts = now_ms();
         let clean_text = if is_trophy_win {
@@ -1119,16 +1644,137 @@ impl WorldEngine {
         }
 
         if !is_trophy_win {
+            if effective_chat_mode == "muted" {
+                let blocked = BlockedChatEntry {
+                    id: format!("{ts}-{:06x}", rand::random::<u32>() & 0xffffff),
+                    sender_id: self_id.to_string(),
+                    username: username.to_string(),
+                    display_name: disp_name,
+                    text: clean_text,
+                    reason: "chat_muted".into(),
+                    matched_word: None,
+                    strike_number: None,
+                    fine_coins: None,
+                    balance_after: None,
+                    sentenced_to_prison: false,
+                    ts,
+                };
+                let store = Arc::clone(&self.store);
+                tokio::task::spawn_blocking(move || {
+                    let _ = store.append_blocked_chat(&blocked);
+                });
+                self.cached_blocked_chat_count
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(
+                    "🔇 Text chat is currently muted by a parent. Use Avatar Emotes (1–8) to wave!"
+                        .into(),
+                );
+            }
+
+            if effective_chat_mode == "quick_only"
+                && !SAFE_QUICK_CHAT_PHRASES.contains(&clean_text.as_str())
+            {
+                let blocked = BlockedChatEntry {
+                    id: format!("{ts}-{:06x}", rand::random::<u32>() & 0xffffff),
+                    sender_id: self_id.to_string(),
+                    username: username.to_string(),
+                    display_name: disp_name,
+                    text: clean_text,
+                    reason: "quick_chat_only".into(),
+                    matched_word: None,
+                    strike_number: None,
+                    fine_coins: None,
+                    balance_after: None,
+                    sentenced_to_prison: false,
+                    ts,
+                };
+                let store = Arc::clone(&self.store);
+                tokio::task::spawn_blocking(move || {
+                    let _ = store.append_blocked_chat(&blocked);
+                });
+                self.cached_blocked_chat_count
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(
+                    "🛡️ Safe Quick-Chat Mode is active! Please use the quick reaction buttons below the chat box."
+                        .into(),
+                );
+            }
+
             if filter_enabled {
                 if let Some(matched) = find_blocked_word(&clean_text, &blocked_words) {
+                    let (
+                        strike_num,
+                        fine_u64,
+                        balance_after,
+                        newly_sentenced,
+                        now_in_prison,
+                        sanitized_after,
+                    ) = {
+                        let mut cfg = self.users_cfg.write().await;
+                        let base_fine = cfg.profanity_fine_base;
+                        let debt_thresh = cfg.debt_prison_threshold;
+                        let strike_thresh = cfg.prison_strike_threshold;
+                        let Some(u) = cfg
+                            .users
+                            .iter_mut()
+                            .find(|u| u.username.eq_ignore_ascii_case(username))
+                        else {
+                            return Err("Account is no longer active.".into());
+                        };
+                        u.violation_strikes = u.violation_strikes.saturating_add(1);
+                        let strike = u.violation_strikes;
+                        let fine = calculate_escalating_fine(base_fine, strike);
+                        let fine_i64 = i64::try_from(fine).unwrap_or(500);
+                        u.coins = u.coins.saturating_sub(fine_i64);
+                        let bal = u.coins;
+
+                        let debt_triggered = bal <= debt_thresh;
+                        let strike_triggered = strike_thresh > 0 && strike >= strike_thresh;
+                        let newly = !u.in_debtors_prison && (debt_triggered || strike_triggered);
+                        if newly || u.in_debtors_prison {
+                            u.in_debtors_prison = true;
+                            u.prison_tasks_remaining = u.prison_tasks_remaining.max(3);
+                            if newly {
+                                u.prison_reason = Some(if debt_triggered {
+                                    format!("Unpaid chat fines ({bal} 🪙 debt, Strike #{strike})")
+                                } else {
+                                    format!("Habitual chat violations (Strike #{strike})")
+                                });
+                            }
+                        }
+                        (strike, fine, bal, newly, u.in_debtors_prison, u.sanitized())
+                    };
+
+                    self.persist_users_async().await;
+                    self.sync_runtime_user_state(username, &sanitized_after)
+                        .await;
+                    self.send_economy_update(self_id, username, "profanity_fine")
+                        .await;
+                    self.send_moderation_update(username, "profanity_fine")
+                        .await;
+
+                    if now_in_prison {
+                        self.warp_user_sessions_to_zone(
+                            username,
+                            ZONE_PRISON,
+                            PRISON_SPAWN_POS,
+                            "Sentenced to Debtor's Prison!",
+                        )
+                        .await;
+                    }
+
                     let blocked = BlockedChatEntry {
                         id: format!("{ts}-{:06x}", rand::random::<u32>() & 0xffffff),
                         sender_id: self_id.to_string(),
                         username: username.to_string(),
-                        display_name: disp_name,
+                        display_name: disp_name.clone(),
                         text: clean_text,
                         reason: "blocked_word".into(),
                         matched_word: Some(matched),
+                        strike_number: Some(strike_num),
+                        fine_coins: Some(fine_u64),
+                        balance_after: Some(balance_after),
+                        sentenced_to_prison: newly_sentenced,
                         ts,
                     };
                     let store = Arc::clone(&self.store);
@@ -1137,7 +1783,31 @@ impl WorldEngine {
                     });
                     self.cached_blocked_chat_count
                         .fetch_add(1, Ordering::Relaxed);
-                    return Err("Keep chat friendly! Please avoid inappropriate words.".into());
+
+                    let judge_msg = if newly_sentenced {
+                        format!(
+                            "⚖️ {disp_name} was fined -{fine_u64} 🪙 (Strike #{strike_num}, balance: {balance_after} 🪙) and sentenced to Debtor's Prison! Complete community service to clear your debt."
+                        )
+                    } else if now_in_prison {
+                        format!(
+                            "⚖️ {disp_name} received another -{fine_u64} 🪙 fine inside Debtor's Prison (Strike #{strike_num}, balance: {balance_after} 🪙)!"
+                        )
+                    } else {
+                        format!(
+                            "⚖️ {disp_name} was fined -{fine_u64} 🪙 for unkind language (Strike #{strike_num}, balance: {balance_after} 🪙). Repeat violations lead to Debtor's Prison!"
+                        )
+                    };
+                    let _ = self.broadcast_system_chat_notice(judge_msg).await;
+
+                    return Err(if newly_sentenced || now_in_prison {
+                        format!(
+                            "⚖️ Unkind word blocked! Fined -{fine_u64} 🪙 (Strike #{strike_num}, balance: {balance_after} 🪙). Sentenced to Debtor's Prison — complete community service stations to clear your debt!"
+                        )
+                    } else {
+                        format!(
+                            "⚖️ Unkind word blocked! Fined -{fine_u64} 🪙 (Strike #{strike_num}, balance: {balance_after} 🪙). Habitual violations lead to Debtor's Prison!"
+                        )
+                    });
                 }
             }
 
@@ -1159,6 +1829,10 @@ impl WorldEngine {
                     text: clean_text,
                     reason: "rate_limit".into(),
                     matched_word: None,
+                    strike_number: None,
+                    fine_coins: None,
+                    balance_after: None,
+                    sentenced_to_prison: false,
                     ts,
                 };
                 let store = Arc::clone(&self.store);
@@ -1218,6 +1892,17 @@ impl WorldEngine {
         target_username: Option<&str>,
         stars: Option<u8>,
     ) -> RunwayPublicSummary {
+        let imprisoned = {
+            let cfg = self.users_cfg.read().await;
+            cfg.users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+                .map(|u| u.in_debtors_prison)
+                .unwrap_or(false)
+        };
+        if imprisoned {
+            return self.runway.read().await.summary();
+        }
         let mut rw = self.runway.write().await;
         if action == "theme" {
             let next_theme = theme
@@ -1353,6 +2038,200 @@ impl WorldEngine {
         }
     }
 
+    pub async fn get_player_moderation(&self, username: &str) -> Option<PlayerModerationSnapshot> {
+        let cfg = self.users_cfg.read().await;
+        cfg.users
+            .iter()
+            .find(|u| u.username.eq_ignore_ascii_case(username))
+            .map(UserAccount::moderation_snapshot)
+    }
+
+    pub async fn sync_runtime_user_state(&self, username: &str, sanitized: &SanitizedUser) {
+        let avatar_hash = sanitized.avatar.short_hash();
+        let voice_muted = sanitized.moderation.voice_muted_by_parent;
+        let global_voice_ok = self.global_voice_enabled.load(Ordering::Relaxed);
+        let mut map = self.players.write().await;
+        for p in map.values_mut() {
+            if p.user.username.eq_ignore_ascii_case(username) {
+                p.user = sanitized.clone();
+                p.avatar_hash = avatar_hash.clone();
+                p.server_voice_muted = voice_muted;
+                if !global_voice_ok || voice_muted {
+                    p.muted = true;
+                    p.speaking = false;
+                }
+            }
+        }
+    }
+
+    pub async fn send_moderation_update(&self, username: &str, reason: &str) {
+        let (Some(moderation), Some(economy)) = (
+            self.get_player_moderation(username).await,
+            self.get_player_economy(username).await,
+        ) else {
+            return;
+        };
+        let peer_ids: Vec<String> = {
+            let map = self.players.read().await;
+            map.values()
+                .filter(|p| p.user.username.eq_ignore_ascii_case(username))
+                .map(|p| p.id.clone())
+                .collect()
+        };
+        let payload = serde_json::json!({
+            "type": "moderation_update",
+            "reason": reason,
+            "moderation": moderation,
+            "economy": economy,
+        })
+        .to_string();
+        for pid in peer_ids {
+            let _ = self.send_peer_targeted_json(&pid, payload.clone()).await;
+        }
+    }
+
+    pub async fn broadcast_parental_world_settings(&self) {
+        let (global_voice, global_chat, fine_base, debt_thresh, strike_thresh) = {
+            let cfg = self.users_cfg.read().await;
+            (
+                cfg.global_voice_enabled,
+                normalize_chat_mode(&cfg.global_chat_mode),
+                cfg.profanity_fine_base,
+                cfg.debt_prison_threshold,
+                cfg.prison_strike_threshold,
+            )
+        };
+        self.global_voice_enabled
+            .store(global_voice, Ordering::Relaxed);
+
+        let peer_ids: Vec<String> = {
+            let mut map = self.players.write().await;
+            if !global_voice {
+                for p in map.values_mut() {
+                    p.muted = true;
+                    p.speaking = false;
+                }
+            }
+            map.keys().cloned().collect()
+        };
+
+        let payload = serde_json::json!({
+            "type": "parental_settings_update",
+            "parentalWorld": {
+                "globalVoiceEnabled": global_voice,
+                "globalChatMode": global_chat,
+                "safeQuickChatPhrases": SAFE_QUICK_CHAT_PHRASES,
+                "profanityFineBase": fine_base,
+                "debtPrisonThreshold": debt_thresh,
+                "prisonStrikeThreshold": strike_thresh,
+            }
+        })
+        .to_string();
+        for pid in peer_ids {
+            let _ = self.send_peer_targeted_json(&pid, payload.clone()).await;
+        }
+    }
+
+    pub async fn warp_user_sessions_to_zone(
+        &self,
+        username: &str,
+        target_zone: u8,
+        coords: (f32, f32, f32),
+        cancel_trade_reason: &str,
+    ) {
+        let affected_ids: Vec<String> = {
+            let mut map = self.players.write().await;
+            let mut ids = Vec::new();
+            let now = now_ms();
+            for p in map.values_mut() {
+                if p.user.username.eq_ignore_ascii_case(username) {
+                    p.zone = target_zone;
+                    p.x = coords.0;
+                    p.y = coords.1;
+                    p.z = coords.2;
+                    p.anim = "idle".into();
+                    p.emote = None;
+                    p.last_seen = now;
+                    ids.push(p.id.clone());
+                }
+            }
+            ids
+        };
+
+        if affected_ids.is_empty() {
+            return;
+        }
+
+        let dungeon_snapshot = self.dungeon.read().await.snapshot();
+        let prison_snapshot = self.prison.read().await.snapshot();
+
+        for pid in affected_ids {
+            self.cancel_trades_for_peer(&pid, cancel_trade_reason).await;
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::PlayerZone {
+                state_seq: seq,
+                id: pid.clone(),
+                zone: target_zone,
+                x: coords.0,
+                y: coords.1,
+                z: coords.2,
+            });
+            let response = serde_json::json!({
+                "ok": true,
+                "type": "zone_transitioned",
+                "stateSeq": seq,
+                "zone": target_zone,
+                "x": coords.0,
+                "y": coords.1,
+                "z": coords.2,
+                "plazaPortalPos": [PLAZA_PORTAL_POS.0, PLAZA_PORTAL_POS.1, PLAZA_PORTAL_POS.2],
+                "returnPortalPos": [
+                    DUNGEON_RETURN_PORTAL_POS.0,
+                    DUNGEON_RETURN_PORTAL_POS.1,
+                    DUNGEON_RETURN_PORTAL_POS.2
+                ],
+                "prisonReleasePortalPos": [
+                    PRISON_RELEASE_PORTAL_POS.0,
+                    PRISON_RELEASE_PORTAL_POS.1,
+                    PRISON_RELEASE_PORTAL_POS.2
+                ],
+                "dungeon": dungeon_snapshot,
+                "prison": prison_snapshot,
+            });
+            let _ = self
+                .send_peer_targeted_json(&pid, response.to_string())
+                .await;
+        }
+    }
+
+    pub async fn tick_prison_if_occupied(&self) {
+        let any_in_prison = {
+            let map = self.players.read().await;
+            map.values().any(|p| p.zone == ZONE_PRISON)
+        };
+        if !any_in_prison {
+            return;
+        }
+        let now = now_ms();
+        let maybe_snapshot = {
+            let mut pr = self.prison.write().await;
+            if pr.tick(now) {
+                Some(pr.snapshot())
+            } else {
+                None
+            }
+        };
+        if let Some(prison) = maybe_snapshot {
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::PrisonSync {
+                state_seq: seq,
+                event: Some("tick".into()),
+                actor_id: None,
+                prison,
+            });
+        }
+    }
+
     pub async fn tick_dungeon_if_occupied(&self) {
         let any_in_dungeon = {
             let map = self.players.read().await;
@@ -1394,10 +2273,62 @@ impl WorldEngine {
         if target_zone != ZONE_PLAZA && target_zone != ZONE_DUNGEON {
             return Err("Unknown world zone.".into());
         }
-        let _ = self
+        let current_player = self
             .ensure_player_online(self_id, username)
             .await
             .ok_or_else(|| "Player session not active.".to_string())?;
+
+        // Enforce Debtor's Prison containment & release eligibility
+        let mut released_disp_name: Option<String> = None;
+        let mut released_sanitized: Option<SanitizedUser> = None;
+        let mod_snapshot = {
+            let mut cfg = self.users_cfg.write().await;
+            if let Some(user) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            {
+                if user.in_debtors_prison || current_player.zone == ZONE_PRISON {
+                    if target_zone != ZONE_PLAZA {
+                        return Err(
+                            "Finish your Debtor's Prison sentence and return to Starlight Plaza first!"
+                                .into(),
+                        );
+                    }
+                    if user.coins < 0 || user.prison_tasks_remaining > 0 {
+                        let rem_debt = (-user.coins).max(0);
+                        let rem_tasks = user.prison_tasks_remaining;
+                        return Err(format!(
+                            "🔒 Release Gate locked! Work off your remaining debt ({rem_debt} 🪙 left) and community service ({rem_tasks} chores left) — or ask a parent for a pardon."
+                        ));
+                    }
+                    if user.in_debtors_prison {
+                        user.in_debtors_prison = false;
+                        user.prison_reason = None;
+                        user.prison_tasks_remaining = 0;
+                        released_disp_name = Some(user.display_name.clone());
+                        released_sanitized = Some(user.sanitized());
+                    }
+                }
+                user.moderation_snapshot()
+            } else {
+                PlayerModerationSnapshot::default()
+            }
+        };
+
+        if let Some(ref san) = released_sanitized {
+            self.persist_users_async().await;
+            self.sync_runtime_user_state(username, san).await;
+            self.send_moderation_update(username, "served_prison_sentence")
+                .await;
+            if let Some(disp) = released_disp_name {
+                let _ = self
+                    .broadcast_system_chat_notice(format!(
+                        "⚖️ {disp} completed community service, cleared all negative debt, and has been released from Debtor's Prison! Welcome back to Starlight Plaza!"
+                    ))
+                    .await;
+            }
+        }
 
         let (nx, ny, nz) = if target_zone == ZONE_DUNGEON {
             DUNGEON_SPAWN_POS
@@ -1430,6 +2361,7 @@ impl WorldEngine {
         });
 
         let dungeon_snapshot = self.dungeon.read().await.snapshot();
+        let prison_snapshot = self.prison.read().await.snapshot();
         let response = serde_json::json!({
             "ok": true,
             "type": "zone_transitioned",
@@ -1444,12 +2376,127 @@ impl WorldEngine {
                 DUNGEON_RETURN_PORTAL_POS.1,
                 DUNGEON_RETURN_PORTAL_POS.2
             ],
+            "prisonReleasePortalPos": [
+                PRISON_RELEASE_PORTAL_POS.0,
+                PRISON_RELEASE_PORTAL_POS.1,
+                PRISON_RELEASE_PORTAL_POS.2
+            ],
             "dungeon": dungeon_snapshot,
+            "prison": prison_snapshot,
+            "moderation": mod_snapshot,
         });
         let _ = self
             .send_peer_targeted_json(self_id, response.to_string())
             .await;
         Ok(response)
+    }
+
+    pub async fn prison_perform_work(
+        &self,
+        self_id: &str,
+        username: &str,
+        node_id: &str,
+    ) -> Result<serde_json::Value, String> {
+        let (p_zone, px, py, pz) = {
+            let map = self.players.read().await;
+            let Some(p) = map.get(self_id) else {
+                return Err("Player session not found.".into());
+            };
+            (p.zone, p.x, p.y, p.z)
+        };
+        if p_zone != ZONE_PRISON {
+            return Err("You are not inside the Debtor's Prison courtyard.".into());
+        }
+
+        let now = now_ms();
+        {
+            let cooldowns = self.prison_work_cooldowns.read().await;
+            if let Some(&last_ts) = cooldowns.get(&username.to_lowercase()) {
+                if now.saturating_sub(last_ts) < 1_500 {
+                    return Err(
+                        "Catch your breath for a second before starting the next chore!".into(),
+                    );
+                }
+            }
+        }
+
+        let (station_label, snapshot) = {
+            let mut pr = self.prison.write().await;
+            let Some(idx) = pr.nodes.iter().position(|n| n.id == node_id) else {
+                return Err("Community service station not found.".into());
+            };
+            let nx = pr.nodes[idx].x;
+            let ny = pr.nodes[idx].y;
+            let nz = pr.nodes[idx].z;
+            let dist = ((px - nx).powi(2) + (py - ny).powi(2) + (pz - nz).powi(2)).sqrt();
+            if dist > 6.2 {
+                return Err("Walk a little closer to work at that station!".into());
+            }
+            if !pr.nodes[idx].available {
+                return Err(
+                    "That station was just tidied! Walk over to another glowing station.".into(),
+                );
+            }
+            let label = format!("{} {}", pr.nodes[idx].icon, pr.nodes[idx].name);
+            pr.nodes[idx].available = false;
+            pr.nodes[idx].ready_at_ms = now + 6_000;
+            (label, pr.snapshot())
+        };
+
+        self.prison_work_cooldowns
+            .write()
+            .await
+            .insert(username.to_lowercase(), now);
+
+        let (earned_toward_debt, ready_for_release, sanitized, econ, mod_snap) = {
+            let mut cfg = self.users_cfg.write().await;
+            let Some(user) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            else {
+                return Err("Account not found.".into());
+            };
+            let before = user.coins;
+            if user.coins < 0 {
+                user.coins = (user.coins + PRISON_WORK_REWARD_COINS).min(0);
+            }
+            let earned = (user.coins - before).max(0);
+            user.prison_tasks_remaining = user.prison_tasks_remaining.saturating_sub(1);
+            let ready = user.coins >= 0 && user.prison_tasks_remaining == 0;
+            (
+                earned,
+                ready,
+                user.sanitized(),
+                user.economy_snapshot(),
+                user.moderation_snapshot(),
+            )
+        };
+
+        self.persist_users_async().await;
+        self.sync_runtime_user_state(username, &sanitized).await;
+
+        let seq = self.next_state_seq();
+        let _ = self.udp_event_tx.send(UdpWorldEvent::PrisonSync {
+            state_seq: seq,
+            event: Some(format!("work:{node_id}")),
+            actor_id: Some(self_id.to_string()),
+            prison: snapshot.clone(),
+        });
+
+        self.send_economy_update(self_id, username, "prison_work")
+            .await;
+        self.send_moderation_update(username, "prison_work").await;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "stationLabel": station_label,
+            "earnedTowardDebt": earned_toward_debt,
+            "readyForRelease": ready_for_release,
+            "economy": econ,
+            "moderation": mod_snap,
+            "prison": snapshot,
+        }))
     }
 
     pub async fn dungeon_interact_node(
@@ -1683,7 +2730,9 @@ impl WorldEngine {
             else {
                 return Err("Account not found.".into());
             };
-            user.coins = user.coins.saturating_add(picked.coins);
+            user.coins = user
+                .coins
+                .saturating_add(i64::try_from(picked.coins).unwrap_or(0));
             if let Some(ref item_id) = picked.item_id {
                 add_inventory_item(&mut user.inventory, item_id, picked.qty.max(1));
             }
@@ -1742,6 +2791,10 @@ impl WorldEngine {
             (p.zone, p.x, p.y, p.z)
         };
 
+        if p_zone == ZONE_PRISON {
+            return Err("Inventory items cannot be used while inside Debtor's Prison!".into());
+        }
+
         if def.id == "prism_block" && p_zone != ZONE_PLAZA {
             return Err(
                 "Return through the portal to Starlight Plaza to place Prism Sparkle Blocks!"
@@ -1758,6 +2811,9 @@ impl WorldEngine {
             else {
                 return Err("Account not found.".into());
             };
+            if user.in_debtors_prison {
+                return Err("Inventory items cannot be used while inside Debtor's Prison!".into());
+            }
             if !remove_inventory_item(&mut user.inventory, def.id, 1) {
                 return Err(format!("You don't have any {} left!", def.name));
             }
@@ -1911,12 +2967,55 @@ impl WorldEngine {
             if me.user.username.eq_ignore_ascii_case(&them.user.username) {
                 return Err("You cannot trade between two tabs of the same account.".into());
             }
+            if me.zone == ZONE_PRISON {
+                return Err("Trading is locked while serving a Debtor's Prison sentence!".into());
+            }
+            if them.zone == ZONE_PRISON {
+                return Err(format!(
+                    "{} is currently in Debtor's Prison and cannot trade.",
+                    them.user.display_name
+                ));
+            }
             (
                 me.user.display_name.clone(),
                 them.user.username.clone(),
                 them.user.display_name.clone(),
             )
         };
+
+        {
+            let cfg = self.users_cfg.read().await;
+            if let Some(me_u) = cfg
+                .users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            {
+                if me_u.in_debtors_prison {
+                    return Err(
+                        "Trading is locked while serving a Debtor's Prison sentence!".into(),
+                    );
+                }
+                if !me_u.can_trade {
+                    return Err("Trading is currently disabled on your account by a parent.".into());
+                }
+            }
+            if let Some(them_u) = cfg
+                .users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(&part_user))
+            {
+                if them_u.in_debtors_prison {
+                    return Err(format!(
+                        "{part_disp} is currently in Debtor's Prison and cannot trade."
+                    ));
+                }
+                if !them_u.can_trade {
+                    return Err(format!(
+                        "Trading is currently disabled by a parent for {part_disp}."
+                    ));
+                }
+            }
+        }
 
         let now = now_ms();
         let mut stale_pending = Vec::new();
@@ -2013,6 +3112,35 @@ impl WorldEngine {
                     .await;
             }
             return Ok(None);
+        }
+
+        let (init_uname_check, part_uname_check) = {
+            let trades = self.trades.read().await;
+            let Some(s) = trades.get(trade_id) else {
+                return Err("Trade invite expired or was already closed.".into());
+            };
+            (s.initiator_username.clone(), s.partner_username.clone())
+        };
+        {
+            let cfg = self.users_cfg.read().await;
+            for uname_chk in [&init_uname_check, &part_uname_check] {
+                if let Some(u) = cfg
+                    .users
+                    .iter()
+                    .find(|u| u.username.eq_ignore_ascii_case(uname_chk))
+                {
+                    if u.in_debtors_prison {
+                        return Err(
+                            "Trading is locked while serving a Debtor's Prison sentence!".into(),
+                        );
+                    }
+                    if !u.can_trade {
+                        return Err(
+                            "Trading is disabled by a parent for one of the players.".into()
+                        );
+                    }
+                }
+            }
         }
 
         let accepted_sess = {
@@ -2178,22 +3306,31 @@ impl WorldEngine {
                         let (left, right) = cfg.users.split_at_mut(ia);
                         (&mut right[0], &mut left[ib])
                     };
-                    execute_atomic_trade_swap(
-                        user_a,
-                        &target_sess.initiator_offer,
-                        user_b,
-                        &target_sess.partner_offer,
-                    )
-                    .map(|(av_a, av_b)| {
-                        (
-                            av_a,
-                            av_b,
-                            user_a.sanitized(),
-                            user_b.sanitized(),
-                            user_a.economy_snapshot(),
-                            user_b.economy_snapshot(),
+                    if user_a.in_debtors_prison || user_b.in_debtors_prison {
+                        Err(
+                            "Trade cancelled: players in Debtor's Prison cannot complete trades."
+                                .into(),
                         )
-                    })
+                    } else if !user_a.can_trade || !user_b.can_trade {
+                        Err("Trade cancelled: trading is disabled by a parent.".into())
+                    } else {
+                        execute_atomic_trade_swap(
+                            user_a,
+                            &target_sess.initiator_offer,
+                            user_b,
+                            &target_sess.partner_offer,
+                        )
+                        .map(|(av_a, av_b)| {
+                            (
+                                av_a,
+                                av_b,
+                                user_a.sanitized(),
+                                user_b.sanitized(),
+                                user_a.economy_snapshot(),
+                                user_b.economy_snapshot(),
+                            )
+                        })
+                    }
                 }
                 _ => Err("One of the trading accounts could not be found.".into()),
             }
@@ -2333,6 +3470,305 @@ impl WorldEngine {
         }
         Ok(())
     }
+
+    pub async fn admin_moderate_user(
+        &self,
+        input: AdminModerateUserInput,
+    ) -> Result<serde_json::Value, String> {
+        let uname = input.username.trim().to_lowercase();
+        if uname.is_empty() {
+            return Err("Username is required.".into());
+        }
+        let action = input.action.trim().to_lowercase();
+
+        let mut warp_to_prison = false;
+        let mut warp_to_plaza = false;
+        let mut cancel_trades = false;
+        let mut system_notice: Option<String> = None;
+
+        let (sanitized, econ, mod_snap, now_suspended) = {
+            let mut cfg = self.users_cfg.write().await;
+            let debt_thresh = cfg.debt_prison_threshold;
+            let Some(user) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(&uname))
+            else {
+                return Err(format!("Account @{uname} not found."));
+            };
+
+            match action.as_str() {
+                "update_controls" => {
+                    if let Some(vm) = input.voice_muted_by_parent {
+                        user.voice_muted_by_parent = vm;
+                    }
+                    if let Some(ref cm) = input.chat_mode {
+                        user.chat_mode = normalize_chat_mode(cm);
+                    }
+                    if let Some(cb) = input.can_build {
+                        user.can_build = cb;
+                    }
+                    if let Some(ct) = input.can_trade {
+                        user.can_trade = ct;
+                        if !ct {
+                            cancel_trades = true;
+                        }
+                    }
+                    if let Some(susp) = input.suspended {
+                        user.suspended = susp;
+                    }
+                }
+                "sentence_prison" => {
+                    if let Some(delta) = input.coin_delta {
+                        user.coins = user
+                            .coins
+                            .saturating_add(delta)
+                            .clamp(-1_000_000, 1_000_000);
+                    }
+                    let tasks = input.prison_tasks.unwrap_or(4).clamp(1, 25);
+                    let reason_text: String = input
+                        .reason
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("Sentenced to Debtor's Prison by Parent Judge.")
+                        .chars()
+                        .take(140)
+                        .collect();
+                    user.in_debtors_prison = true;
+                    user.prison_tasks_remaining = tasks;
+                    user.prison_reason = Some(reason_text.clone());
+                    warp_to_prison = true;
+                    cancel_trades = true;
+                    system_notice = Some(format!(
+                        "⚖️ {} was sentenced to Debtor's Prison ({tasks} community-service chores, balance: {} 🪙): {reason_text}",
+                        user.display_name, user.coins
+                    ));
+                }
+                "pardon_prison" => {
+                    let was_imprisoned = user.in_debtors_prison;
+                    let had_debt = user.coins < 0;
+                    user.in_debtors_prison = false;
+                    user.prison_reason = None;
+                    user.prison_tasks_remaining = 0;
+                    if user.coins < 0 {
+                        user.coins = 0;
+                    }
+                    warp_to_plaza = was_imprisoned;
+                    if was_imprisoned || had_debt {
+                        system_notice = Some(format!(
+                            "⚖️ {} received a Parent Pardon! Negative debt cleared and welcomed back to Starlight Plaza.",
+                            user.display_name
+                        ));
+                    }
+                }
+                "adjust_coins" => {
+                    let delta = input.coin_delta.unwrap_or(0);
+                    if delta == 0 {
+                        return Err("Specify a non-zero coin adjustment.".into());
+                    }
+                    user.coins = user
+                        .coins
+                        .saturating_add(delta)
+                        .clamp(-1_000_000, 1_000_000);
+                    if delta < 0 && user.coins <= debt_thresh && !user.in_debtors_prison {
+                        user.in_debtors_prison = true;
+                        user.prison_tasks_remaining = user.prison_tasks_remaining.max(3);
+                        user.prison_reason = Some(format!(
+                            "Account balance dropped to {} 🪙 (below {} 🪙 debt threshold).",
+                            user.coins, debt_thresh
+                        ));
+                        warp_to_prison = true;
+                        cancel_trades = true;
+                        system_notice = Some(format!(
+                            "⚖️ {}'s balance reached {} 🪙 and was sentenced to Debtor's Prison!",
+                            user.display_name, user.coins
+                        ));
+                    }
+                }
+                "reset_strikes" => {
+                    user.violation_strikes = 0;
+                }
+                _ => return Err("Unknown moderation action.".into()),
+            }
+
+            (
+                user.sanitized(),
+                user.economy_snapshot(),
+                user.moderation_snapshot(),
+                user.suspended,
+            )
+        };
+
+        self.persist_users_async().await;
+        self.sync_runtime_user_state(&uname, &sanitized).await;
+
+        if cancel_trades {
+            let peer_ids: Vec<String> = {
+                let map = self.players.read().await;
+                map.values()
+                    .filter(|p| p.user.username.eq_ignore_ascii_case(&uname))
+                    .map(|p| p.id.clone())
+                    .collect()
+            };
+            for pid in peer_ids {
+                self.cancel_trades_for_peer(&pid, "Trading restricted by parental controls.")
+                    .await;
+            }
+        }
+
+        if warp_to_prison {
+            self.warp_user_sessions_to_zone(
+                &uname,
+                ZONE_PRISON,
+                PRISON_SPAWN_POS,
+                "Sentenced to Debtor's Prison!",
+            )
+            .await;
+        } else if warp_to_plaza {
+            let any_in_prison = {
+                let map = self.players.read().await;
+                map.values()
+                    .any(|p| p.user.username.eq_ignore_ascii_case(&uname) && p.zone == ZONE_PRISON)
+            };
+            if any_in_prison {
+                self.warp_user_sessions_to_zone(
+                    &uname,
+                    ZONE_PLAZA,
+                    PLAZA_RETURN_SPAWN_POS,
+                    "Pardoned from Debtor's Prison.",
+                )
+                .await;
+            }
+        }
+
+        let online_peer = {
+            let map = self.players.read().await;
+            map.values()
+                .find(|p| p.user.username.eq_ignore_ascii_case(&uname))
+                .map(|p| p.id.clone())
+                .unwrap_or_default()
+        };
+        if !online_peer.is_empty() {
+            self.send_economy_update(&online_peer, &uname, &format!("admin:{action}"))
+                .await;
+        }
+        self.send_moderation_update(&uname, &format!("admin:{action}"))
+            .await;
+
+        if let Some(notice) = system_notice {
+            let _ = self.broadcast_system_chat_notice(notice).await;
+        }
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "action": action,
+            "username": uname,
+            "suspended": now_suspended,
+            "economy": econ,
+            "moderation": mod_snap,
+        }))
+    }
+}
+
+pub fn check_world_access_for_cfg(cfg: &UsersConfigFile, user: &UserAccount) -> Result<(), String> {
+    if cfg.world_locked {
+        return Err(
+            "⏸️ ELLA World is currently paused by a parent! Ask a parent to unlock the world."
+                .into(),
+        );
+    }
+    if cfg.curfew_enabled
+        && is_within_curfew_window(
+            local_minutes_since_midnight(),
+            &cfg.curfew_start,
+            &cfg.curfew_end,
+        )
+    {
+        return Err(format!(
+            "🌙 Bedtime curfew is active ({} – {})! Sweet dreams — see you tomorrow!",
+            cfg.curfew_start, cfg.curfew_end
+        ));
+    }
+    if user.suspended {
+        return Err(
+            "🚫 Your account is currently paused by a parent. Ask a parent to re-enable access!"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+pub fn parse_hhmm_minutes(s: &str) -> Option<u16> {
+    let trimmed = s.trim();
+    let (h_str, m_str) = trimmed.split_once(':')?;
+    let h: u16 = h_str.trim().parse().ok()?;
+    let m: u16 = m_str.trim().parse().ok()?;
+    if h >= 24 || m >= 60 {
+        return None;
+    }
+    Some(h * 60 + m)
+}
+
+pub fn is_within_curfew_window(now_mins: u16, start_hhmm: &str, end_hhmm: &str) -> bool {
+    let (Some(start), Some(end)) = (parse_hhmm_minutes(start_hhmm), parse_hhmm_minutes(end_hhmm))
+    else {
+        return false;
+    };
+    if start == end {
+        return false;
+    }
+    if start < end {
+        now_mins >= start && now_mins < end
+    } else {
+        // Overnight window (e.g. 21:00 -> 07:00)
+        now_mins >= start || now_mins < end
+    }
+}
+
+fn local_utc_offset_seconds(unix_secs: i64) -> i64 {
+    let Ok(bytes) = std::fs::read("/etc/localtime") else {
+        return 0;
+    };
+    if bytes.len() < 44 || &bytes[0..4] != b"TZif" {
+        return 0;
+    }
+    let timecnt = u32::from_be_bytes([bytes[32], bytes[33], bytes[34], bytes[35]]) as usize;
+    let typecnt = u32::from_be_bytes([bytes[36], bytes[37], bytes[38], bytes[39]]) as usize;
+    if typecnt == 0 {
+        return 0;
+    }
+    let trans_start = 44usize;
+    let types_start = trans_start.saturating_add(timecnt.saturating_mul(4));
+    let ttinfo_start = types_start.saturating_add(timecnt);
+    let ttinfo_end = ttinfo_start.saturating_add(typecnt.saturating_mul(6));
+    if bytes.len() < ttinfo_end {
+        return 0;
+    }
+
+    let mut chosen_type_idx: usize = 0;
+    let clamped_ts = unix_secs.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    for i in 0..timecnt {
+        let off = trans_start + i * 4;
+        let t = i32::from_be_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
+        if t <= clamped_ts {
+            chosen_type_idx = bytes[types_start + i] as usize;
+        } else {
+            break;
+        }
+    }
+    if chosen_type_idx >= typecnt {
+        chosen_type_idx = 0;
+    }
+    let rec = ttinfo_start + chosen_type_idx * 6;
+    i32::from_be_bytes([bytes[rec], bytes[rec + 1], bytes[rec + 2], bytes[rec + 3]]) as i64
+}
+
+pub fn local_minutes_since_midnight() -> u16 {
+    let unix_secs = (now_ms() / 1_000) as i64;
+    let local_secs = unix_secs.saturating_add(local_utc_offset_seconds(unix_secs));
+    let secs_of_day = local_secs.rem_euclid(86_400);
+    (secs_of_day / 60) as u16
 }
 
 fn normalize_leet_char(c: char) -> Option<char> {
@@ -2340,13 +3776,18 @@ fn normalize_leet_char(c: char) -> Option<char> {
     match lc {
         'a'..='z' => Some(lc),
         '0' => Some('o'),
-        '1' | '!' => Some('i'),
+        '1' | '!' | '|' => Some('i'),
         '3' => Some('e'),
         '4' | '@' => Some('a'),
         '5' | '$' => Some('s'),
         '7' => Some('t'),
         _ => None,
     }
+}
+
+fn has_non_numeric_signal(raw: &str) -> bool {
+    raw.chars()
+        .any(|c| c.is_ascii_alphabetic() || matches!(c, '@' | '$' | '!'))
 }
 
 fn collapse_repeats(s: &str) -> String {
@@ -2361,60 +3802,217 @@ fn collapse_repeats(s: &str) -> String {
     out
 }
 
+fn matches_single_blocked_token(
+    alnum_token: &str,
+    collapsed: &str,
+    single_blocked: &[(String, String)],
+    safe_substring_roots: &[&str],
+) -> Option<String> {
+    for (bw, collapsed_bw) in single_blocked {
+        if alnum_token == bw || collapsed == collapsed_bw {
+            return Some(bw.clone());
+        }
+        if bw.len() >= 4
+            && safe_substring_roots.iter().any(|root| bw.contains(root))
+            && (alnum_token.contains(bw.as_str()) || collapsed.contains(collapsed_bw.as_str()))
+        {
+            return Some(bw.clone());
+        }
+    }
+    None
+}
+
 pub fn find_blocked_word(text: &str, blocked_words: &[String]) -> Option<String> {
     if blocked_words.is_empty() {
         return None;
     }
 
-    let normalized_blocked: Vec<String> = blocked_words
-        .iter()
-        .map(|w| {
-            w.trim()
-                .chars()
-                .filter_map(normalize_leet_char)
-                .collect::<String>()
-        })
-        .filter(|w| !w.is_empty())
-        .collect();
-
     const SAFE_SUBSTRING_ROOTS: &[&str] = &[
         "fuck", "shit", "bitch", "asshole", "nigger", "nigga", "faggot", "cunt", "whore", "slut",
     ];
 
+    let mut single_blocked: Vec<(String, String)> = Vec::new();
+    let mut multi_word_blocked: Vec<(String, Vec<(String, String)>)> = Vec::new();
+
+    for raw_bw in blocked_words {
+        let trimmed = raw_bw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parts: Vec<(String, String)> = trimmed
+            .split_whitespace()
+            .map(|p| {
+                let norm: String = p.chars().filter_map(normalize_leet_char).collect();
+                let col = collapse_repeats(&norm);
+                (norm, col)
+            })
+            .filter(|(n, _)| !n.is_empty())
+            .collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let joined: String = parts.iter().map(|(n, _)| n.as_str()).collect();
+        let joined_col = collapse_repeats(&joined);
+        single_blocked.push((joined.clone(), joined_col));
+        if parts.len() >= 2 {
+            let label = parts
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            multi_word_blocked.push((label, parts));
+        }
+    }
+
+    let mut msg_tokens: Vec<(String, String, bool)> = Vec::new();
+
     for raw_token in text.split_whitespace() {
+        if !has_non_numeric_signal(raw_token) {
+            continue;
+        }
         let alnum_token: String = raw_token.chars().filter_map(normalize_leet_char).collect();
         if alnum_token.is_empty() {
             continue;
         }
         let collapsed = collapse_repeats(&alnum_token);
 
-        for bw in &normalized_blocked {
-            let collapsed_bw = collapse_repeats(bw);
-            if alnum_token == *bw || collapsed == collapsed_bw {
-                return Some(bw.clone());
-            }
-            if bw.len() >= 4
-                && SAFE_SUBSTRING_ROOTS.iter().any(|root| bw.contains(root))
-                && (alnum_token.contains(bw) || collapsed.contains(&collapsed_bw))
-            {
-                return Some(bw.clone());
-            }
+        if let Some(hit) = matches_single_blocked_token(
+            &alnum_token,
+            &collapsed,
+            &single_blocked,
+            SAFE_SUBSTRING_ROOTS,
+        ) {
+            return Some(hit);
         }
 
         // Also check strict alphanumeric sub-segments split on non-alnum (e.g. "hi,bitch!")
         for sub in raw_token.split(|c: char| !c.is_ascii_alphanumeric()) {
+            if !has_non_numeric_signal(sub) {
+                continue;
+            }
             let sub_norm: String = sub.chars().filter_map(normalize_leet_char).collect();
             if sub_norm.is_empty() {
                 continue;
             }
             let sub_col = collapse_repeats(&sub_norm);
-            for bw in &normalized_blocked {
-                if sub_norm == *bw || sub_col == collapse_repeats(bw) {
+            for (bw, collapsed_bw) in &single_blocked {
+                if sub_norm == *bw || sub_col == *collapsed_bw {
                     return Some(bw.clone());
+                }
+            }
+        }
+
+        let is_single_letter_frag = collapsed.chars().count() == 1;
+        msg_tokens.push((alnum_token, collapsed, is_single_letter_frag));
+    }
+
+    // Detect multi-word blocked phrases (e.g. "kill yourself", "k1ll y0urself")
+    for (label, phrase_parts) in &multi_word_blocked {
+        let plen = phrase_parts.len();
+        if msg_tokens.len() >= plen {
+            for win in msg_tokens.windows(plen) {
+                let all_match = win
+                    .iter()
+                    .zip(phrase_parts.iter())
+                    .all(|((tok, col, _), (bw_tok, bw_col))| tok == bw_tok || col == bw_col);
+                if all_match {
+                    return Some(label.clone());
+                }
+            }
+        }
+    }
+
+    // Detect spaced letter-by-letter evasion runs (e.g. "f u c k", "s h i t", "f uuu c k")
+    let mut idx = 0usize;
+    while idx < msg_tokens.len() {
+        if !msg_tokens[idx].2 {
+            idx += 1;
+            continue;
+        }
+        let start = idx;
+        while idx < msg_tokens.len() && msg_tokens[idx].2 {
+            idx += 1;
+        }
+        let run_len = idx - start;
+        if run_len >= 2 {
+            // Check every contiguous sub-slice of length >= 3 (or full run) so "u f u c k" catches "fuck"
+            for sub_start in start..idx {
+                for sub_end in (sub_start + 2)..=idx {
+                    let joined_raw: String = msg_tokens[sub_start..sub_end]
+                        .iter()
+                        .map(|(t, _, _)| t.as_str())
+                        .collect();
+                    let joined_col = collapse_repeats(&joined_raw);
+                    if joined_col.len() < 3 {
+                        continue;
+                    }
+                    for (bw, collapsed_bw) in &single_blocked {
+                        if joined_raw == *bw || joined_col == *collapsed_bw {
+                            return Some(bw.clone());
+                        }
+                    }
                 }
             }
         }
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::default_blocked_words;
+
+    #[test]
+    fn profanity_filter_catches_spaced_leet_and_phrases_without_scunthorpe_false_positives() {
+        let words = default_blocked_words();
+
+        // Spaced single-letter & repeated evasion
+        assert!(find_blocked_word("what the f u c k", &words).is_some());
+        assert!(find_blocked_word("you s h i t head", &words).is_some());
+        assert!(find_blocked_word("b i t c h", &words).is_some());
+        assert!(find_blocked_word("f uuu c k", &words).is_some());
+
+        // Punctuation & leetspeak evasion
+        assert!(find_blocked_word("s.h.i.t", &words).is_some());
+        assert!(find_blocked_word("f_u_c_k", &words).is_some());
+        assert!(find_blocked_word("sh1t!", &words).is_some());
+        assert!(find_blocked_word("b!tch", &words).is_some());
+        assert!(find_blocked_word("@sshole", &words).is_some());
+
+        // Multi-word phrases
+        assert!(find_blocked_word("please kill yourself now", &words).is_some());
+        assert!(find_blocked_word("k1ll y0urself", &words).is_some());
+
+        // Scunthorpe & numeric false-positive safety
+        assert_eq!(
+            find_blocked_word("Meet me in class after we pass the grass!", &words),
+            None
+        );
+        assert_eq!(
+            find_blocked_word("Hello friends! Look at that tall skyscraper!", &words),
+            None
+        );
+        assert_eq!(
+            find_blocked_word("I farmed 455 coins from scrap crystals!", &words),
+            None
+        );
+    }
+
+    #[test]
+    fn curfew_window_handles_overnight_and_daytime_ranges() {
+        // Overnight 21:00 (1260) -> 07:00 (420)
+        assert!(is_within_curfew_window(21 * 60, "21:00", "07:00"));
+        assert!(is_within_curfew_window(23 * 60 + 30, "21:00", "07:00"));
+        assert!(is_within_curfew_window(6 * 60 + 59, "21:00", "07:00"));
+        assert!(!is_within_curfew_window(7 * 60, "21:00", "07:00"));
+        assert!(!is_within_curfew_window(15 * 60, "21:00", "07:00"));
+
+        // Daytime 13:00 -> 15:00
+        assert!(!is_within_curfew_window(12 * 60 + 59, "13:00", "15:00"));
+        assert!(is_within_curfew_window(13 * 60, "13:00", "15:00"));
+        assert!(is_within_curfew_window(14 * 60 + 30, "13:00", "15:00"));
+        assert!(!is_within_curfew_window(15 * 60, "13:00", "15:00"));
+    }
 }

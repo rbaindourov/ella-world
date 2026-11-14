@@ -25,7 +25,10 @@
 - **Illuminated Fashion Runway**: Live rotating runway themes, 8 runway poses & dances (`1`–`8`), and 1–5 ⭐ live star voting with celebration confetti.
 - **Persistent Co-Op Voxel Builder**: Place and remove colorful 3D blocks together in real time; creations and character outfits persist atomically to `data/world_blocks.json` and `data/world_users.json`.
 - **Synchronized Sky Obby Course**: Multi-stage floating parkour course with server-phase-locked moving platforms, checkpoints (`R`), and a Golden Trophy summit celebration.
-- **Parent-Controlled Whitelist, Persistent Chat History & Word Filter**: Password-protected friend accounts, durable `world_chat.jsonl` chat logging with blocked-attempt auditing (`world_chat_blocked.jsonl`), customizable word filter (`chatFilterEnabled` + `blockedWords`), and master parent dashboard (with live coin & backpack counts) — zero public sign-ups or unmoderated strangers.
+- **Parent-Controlled Whitelist, Escalating Fines, 3D Debtor's Prison & Parental Safety Suite**:
+  - **Evasion-Resistant Cursing Sanitization & Negative-Balance Fines**: Catches spaced/punctuation/leetspeak profanity evasion while preserving clean words (`"class"`, `"pass"`, `"grass"`, `"455 coins"`), deducting escalating Starlight Coin fines (`-15`, `-35`, `-75`, `-150`, ...) into signed negative `i64` debt balances and logging full strike/fine telemetry in `world_chat_blocked.jsonl`.
+  - **3D Debtor's Prison (`ZONE_PRISON = 2`) & Community Service**: Habitual violators who drop below the debt threshold (`-50 🪙`) or reach the strike limit (`3`) are automatically sentenced into an enclosed 3D Debtor's Prison courtyard where building, trading, and dungeon warps are locked until they complete glowing 3D community-service chores (`E`, `+5 🪙` strictly capped at `0 🪙`) or receive a **🕊️ Parent Pardon**.
+  - **Granular Per-Child & Global Parental Controls**: Per-account server-enforced Mic Mute (drops Opus voice frames on the SFU & native UDP servers), Safe Preset Quick-Chat-Only mode, Build/Trade locks, Account Grounding, World Pause Lock, and automatic 24h Bedtime Curfew windows.
 
 ---
 
@@ -67,7 +70,30 @@ cargo build --release --target x86_64-unknown-linux-musl
 | `ELLA_DATA_DIR` | `./data` | Persistent storage directory for `world_users.json`, `world_blocks.json`, `world_chat.jsonl`, & `world_chat_blocked.jsonl` |
 | `ELLA_PUBLIC_DIR` | `./public` | Path to static Three.js client directory |
 | `ELLA_SEED_USERS_FILE` | `./config/users.example.json` | Initial seed template copied into `ELLA_DATA_DIR` on first boot |
-| `ELLA_HMAC_SECRET` | *(dev default)* | Secret key used to sign constant-time HMAC-SHA256 session tokens |
+| `ELLA_HMAC_SECRET` | *(dev default)* | Secret key used to sign constant-time HMAC-SHA256 session tokens & password fingerprints |
+| `ELLA_TOKEN_TTL_SECS` | `43200` (`12h`) | Maximum lifetime (seconds, clamped `60..2592000`) for player & admin session tokens |
+
+### 🔒 Parent Session Revocation & Password Rollover CLI
+
+Rolling any friend's password in the Parent Admin Panel or CLI automatically invalidates saved browser tokens (`pwdSig` + `tokenEpoch`) and kicks live WebSocket / WebRTC / UDP sessions immediately. Parents can also expire all logged-in tokens at any time:
+
+```bash
+# Immediately expire ALL logged-in tokens globally & kick active sessions:
+node scripts/ella_admin_user_cli.mjs --revoke-all
+
+# Expire tokens & sign out a single player account:
+node scripts/ella_admin_user_cli.mjs --revoke-user ella
+
+# Inspect current sessionEpoch, online status, coins/debt, strikes, prison status & parental locks:
+node scripts/ella_admin_user_cli.mjs --list
+
+# Parental controls, coin fines/bonuses, Debtor's Prison sentencing & Parent Pardons:
+node scripts/ella_admin_user_cli.mjs --username ella --coins -50
+node scripts/ella_admin_user_cli.mjs --username ella --sentence 4 --reason "Habitual unkind chat"
+node scripts/ella_admin_user_cli.mjs --username ella --pardon
+node scripts/ella_admin_user_cli.mjs --username ella --reset-strikes
+node scripts/ella_admin_user_cli.mjs --username ella --mute-voice true --chat-mode quick_only
+```
 
 ---
 

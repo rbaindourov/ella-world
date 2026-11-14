@@ -11,6 +11,7 @@ use crate::udp_wire::{
     decode_c2s_state, encode_native_voice_opus, encode_native_welcome, encode_pong,
     unwrap_native_packet, wrap_native_packet, OP_C2S_PING, OP_C2S_STATE, OP_EVENT_ACK,
     OP_EVENT_JSON, OP_HELLO, OP_S2C_PONG, OP_S2C_WORLD_STATE, OP_VOICE_OPUS, ZONE_DUNGEON,
+    ZONE_PRISON,
 };
 use crate::world::{BridgedOpusFrame, WorldEngine};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -117,6 +118,7 @@ impl NativeUdpServer {
                     crate::world::UdpWorldEvent::DungeonMobs { .. }
                         | crate::world::UdpWorldEvent::DungeonSync { .. }
                 );
+                let prison_only = matches!(ev, crate::world::UdpWorldEvent::PrisonSync { .. });
                 let Ok(json_bytes) = serde_json::to_vec(&ev) else {
                     continue;
                 };
@@ -132,6 +134,9 @@ impl NativeUdpServer {
                 };
                 for sess in peers {
                     if dungeon_only && ev_world.get_peer_zone(&sess.self_id).await != ZONE_DUNGEON {
+                        continue;
+                    }
+                    if prison_only && ev_world.get_peer_zone(&sess.self_id).await != ZONE_PRISON {
                         continue;
                     }
                     let _ = ev_srv.socket.send_to(&pkt, sess.addr).await;
@@ -167,6 +172,17 @@ impl NativeUdpServer {
             }
         });
 
+        // 5. Evict Native UDP sessions immediately on password rollover or session revocation
+        let revoke_srv = Arc::clone(&srv);
+        let mut revoke_rx = world.session_revoke_tx.subscribe();
+        tokio::spawn(async move {
+            while let Ok(sig) = revoke_rx.recv().await {
+                let mut map = revoke_srv.sessions_by_addr.write().await;
+                map.retain(|_, s| !sig.matches(&s.self_id, &s.username));
+                revoke_srv.active_count.store(map.len(), Ordering::Relaxed);
+            }
+        });
+
         Ok(srv)
     }
 
@@ -176,6 +192,33 @@ impl NativeUdpServer {
 
     pub fn active_session_count(&self) -> usize {
         self.active_count.load(Ordering::Relaxed)
+    }
+
+    pub async fn evict_sessions_for_peer(&self, self_id: &str) -> usize {
+        let mut map = self.sessions_by_addr.write().await;
+        let before = map.len();
+        map.retain(|_, s| s.self_id != self_id);
+        let after = map.len();
+        self.active_count.store(after, Ordering::Relaxed);
+        before.saturating_sub(after)
+    }
+
+    pub async fn evict_sessions_for_username(&self, username: &str) -> usize {
+        let target = username.trim().to_lowercase();
+        let mut map = self.sessions_by_addr.write().await;
+        let before = map.len();
+        map.retain(|_, s| !s.username.eq_ignore_ascii_case(&target));
+        let after = map.len();
+        self.active_count.store(after, Ordering::Relaxed);
+        before.saturating_sub(after)
+    }
+
+    pub async fn evict_all_sessions(&self) -> usize {
+        let mut map = self.sessions_by_addr.write().await;
+        let count = map.len();
+        map.clear();
+        self.active_count.store(0, Ordering::Relaxed);
+        count
     }
 
     async fn handle_datagram(&self, world: &WorldEngine, peer_addr: SocketAddr, raw: &[u8]) {
@@ -194,11 +237,13 @@ impl NativeUdpServer {
             let Ok(token_str) = std::str::from_utf8(&body[2..2 + tok_len]) else {
                 return;
             };
-            let Some(claims) = world.verify_session_token(token_str) else {
-                warn!("Rejected invalid Native UDP HELLO token from {}", peer_addr);
-                return;
-            };
-            let (Some(self_id), Some(username)) = (claims.self_id, claims.username) else {
+            let Some((self_id, username, _, _, _)) =
+                world.verify_active_player_token(token_str).await
+            else {
+                warn!(
+                    "Rejected invalid or expired Native UDP HELLO token from {}",
+                    peer_addr
+                );
                 return;
             };
 
@@ -266,6 +311,9 @@ impl NativeUdpServer {
                 if body.len() <= 6 {
                     return;
                 }
+                if !world.is_voice_allowed_for(&session.self_id).await {
+                    return;
+                }
                 let seq = u16::from_le_bytes([body[0], body[1]]);
                 let timestamp = u32::from_le_bytes([body[2], body[3], body[4], body[5]]);
                 let opus_slice = &body[6..];
@@ -329,9 +377,12 @@ pub async fn handle_client_event_command(
             let y = cmd.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let z = cmd.get("z").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let color = cmd.get("color").and_then(|v| v.as_str());
-            let _ = world
+            if let Err(err) = world
                 .mutate_block(self_id, username, action, (x, y, z), color)
-                .await;
+                .await
+            {
+                emit_action_error(world, self_id, cmd_type, err).await;
+            }
         }
         "chat" => {
             let text = cmd.get("text").and_then(|v| v.as_str());
@@ -339,7 +390,15 @@ pub async fn handle_client_event_command(
                 .get("isTrophyWin")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let _ = world.post_chat(self_id, username, text, trophy).await;
+            if let Err(err) = world.post_chat(self_id, username, text, trophy).await {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "prison_work" => {
+            let node_id = cmd.get("nodeId").and_then(|v| v.as_str()).unwrap_or("");
+            if let Err(err) = world.prison_perform_work(self_id, username, node_id).await {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
         }
         "avatar" => {
             if let Some(av) = cmd.get("avatar") {

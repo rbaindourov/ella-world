@@ -1335,6 +1335,7 @@ export class BlockyWorld3D {
     onRunwayProximity,
     onRequestZonePortal,
     onInteractNode,
+    onPrisonWork,
     onAttackMob,
     onPickupDrop,
     onInteractionHint
@@ -1348,6 +1349,7 @@ export class BlockyWorld3D {
     this.onRunwayProximity = onRunwayProximity || (() => {});
     this.onRequestZonePortal = onRequestZonePortal || (() => {});
     this.onInteractNode = onInteractNode || (() => {});
+    this.onPrisonWork = onPrisonWork || (() => {});
     this.onAttackMob = onAttackMob || (() => {});
     this.onPickupDrop = onPickupDrop || (() => {});
     this.onInteractionHint = onInteractionHint || (() => {});
@@ -1368,7 +1370,7 @@ export class BlockyWorld3D {
     this.renderer.toneMappingExposure = 1.08;
     this.container.appendChild(this.renderer.domElement);
 
-    this.currentZone = 0; // 0 = Starlight Plaza, 1 = Crystal Cavern Dungeon
+    this.currentZone = 0; // 0 = Starlight Plaza, 1 = Crystal Cavern Dungeon, 2 = Debtor's Prison
     this.plazaGroup = new THREE.Group();
     this.scene.add(this.plazaGroup);
     this.dungeonGroup = new THREE.Group();
@@ -1377,9 +1379,16 @@ export class BlockyWorld3D {
     this.dungeonEntitiesGroup = new THREE.Group();
     this.dungeonGroup.add(this.dungeonEntitiesGroup);
 
+    this.prisonGroup = new THREE.Group();
+    this.prisonGroup.visible = false;
+    this.scene.add(this.prisonGroup);
+    this.prisonEntitiesGroup = new THREE.Group();
+    this.prisonGroup.add(this.prisonEntitiesGroup);
+
     this.plazaColliders = [];
     this.voxelColliders = [];
     this.dungeonColliders = [];
+    this.prisonColliders = [];
     this.colliders = [];
     this.movingPlatforms = [];
     this.discoTiles = [];
@@ -1393,12 +1402,16 @@ export class BlockyWorld3D {
 
     this.plazaPortalPos = { x: 18, y: 0, z: 16 };
     this.dungeonReturnPortalPos = { x: 0, y: 0, z: 28 };
+    this.prisonReleasePortalPos = { x: 0, y: 0, z: 11.5 };
+    this.prisonReleaseEligible = false;
+    this.prisonGateRefs = null;
     this.lastPortalTriggerAt = 0;
     this.lastHintText = '';
 
     this.dungeonNodesMap = new Map();
     this.dungeonMobsMap = new Map();
     this.dungeonDropsMap = new Map();
+    this.prisonNodesMap = new Map();
 
     this.speedBoostUntilMs = 0;
     this.jumpBoostUntilMs = 0;
@@ -1443,6 +1456,7 @@ export class BlockyWorld3D {
     this._setupLights();
     this._buildEnvironment();
     this._buildDungeonEnvironment();
+    this._buildPrisonEnvironment();
     this._rebuildActiveColliders();
     this._bindEvents();
 
@@ -1455,6 +1469,8 @@ export class BlockyWorld3D {
   _rebuildActiveColliders() {
     if (this.currentZone === 1) {
       this.colliders = this.dungeonColliders;
+    } else if (this.currentZone === 2) {
+      this.colliders = this.prisonColliders;
     } else {
       this.colliders = [...this.plazaColliders, ...this.voxelColliders];
     }
@@ -1980,6 +1996,318 @@ export class BlockyWorld3D {
     });
   }
 
+  _buildPrisonEnvironment() {
+    const stoneFloorMat = new THREE.MeshStandardMaterial({
+      color: '#334155',
+      roughness: 0.78,
+      metalness: 0.14
+    });
+    const yardGround = new THREE.Mesh(new THREE.BoxGeometry(34, 2, 34), stoneFloorMat);
+    yardGround.position.set(0, -1, 0);
+    yardGround.receiveShadow = true;
+    this.prisonGroup.add(yardGround);
+    this.prisonColliders.push({
+      mesh: yardGround,
+      w: 34,
+      h: 2,
+      d: 34,
+      minX: -17,
+      maxX: 17,
+      minZ: -17,
+      maxZ: 17,
+      topY: 0,
+      bottomY: -2,
+      type: 'ground'
+    });
+
+    // Cobblestone grid + central community-service courtyard circle
+    const yardGrid = new THREE.GridHelper(28, 14, '#475569', '#1e293b');
+    yardGrid.position.set(0, 0.03, 0);
+    this.prisonGroup.add(yardGrid);
+
+    const spawnRing = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.6, 2.8, 0.1, 28),
+      new THREE.MeshStandardMaterial({ color: '#475569', emissive: '#f59e0b', emissiveIntensity: 0.18 })
+    );
+    spawnRing.position.set(0, 0.05, 3.5);
+    this.prisonGroup.add(spawnRing);
+
+    // Warm courtyard lantern lights
+    const northLight = new THREE.PointLight('#fbbf24', 2.2, 32);
+    northLight.position.set(0, 7.5, -8);
+    const southLight = new THREE.PointLight('#38bdf8', 1.8, 28);
+    southLight.position.set(0, 7.0, 8);
+    this.prisonGroup.add(northLight, southLight);
+
+    // Perimeter stone curb & wrought-iron bar fence at ±13.8m
+    const curbMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.7, metalness: 0.25 });
+    const barMat = new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.32, metalness: 0.82 });
+    const goldMat = new THREE.MeshStandardMaterial({
+      color: '#fbbf24',
+      emissive: '#d97706',
+      emissiveIntensity: 0.55,
+      metalness: 0.65,
+      roughness: 0.22
+    });
+
+    const addFenceSpan = (x1, z1, x2, z2) => {
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      const cx = (x1 + x2) / 2;
+      const cz = (z1 + z2) / 2;
+      const rotY = Math.atan2(x2 - x1, z2 - z1);
+      const span = new THREE.Group();
+      span.position.set(cx, 0, cz);
+      span.rotation.y = rotY;
+
+      const curb = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.7, len), curbMat);
+      curb.position.y = 0.35;
+      const topRail = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.18, len), barMat);
+      topRail.position.y = 3.85;
+      span.add(curb, topRail);
+
+      const barCount = Math.max(2, Math.floor(len / 0.85));
+      for (let i = 0; i <= barCount; i++) {
+        const bz = -len / 2 + (i / barCount) * len;
+        const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 3.3, 8), barMat);
+        bar.position.set(0, 2.2, bz);
+        span.add(bar);
+      }
+      this.prisonGroup.add(span);
+    };
+
+    // North, West, East full spans + South split around Release Gate
+    addFenceSpan(-13.8, -13.8, 13.8, -13.8);
+    addFenceSpan(-13.8, -13.8, -13.8, 13.8);
+    addFenceSpan(13.8, -13.8, 13.8, 13.8);
+    addFenceSpan(-13.8, 13.8, -2.8, 13.8);
+    addFenceSpan(2.8, 13.8, 13.8, 13.8);
+
+    // 4 Corner Watchtower Stone Pillars with Amber Lanterns
+    for (const [px, pz] of [[-13.8, -13.8], [13.8, -13.8], [-13.8, 13.8], [13.8, 13.8]]) {
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(1.4, 4.6, 1.4), curbMat);
+      pillar.position.set(px, 2.3, pz);
+      pillar.castShadow = true;
+      const lantern = new THREE.Mesh(new THREE.OctahedronGeometry(0.42, 0), goldMat);
+      lantern.position.set(px, 5.05, pz);
+      this.prisonGroup.add(pillar, lantern);
+    }
+
+    // Judge Starlight Judicial Podium at North Courtyard (0, 0, -12.1)
+    this._addBoxPlatform(
+      { x: 0, y: 0.45, z: -12.1, w: 6.4, h: 0.9, d: 2.6, color: '#1e1b4b', emissive: '#4338ca', emissiveIntensity: 0.22 },
+      this.prisonGroup,
+      this.prisonColliders
+    );
+    const scalesEmblem = new THREE.Mesh(new THREE.OctahedronGeometry(0.62, 0), goldMat);
+    scalesEmblem.position.set(0, 1.75, -12.1);
+    const judgeBanner = createWorldBannerSprite(
+      "⚖️ DEBTOR'S PRISON COURTYARD",
+      'Press E on Glowing Chores (+5 🪙) to Clear Negative Debt!',
+      '#fbbf24'
+    );
+    judgeBanner.position.set(0, 3.35, -12.1);
+    this.prisonGroup.add(scalesEmblem, judgeBanner);
+
+    // Dynamic Release Gate Arch at (0, 0, 11.5)
+    const gate = new THREE.Group();
+    gate.position.set(this.prisonReleasePortalPos.x, this.prisonReleasePortalPos.y, this.prisonReleasePortalPos.z);
+
+    const gateRuneMat = new THREE.MeshStandardMaterial({
+      color: '#ef4444',
+      emissive: '#dc2626',
+      emissiveIntensity: 0.72,
+      roughness: 0.2,
+      metalness: 0.35
+    });
+    const gatePad = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2.9, 0.2, 28), curbMat);
+    gatePad.position.y = 0.1;
+    const gateRing = new THREE.Mesh(new THREE.TorusGeometry(2.3, 0.09, 10, 32), gateRuneMat);
+    gateRing.rotation.x = Math.PI / 2;
+    gateRing.position.y = 0.22;
+    gate.add(gatePad, gateRing);
+
+    for (const side of [-1, 1]) {
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.68, 4.1, 0.68), curbMat);
+      pillar.position.set(side * 1.85, 2.15, 0);
+      const strip = new THREE.Mesh(new THREE.BoxGeometry(0.2, 3.5, 0.74), gateRuneMat);
+      strip.position.set(side * 1.85, 2.15, 0);
+      gate.add(pillar, strip);
+    }
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(4.65, 0.72, 0.88), curbMat);
+    lintel.position.set(0, 4.35, 0);
+    const keystone = new THREE.Mesh(new THREE.OctahedronGeometry(0.46, 0), gateRuneMat);
+    keystone.position.set(0, 4.95, 0);
+    gate.add(lintel, keystone);
+
+    const gateVortexMat = new THREE.MeshBasicMaterial({
+      color: '#f59e0b',
+      transparent: true,
+      opacity: 0.65,
+      side: THREE.DoubleSide
+    });
+    const vortexDisc = new THREE.Mesh(new THREE.CircleGeometry(1.75, 28), gateVortexMat);
+    vortexDisc.position.set(0, 2.28, 0);
+    const swirlRing = new THREE.Mesh(
+      new THREE.TorusGeometry(1.25, 0.08, 10, 28),
+      new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.72 })
+    );
+    swirlRing.position.set(0, 2.28, 0.04);
+    gate.add(vortexDisc, swirlRing);
+    this.portalVortices.push({ disc: vortexDisc, ring: swirlRing, keystone });
+
+    const gateBanner = createWorldBannerSprite(
+      '🔒 RELEASE GATE (LOCKED)',
+      'Clear Negative Debt to 0 🪙 & Finish Chores — or Parent Pardon',
+      '#f87171'
+    );
+    gateBanner.position.set(0, 6.05, 0);
+    gate.add(gateBanner);
+    this.prisonGroup.add(gate);
+
+    this.prisonGateRefs = {
+      group: gate,
+      runeMat: gateRuneMat,
+      vortexMat: gateVortexMat,
+      banner: gateBanner,
+      unlocked: false
+    };
+  }
+
+  _buildPrisonNodeEntry(node) {
+    const group = new THREE.Group();
+    group.position.set(node.x, node.y, node.z);
+    const bodyGroup = new THREE.Group();
+
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: '#fbbf24',
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.65
+    });
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.85, 1.08, 24), ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.05;
+    group.add(ring);
+
+    if (node.kind === 'boulder') {
+      const rockMat = new THREE.MeshStandardMaterial({ color: '#64748b', roughness: 0.75, metalness: 0.15 });
+      const oreMat = new THREE.MeshStandardMaterial({
+        color: '#fbbf24',
+        emissive: '#d97706',
+        emissiveIntensity: 0.55,
+        roughness: 0.25
+      });
+      const r1 = new THREE.Mesh(new THREE.DodecahedronGeometry(0.72, 0), rockMat);
+      r1.position.set(0, 0.55, 0);
+      const r2 = new THREE.Mesh(new THREE.DodecahedronGeometry(0.45, 0), rockMat);
+      r2.position.set(0.52, 0.35, 0.22);
+      const vein = new THREE.Mesh(new THREE.OctahedronGeometry(0.26, 0), oreMat);
+      vein.position.set(-0.15, 0.92, 0.25);
+      bodyGroup.add(r1, r2, vein);
+    } else if (node.kind === 'sweep') {
+      const dustMat = new THREE.MeshStandardMaterial({ color: '#a8a29e', roughness: 0.9 });
+      const woodMat = new THREE.MeshStandardMaterial({ color: '#92400e', roughness: 0.7 });
+      const strawMat = new THREE.MeshStandardMaterial({ color: '#fde047', roughness: 0.65 });
+      const mound1 = new THREE.Mesh(new THREE.ConeGeometry(0.68, 0.42, 10), dustMat);
+      mound1.position.set(0, 0.21, 0);
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.45, 8), woodMat);
+      handle.position.set(0.28, 0.75, 0);
+      handle.rotation.z = -0.24;
+      const bristles = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.28, 0.16), strawMat);
+      bristles.position.set(0.44, 0.18, 0);
+      bodyGroup.add(mound1, handle, bristles);
+    } else {
+      const ironMat = new THREE.MeshStandardMaterial({ color: '#1e293b', metalness: 0.75, roughness: 0.32 });
+      const brassMat = new THREE.MeshStandardMaterial({
+        color: '#fbbf24',
+        emissive: '#f59e0b',
+        emissiveIntensity: 0.62,
+        metalness: 0.55,
+        roughness: 0.22
+      });
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 1.45, 10), ironMat);
+      post.position.y = 0.72;
+      const globe = new THREE.Mesh(new THREE.OctahedronGeometry(0.36, 0), brassMat);
+      globe.position.y = 1.55;
+      bodyGroup.add(post, globe);
+    }
+
+    const label = createWorldBannerSprite(
+      `${node.icon || '🪨'} ${node.name}`,
+      'Press E • +5 🪙 Toward Clearing Debt',
+      '#fbbf24'
+    );
+    label.position.set(0, 2.25, 0);
+    group.add(bodyGroup, label);
+    this.prisonEntitiesGroup.add(group);
+    return { id: node.id, data: node, group, bodyGroup, ring, label };
+  }
+
+  setPrisonReleaseEligible(eligible) {
+    const next = Boolean(eligible);
+    this.prisonReleaseEligible = next;
+    if (!this.prisonGateRefs || this.prisonGateRefs.unlocked === next) return;
+    this.prisonGateRefs.unlocked = next;
+    const { group, runeMat, vortexMat } = this.prisonGateRefs;
+    if (next) {
+      runeMat.color.set('#10b981');
+      runeMat.emissive.set('#059669');
+      vortexMat.color.set('#34d399');
+    } else {
+      runeMat.color.set('#ef4444');
+      runeMat.emissive.set('#dc2626');
+      vortexMat.color.set('#f59e0b');
+    }
+    group.remove(this.prisonGateRefs.banner);
+    const nextBanner = next
+      ? createWorldBannerSprite(
+          '🔓 SENTENCE SERVED!',
+          'Step In or Press E • Return to Starlight Plaza!',
+          '#34d399'
+        )
+      : createWorldBannerSprite(
+          '🔒 RELEASE GATE (LOCKED)',
+          'Clear Negative Debt to 0 🪙 & Finish Chores — or Parent Pardon',
+          '#f87171'
+        );
+    nextBanner.position.set(0, 6.05, 0);
+    group.add(nextBanner);
+    this.prisonGateRefs.banner = nextBanner;
+  }
+
+  syncPrisonSnapshot(prison, isEligibleForRelease = null) {
+    if (isEligibleForRelease !== null && isEligibleForRelease !== undefined) {
+      this.setPrisonReleaseEligible(isEligibleForRelease);
+    }
+    if (!prison) return;
+    if (Array.isArray(prison.releasePortalPos) && prison.releasePortalPos.length === 3) {
+      this.prisonReleasePortalPos = {
+        x: prison.releasePortalPos[0],
+        y: prison.releasePortalPos[1],
+        z: prison.releasePortalPos[2]
+      };
+      if (this.prisonGateRefs) {
+        this.prisonGateRefs.group.position.set(
+          this.prisonReleasePortalPos.x,
+          this.prisonReleasePortalPos.y,
+          this.prisonReleasePortalPos.z
+        );
+      }
+    }
+    for (const node of prison.nodes || []) {
+      let entry = this.prisonNodesMap.get(node.id);
+      if (!entry) {
+        entry = this._buildPrisonNodeEntry(node);
+        this.prisonNodesMap.set(node.id, entry);
+      }
+      entry.data = node;
+      entry.group.position.set(node.x, node.y, node.z);
+      entry.ring.visible = Boolean(node.available);
+      entry.bodyGroup.scale.setScalar(node.available ? 1.0 : 0.45);
+      entry.label.visible = Boolean(node.available);
+    }
+  }
+
   loadBlocks(blocksArray) {
     for (const mesh of this.voxelMap.values()) {
       this.voxelGroup.remove(mesh);
@@ -2105,7 +2433,8 @@ export class BlockyWorld3D {
   }
 
   setZone(zone, spawnCoords = null) {
-    const nextZone = Number(zone) === 1 ? 1 : 0;
+    const zNum = Number(zone);
+    const nextZone = zNum === 1 ? 1 : zNum === 2 ? 2 : 0;
     this.currentZone = nextZone;
     this.lastPortalTriggerAt = performance.now();
 
@@ -2113,6 +2442,7 @@ export class BlockyWorld3D {
       this.plazaGroup.visible = false;
       this.voxelGroup.visible = false;
       this.dungeonGroup.visible = true;
+      this.prisonGroup.visible = false;
       this.ghostMesh.visible = false;
       this.scene.background.set('#0f0a28');
       this.scene.fog.color.set('#160d38');
@@ -2128,10 +2458,31 @@ export class BlockyWorld3D {
         this.nearRunway = false;
         this.onRunwayProximity(false);
       }
+    } else if (nextZone === 2) {
+      this.plazaGroup.visible = false;
+      this.voxelGroup.visible = false;
+      this.dungeonGroup.visible = false;
+      this.prisonGroup.visible = true;
+      this.ghostMesh.visible = false;
+      this.scene.background.set('#1e293b');
+      this.scene.fog.color.set('#0f172a');
+      this.scene.fog.density = 0.016;
+      this.hemiLight.color.set('#cbd5e1');
+      this.hemiLight.groundColor.set('#1e293b');
+      this.hemiLight.intensity = 0.82;
+      this.sunLight.color.set('#fde68a');
+      this.sunLight.intensity = 0.88;
+      this.fillLight.color.set('#94a3b8');
+      this.fillLight.intensity = 0.48;
+      if (this.nearRunway) {
+        this.nearRunway = false;
+        this.onRunwayProximity(false);
+      }
     } else {
       this.plazaGroup.visible = true;
       this.voxelGroup.visible = true;
       this.dungeonGroup.visible = false;
+      this.prisonGroup.visible = false;
       this.scene.background.set('#7dd3fc');
       this.scene.fog.color.set('#bae6fd');
       this.scene.fog.density = 0.0078;
@@ -2152,7 +2503,7 @@ export class BlockyWorld3D {
         this.selfAvatar.group.position.set(spawnCoords.x, (spawnCoords.y || 0) + 0.15, spawnCoords.z || 0);
         this.velocity.set(0, 0, 0);
         this.selfAvatar.emote = null;
-        if (nextZone === 1) {
+        if (nextZone === 1 || nextZone === 2) {
           this.selfAvatar.group.rotation.y = Math.PI;
           this.cameraYaw = 0;
         }
@@ -2464,13 +2815,42 @@ export class BlockyWorld3D {
   triggerAction() {
     if (!this.selfAvatar || this.salonMirrorMode) return;
     const pos = this.selfAvatar.group.position;
-    this.spawnSparkleBurst(pos, this.currentZone === 1 ? '#c084fc' : '#f472b6');
+    this.spawnSparkleBurst(
+      pos,
+      this.currentZone === 2 ? '#fbbf24' : this.currentZone === 1 ? '#c084fc' : '#f472b6'
+    );
 
     if (this.currentZone === 0) {
       const dPortal = Math.hypot(pos.x - this.plazaPortalPos.x, pos.z - this.plazaPortalPos.z);
       if (dPortal < 4.2) {
         this.lastPortalTriggerAt = performance.now();
         this.onRequestZonePortal(1);
+      }
+      return;
+    }
+
+    if (this.currentZone === 2) {
+      const dGate = Math.hypot(
+        pos.x - this.prisonReleasePortalPos.x,
+        pos.z - this.prisonReleasePortalPos.z
+      );
+      if (dGate < 4.0) {
+        this.lastPortalTriggerAt = performance.now();
+        this.onRequestZonePortal(0);
+        return;
+      }
+      let nearestChore = null;
+      let nearestDist = 5.8;
+      for (const entry of this.prisonNodesMap.values()) {
+        if (!entry.data.available) continue;
+        const d = pos.distanceTo(entry.group.position);
+        if (d < nearestDist) {
+          nearestDist = d;
+          nearestChore = entry.data;
+        }
+      }
+      if (nearestChore) {
+        this.onPrisonWork(nearestChore.id);
       }
       return;
     }
@@ -2670,7 +3050,7 @@ export class BlockyWorld3D {
       this.isDraggingCamera = false;
 
       if (wasClick && !this.salonMirrorMode) {
-        if (this.currentZone === 1) {
+        if (this.currentZone === 1 || this.currentZone === 2) {
           this.triggerAction();
         } else if (this.buildMode) {
           if (e.button === 2 || this.buildTool === 'remove') {
@@ -2902,6 +3282,10 @@ export class BlockyWorld3D {
         moveDir.normalize();
         pos.x += moveDir.x * speed * dt;
         pos.z += moveDir.z * speed * dt;
+        if (this.currentZone === 2) {
+          pos.x = Math.max(-13.1, Math.min(13.1, pos.x));
+          pos.z = Math.max(-13.1, Math.min(13.1, pos.z));
+        }
         this.selfAvatar.group.rotation.y = Math.atan2(moveDir.x, moveDir.z);
         this.selfAvatar.emote = null;
         this.selfAvatar.anim = this.isGrounded ? (isSprinting ? 'run' : 'walk') : 'jump';
@@ -2970,6 +3354,10 @@ export class BlockyWorld3D {
           pos.set(0, 0.6, 22);
           this.velocity.set(0, 0, 0);
           this._emitMoveNow();
+        } else if (this.currentZone === 2) {
+          pos.set(0, 0.6, 3.5);
+          this.velocity.set(0, 0, 0);
+          this._emitMoveNow();
         } else {
           this.warpToPlaza();
         }
@@ -2989,6 +3377,28 @@ export class BlockyWorld3D {
           this.onRequestZonePortal(1);
         } else if (dPortal < 5.2) {
           nextHint = '🌀 Step In or Press E — Enter Crystal Cavern Dungeon!';
+        }
+      } else if (this.currentZone === 2) {
+        const dGate = Math.hypot(
+          pos.x - this.prisonReleasePortalPos.x,
+          pos.z - this.prisonReleasePortalPos.z
+        );
+        if (this.prisonReleaseEligible && dGate < 2.2 && now - this.lastPortalTriggerAt > 2600) {
+          this.lastPortalTriggerAt = now;
+          this.onRequestZonePortal(0);
+        } else if (dGate < 4.8) {
+          nextHint = this.prisonReleaseEligible
+            ? '🔓 Sentence Served! Step In or Press E — Return to Starlight Plaza!'
+            : '🔒 Release Gate Locked — Work Glowing Chores (+5 🪙) to Clear Debt!';
+        }
+        if (!nextHint) {
+          for (const entry of this.prisonNodesMap.values()) {
+            if (!entry.data.available) continue;
+            if (pos.distanceTo(entry.group.position) < 5.4) {
+              nextHint = `${entry.data.icon || '🪨'} Press E to Work ${entry.data.name} (+5 🪙 Toward Debt)`;
+              break;
+            }
+          }
         }
       } else {
         const dReturn = Math.hypot(pos.x - this.dungeonReturnPortalPos.x, pos.z - this.dungeonReturnPortalPos.z);

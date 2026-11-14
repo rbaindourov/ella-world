@@ -15,9 +15,10 @@ use crate::udp_native::handle_client_event_command;
 use crate::udp_wire::{decode_c2s_state, encode_pong, OP_C2S_PING, OP_C2S_STATE};
 use crate::world::{BridgedOpusFrame, UdpWorldEvent, WorldEngine};
 use bytes::Bytes;
+use serde_json::json;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
@@ -58,6 +59,7 @@ struct PeerRtcSession {
     session_nonce: u64,
     self_id: String,
     username: String,
+    revoked: AtomicBool,
     pc: Arc<RTCPeerConnection>,
     events_dc: RwLock<Option<Arc<RTCDataChannel>>>,
     slots: Vec<Arc<VoiceSlot>>,
@@ -221,10 +223,14 @@ impl WebRtcSfu {
 
         // Bridge incoming Native Raw UDP Opus packets into browser pre-allocated voice slots!
         let bridge_sfu = Arc::clone(&sfu);
+        let bridge_world = Arc::clone(&world);
         let mut opus_rx = world.opus_bridge_tx.subscribe();
         tokio::spawn(async move {
             while let Ok(frame) = opus_rx.recv().await {
                 if !frame.from_native_udp {
+                    continue;
+                }
+                if !bridge_world.is_voice_allowed_for(&frame.from_id).await {
                     continue;
                 }
                 bridge_sfu
@@ -240,6 +246,35 @@ impl WebRtcSfu {
             while let Ok(ev) = ev_rx.recv().await {
                 if let UdpWorldEvent::PlayerLeave { id, .. } = ev {
                     leave_sfu.release_departed_speaker(&id).await;
+                }
+            }
+        });
+
+        // Immediately close WebRTC UDP PeerConnections on session revocation / password rollover
+        let revoke_sfu = Arc::clone(&sfu);
+        let mut revoke_rx = world.session_revoke_tx.subscribe();
+        tokio::spawn(async move {
+            while let Ok(sig) = revoke_rx.recv().await {
+                let matching: Vec<Arc<PeerRtcSession>> = {
+                    let map = revoke_sfu.sessions.read().await;
+                    map.values()
+                        .filter(|s| sig.matches(&s.self_id, &s.username))
+                        .cloned()
+                        .collect()
+                };
+                let notice = json!({
+                    "type": "session_revoked",
+                    "reason": sig.reason()
+                })
+                .to_string();
+                for sess in matching {
+                    sess.revoked.store(true, Ordering::Release);
+                    if let Some(dc) = sess.events_dc.read().await.clone() {
+                        let _ = dc.send_text(notice.clone()).await;
+                    }
+                    revoke_sfu
+                        .cleanup_session_matching(&sess.self_id, Some(sess.session_nonce))
+                        .await;
                 }
             }
         });
@@ -395,6 +430,7 @@ impl WebRtcSfu {
         };
 
         if let Some(s) = removed_sess {
+            s.revoked.store(true, Ordering::Release);
             self.world.set_udp_fastlane_active(self_id, false).await;
             let _ = s.pc.close().await;
         }
@@ -402,6 +438,42 @@ impl WebRtcSfu {
 
     pub async fn cleanup_session(&self, self_id: &str) {
         self.cleanup_session_matching(self_id, None).await;
+    }
+
+    pub async fn cleanup_sessions_for_username(&self, username: &str) -> usize {
+        let target = username.trim().to_lowercase();
+        let matching: Vec<(String, u64)> = {
+            let map = self.sessions.read().await;
+            map.values()
+                .filter(|s| s.username.eq_ignore_ascii_case(&target))
+                .map(|s| {
+                    s.revoked.store(true, Ordering::Release);
+                    (s.self_id.clone(), s.session_nonce)
+                })
+                .collect()
+        };
+        let count = matching.len();
+        for (sid, nonce) in matching {
+            self.cleanup_session_matching(&sid, Some(nonce)).await;
+        }
+        count
+    }
+
+    pub async fn cleanup_all_sessions(&self) -> usize {
+        let all: Vec<(String, u64)> = {
+            let map = self.sessions.read().await;
+            map.values()
+                .map(|s| {
+                    s.revoked.store(true, Ordering::Release);
+                    (s.self_id.clone(), s.session_nonce)
+                })
+                .collect()
+        };
+        let count = all.len();
+        for (sid, nonce) in all {
+            self.cleanup_session_matching(&sid, Some(nonce)).await;
+        }
+        count
     }
 
     /// Accepts a browser's single-shot SDP Offer (`POST /api/ella-world/rtc/offer`), binding:
@@ -486,6 +558,7 @@ impl WebRtcSfu {
             session_nonce,
             self_id: self_id.clone(),
             username: username.clone(),
+            revoked: AtomicBool::new(false),
             pc: Arc::clone(&pc),
             events_dc: RwLock::new(None),
             slots,
@@ -549,6 +622,9 @@ impl WebRtcSfu {
                     sid
                 );
                 while let Ok((rtp_pkt, _attrs)) = remote_track.read_rtp().await {
+                    if !world_c.is_voice_allowed_for(&sid).await {
+                        continue;
+                    }
                     let _ = world_c.opus_bridge_tx.send(BridgedOpusFrame {
                         from_id: sid.clone(),
                         from_native_udp: false,
@@ -611,14 +687,15 @@ impl WebRtcSfu {
     ) {
         let in_world = Arc::clone(&world);
         let in_dc = Arc::clone(&dc);
-        let in_self_id = sess.self_id.clone();
-        let in_username = sess.username.clone();
+        let in_sess = Arc::clone(&sess);
         dc.on_message(Box::new(move |msg: DataChannelMessage| {
             let w = Arc::clone(&in_world);
             let d = Arc::clone(&in_dc);
-            let sid = in_self_id.clone();
-            let uname = in_username.clone();
+            let s = Arc::clone(&in_sess);
             Box::pin(async move {
+                if s.revoked.load(Ordering::Acquire) {
+                    return;
+                }
                 let raw = msg.data.as_ref();
                 if raw.is_empty() {
                     return;
@@ -626,12 +703,13 @@ impl WebRtcSfu {
                 match raw[0] {
                     OP_C2S_STATE => {
                         if let Some(st) = decode_c2s_state(raw) {
-                            w.apply_c2s_state_ext(&sid, Some(&uname), true, st).await;
+                            w.apply_c2s_state_ext(&s.self_id, Some(&s.username), true, st)
+                                .await;
                         }
                     }
                     OP_C2S_PING if raw.len() >= 5 => {
                         let client_ts = u32::from_le_bytes([raw[1], raw[2], raw[3], raw[4]]);
-                        w.touch_player_udp(&sid).await;
+                        w.touch_player_udp(&s.self_id).await;
                         let pong = encode_pong(client_ts, w.current_tick());
                         let _ = d.send(&pong).await;
                     }
@@ -643,22 +721,29 @@ impl WebRtcSfu {
         // Outbound 20Hz S2C_WORLD_STATE (0x11) binary datagram pump over UDP
         let out_dc = Arc::clone(&dc);
         let out_world = Arc::clone(&world);
-        let out_self_id = sess.self_id.clone();
+        let out_sess = Arc::clone(&sess);
         dc.on_open(Box::new(move || {
             let d = Arc::clone(&out_dc);
             let w = Arc::clone(&out_world);
-            let sid = out_self_id.clone();
+            let s = Arc::clone(&out_sess);
             Box::pin(async move {
-                w.set_udp_fastlane_active(&sid, true).await;
+                if s.revoked.load(Ordering::Acquire) {
+                    return;
+                }
+                w.set_udp_fastlane_active(&s.self_id, true).await;
                 tokio::spawn(async move {
                     let mut tick_rx = w.pre_encoded_tick_tx.subscribe();
                     while tick_rx.changed().await.is_ok() {
+                        if s.revoked.load(Ordering::Acquire) {
+                            w.set_udp_fastlane_active(&s.self_id, false).await;
+                            break;
+                        }
                         let pre = tick_rx.borrow_and_update().clone();
                         let snap = crate::world::WorldEngine::encode_pre_tick_scheduled_chunk_for(
-                            &pre, &sid,
+                            &pre, &s.self_id,
                         );
                         if d.send(&snap).await.is_err() {
-                            w.set_udp_fastlane_active(&sid, false).await;
+                            w.set_udp_fastlane_active(&s.self_id, false).await;
                             break;
                         }
                     }
@@ -679,6 +764,9 @@ impl WebRtcSfu {
             let w = Arc::clone(&msg_world);
             let s = Arc::clone(&msg_sess);
             Box::pin(async move {
+                if s.revoked.load(Ordering::Acquire) {
+                    return;
+                }
                 let Ok(txt) = std::str::from_utf8(&msg.data) else {
                     return;
                 };
@@ -758,6 +846,17 @@ impl WebRtcSfu {
                                         .unwrap_or((false, crate::udp_wire::ZONE_PLAZA))
                                 };
                                 if ws_up || zone != crate::udp_wire::ZONE_DUNGEON {
+                                    continue;
+                                }
+                            }
+                            UdpWorldEvent::PrisonSync { .. } => {
+                                let (ws_up, zone) = {
+                                    let map = pump_world.players.read().await;
+                                    map.get(&self_id_filter)
+                                        .map(|p| (p.ws_connected, p.zone))
+                                        .unwrap_or((false, crate::udp_wire::ZONE_PLAZA))
+                                };
+                                if ws_up || zone != crate::udp_wire::ZONE_PRISON {
                                     continue;
                                 }
                             }

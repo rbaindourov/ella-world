@@ -52,41 +52,68 @@ pub async fn ws_upgrade_handler(
     Query(query): Query<WsAuthQuery>,
     State(st): State<AppState>,
 ) -> Response {
-    let Some(claims) = st.world.verify_session_token(query.token.trim()) else {
+    let Some((self_id, username, user_acc, session_epoch, pwd_sig)) = st
+        .world
+        .verify_active_player_token(query.token.trim())
+        .await
+    else {
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({ "ok": false, "error": "Invalid session token for WebSocket spine." })),
+            Json(json!({ "ok": false, "error": "Invalid or expired session token for WebSocket spine." })),
         )
             .into_response();
     };
-    let (Some(self_id), Some(username)) = (claims.self_id, claims.username) else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "ok": false, "error": "Missing player identity in token." })),
-        )
-            .into_response();
-    };
+    let user_token_epoch = user_acc.token_epoch;
 
     let world = Arc::clone(&st.world);
     let hub = Arc::clone(&st.ws_hub);
 
-    ws.max_message_size(64 * 1024)
-        .on_upgrade(move |socket| run_ws_spine_session(socket, world, hub, self_id, username))
+    ws.max_message_size(64 * 1024).on_upgrade(move |socket| {
+        run_ws_spine_session(
+            socket,
+            world,
+            hub,
+            self_id,
+            username,
+            session_epoch,
+            user_token_epoch,
+            pwd_sig,
+        )
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_ws_spine_session(
     mut socket: WebSocket,
     world: Arc<WorldEngine>,
     hub: Arc<WsSpineHub>,
     self_id: String,
     username: String,
+    session_epoch: u64,
+    user_token_epoch: u64,
+    pwd_sig: String,
 ) {
+    let mut revoke_rx = world.session_revoke_tx.subscribe();
+    if !world
+        .is_session_still_authorized(&username, session_epoch, user_token_epoch, &pwd_sig)
+        .await
+    {
+        let notice = json!({
+            "type": "session_revoked",
+            "reason": "Your session expired. Please sign in again!"
+        });
+        let _ = socket.send(Message::Text(notice.to_string())).await;
+        let _ = socket.close().await;
+        return;
+    }
+
     let Some((epoch, _player)) = world.mark_ws_connected(&self_id, &username).await else {
         let _ = socket.close().await;
         return;
     };
 
     hub.active_count.fetch_add(1, Ordering::Relaxed);
+    let mut was_revoked = false;
     let mut ev_rx = world.udp_event_tx.subscribe();
     let (targeted_tx, mut targeted_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     world
@@ -255,6 +282,12 @@ async fn run_ws_spine_session(
                             {
                                 continue;
                             }
+                            UdpWorldEvent::PrisonSync { .. }
+                                if world.get_peer_zone(&self_id).await
+                                    != crate::udp_wire::ZONE_PRISON =>
+                            {
+                                continue;
+                            }
                             _ => {}
                         }
                         if let Ok(json_txt) = serde_json::to_string(&ev) {
@@ -293,7 +326,38 @@ async fn run_ws_spine_session(
                 }
             }
 
+            Ok(sig) = revoke_rx.recv() => {
+                if sig.matches(&self_id, &username) {
+                    was_revoked = true;
+                    let notice = json!({
+                        "type": "session_revoked",
+                        "reason": sig.reason()
+                    });
+                    let _ = socket.send(Message::Text(notice.to_string())).await;
+                    let _ = socket.send(Message::Close(None)).await;
+                    break;
+                }
+            }
+
             _ = digest_tick.tick() => {
+                if !world
+                    .is_session_still_authorized(
+                        &username,
+                        session_epoch,
+                        user_token_epoch,
+                        &pwd_sig,
+                    )
+                    .await
+                {
+                    was_revoked = true;
+                    let notice = json!({
+                        "type": "session_revoked",
+                        "reason": "Your session expired. Please sign in again!"
+                    });
+                    let _ = socket.send(Message::Text(notice.to_string())).await;
+                    let _ = socket.send(Message::Close(None)).await;
+                    break;
+                }
                 let json_txt = world.get_cached_sync_digest_json().await;
                 if socket.send(Message::Text((*json_txt).clone())).await.is_err() {
                     break;
@@ -310,5 +374,9 @@ async fn run_ws_spine_session(
 
     world.unregister_peer_json_channel(&self_id).await;
     hub.active_count.fetch_sub(1, Ordering::Relaxed);
-    world.mark_ws_disconnected(&self_id, epoch).await;
+    if was_revoked {
+        world.remove_player_immediately(&self_id).await;
+    } else {
+        world.mark_ws_disconnected(&self_id, epoch).await;
+    }
 }

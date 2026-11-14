@@ -3,6 +3,7 @@
 
 # Runtime mutable world state & private accounts (never committed to public repo)
 /data/
+/scratch/
 *.env
 .env.*
 !.env.example

@@ -17,7 +17,18 @@ pub struct ServerConfig {
     pub tls_key_path: Option<PathBuf>,
 }
 
+pub const DEFAULT_TOKEN_TTL_SECS: u64 = 12 * 3600;
+
 impl ServerConfig {
+    pub fn token_ttl_ms(&self) -> u64 {
+        let secs = env::var("ELLA_TOKEN_TTL_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_TOKEN_TTL_SECS)
+            .clamp(60, 30 * 24 * 3600);
+        secs.saturating_mul(1_000)
+    }
+
     pub fn from_env() -> Self {
         let http_addr: SocketAddr = env::var("ELLA_HTTP_ADDR")
             .unwrap_or_else(|_| "0.0.0.0:8097".to_string())

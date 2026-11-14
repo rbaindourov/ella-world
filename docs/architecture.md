@@ -68,13 +68,13 @@ Shared identically across WebRTC `ella-udp-state` (`44444/udp`), WebSocket Binar
 | `21..25` | `f32 LE` | `ry` | Character yaw rotation in radians |
 | `25` | `u8` | `anim` | `0=idle`, `1=walk`, `2=run`, `3=jump` |
 | `26` | `u8` | `emote` | `0=none`, `1=pose`, `2=peace`, `3=dance`, `4=spin`, `5=wave`, `6=cheer`, `7=flip`, `8=sit` |
-| `27` | `u8` | `flags` | Bit `0`: `muted`, Bit `1`: `speaking`, Bits `2..7`: `zone` (`0 = ZONE_PLAZA`, `1 = ZONE_DUNGEON`) |
+| `27` | `u8` | `flags` | Bit `0`: `muted`, Bit `1`: `speaking`, Bits `2..7`: `zone` (`0 = ZONE_PLAZA`, `1 = ZONE_DUNGEON`, `2 = ZONE_PRISON`) |
 
 ### Server-to-Client `OP_S2C_WORLD_STATE` (`0x11` — Zone-Partitioned Compact Snapshot)
 
 - Header (`11 bytes`): `[0x11][server_tick: u32 LE][echo_client_time_ms: u32 LE][player_count: u16 LE]`
 - Per Remote Player (`1 + id_len + 19 bytes`): `[id_len: u8][id_utf8][x: f32 LE][y: f32 LE][z: f32 LE][ry: f32 LE][anim: u8][emote: u8][flags: u8]`
-- **Zero-Byte-Overhead Zone Partitioning**: `WorldEngine::rebuild_pre_encoded_tick` buckets pre-encoded player frames into `entries_by_zone` (`ZONE_PLAZA = 0`, `ZONE_DUNGEON = 1`). Peers only receive 20 Hz movement frames for remote players sharing their active zone, while `playersMap` and 8-slot Opus Party Voice remain connected across zones.
+- **Zero-Byte-Overhead Zone Partitioning**: `WorldEngine::rebuild_pre_encoded_tick` buckets pre-encoded player frames into `entries_by_zone` (`ZONE_PLAZA = 0`, `ZONE_DUNGEON = 1`, `ZONE_PRISON = 2`). Peers only receive 20 Hz movement frames for remote players sharing their active zone, while `playersMap` and 8-slot Opus Party Voice remain connected across zones (unless muted by parental controls).
 
 ### Native Raw UDP Envelope (`44445/udp`)
 
@@ -123,3 +123,41 @@ JSON state writes serialize to `.tmp.<pid>` in the same directory and execute an
 ## 6. Native Rust TLS (`ELLA_TLS_CERT` / `ELLA_TLS_KEY`)
 
 When `ELLA_TLS_CERT` and `ELLA_TLS_KEY` are configured (e.g., for dedicated deployment on `192.168.11.24:4444`), `start_all_servers` wraps the TCP accept loop in `tokio_rustls::TlsAcceptor` (`ring` crypto provider, `http/1.1` ALPN + `TCP_NODELAY`) and `hyper::server::conn::http1` with `.with_upgrades()` so HTTPS static assets, REST APIs, and `wss://<host>:4444/api/ella-world/ws` run natively without Nginx or port `443`.
+
+---
+
+## 7. Cryptographic Session Token Binding & Live Session Revocation (`src/auth.rs`, `src/world.rs`)
+
+To ensure parent password rotations and emergency sign-outs take effect **instantaneously** across persisted `localStorage` tokens (`ella_world_token`) as well as already-open WebSocket, WebRTC UDP SFU, and Native UDP connections:
+
+1. **Epoch & Password-Bound `TokenClaims` (`src/auth.rs`)**:
+   - Every HMAC-SHA256 session token binds `exp` (configurable via `ELLA_TOKEN_TTL_SECS`, default `43200s` / `12h`), global `sessionEpoch` (`UsersConfigFile::session_epoch`), per-account `userTokenEpoch` (`UserAccount::token_epoch`), and `pwdSig` (a 64-bit truncated HMAC-SHA256 over `"ewld-pwd-v1|<subject_lower>|<current_password>"` signed with `ELLA_HMAC_SECRET`).
+   - Legacy tokens missing `exp`, `sessionEpoch`, `userTokenEpoch`, or `pwdSig` are unconditionally rejected (`401 Unauthorized`) across `/api/ella-world/resume`, `/api/ella-world/ws`, `/api/ella-world/rtc/offer`, Native UDP `OP_HELLO`, and all authenticated HTTP action endpoints.
+2. **Automatic Revocation on Password Rollover (`POST /api/ella-world/admin/users`)**:
+   - Whenever an existing user's password changes, the server increments `UserAccount::token_epoch`, persists `world_users.json` atomically, tears down active WebRTC SFU PeerConnections (`WebRtcSfu::cleanup_sessions_for_username`) and Native UDP endpoints (`NativeUdpServer::evict_sessions_for_username`), broadcasts `SessionRevokeSignal::Username`, sends `{"type":"session_revoked","reason":...}` + WebSocket close, and evicts the player immediately with **zero 12-second grace window**.
+3. **One-Click Global & Per-User Token Expiration (`POST /api/ella-world/admin/sessions/revoke`)**:
+   - **Global Revoke (`{}`)**: Increments `UsersConfigFile::session_epoch` and every user's `token_epoch`, disconnects all WebSocket, WebRTC SFU, and Native UDP sessions immediately, and returns a freshly minted `adminToken` for the parent dashboard.
+   - **Per-User Revoke (`{ "username": "<id>" }`)**: Increments that account's `token_epoch` and kicks only that player's active transports.
+   - **CLI & UI**: Accessible both from the Parent Admin Panel (**"🔒 Expire All Logged-In Tokens"** and per-row **"Expire"** buttons) and via `node scripts/ella_admin_user_cli.mjs --revoke-all` / `--revoke-user <username>`.
+   - **Browser Cleanup (`Clear-Site-Data`)**: `POST /api/ella-world/logout` emits `Clear-Site-Data: "cookies", "storage", "cache"`, and browser clients immediately purge `localStorage` `ella_world_token` and return to the Login Screen upon receiving `session_revoked` or `401`.
+
+---
+
+## 8. Evasion-Resistant Chat Sanitization, Negative-Balance Fines, 3D Debtor's Prison & Parental Controls (`src/world.rs`, `src/economy.rs`)
+
+### 8.1 Evasion-Resistant Cursing Sanitization (`find_blocked_word`)
+- Catches spaced single-letter evasion (`"f u c k"`), punctuation-split evasion (`"s.h.i.t"`), multi-word toxic phrases (`"kill yourself"`, `"k1ll y0urself"`), repeated-letter elongation (`"fuuuck"`), and extended leetspeak (`1=i`, `3=e`, `4=a`, `5=s`, `0=o`, `7=t`, `8=b`, `@=a`, `$=s`, `!=i`) while enforcing word-boundary guards on short roots (`<= 4` chars) and skipping pure numeric tokens so clean words (`"class"`, `"pass"`, `"grass"`, `"hello"`, `"scrap"`, `"455 coins"`) never false-positive.
+
+### 8.2 Signed Debt Economy (`i64`) & Escalating Habitual Fines
+- `UserAccount::coins` and `PlayerEconomySnapshot::coins` use signed `i64` balances.
+- Each blocked profanity attempt increments `UserAccount::violation_strikes` and deducts an escalating Starlight Coin fine (`calculate_escalating_fine(base, strike)`: `-15`, `-35`, `-75`, `-150`, `-300`, `-500` 🪙 for `profanityFineBase = 15`), allowing habitual violators to drop into negative debt.
+- Every violation appends full judicial telemetry (`strikeNumber`, `fineCoins`, `balanceAfter`, `sentencedToPrison`) to `world_chat_blocked.jsonl` and broadcasts a public **Judge Starlight** court notice in world chat.
+
+### 8.3 3D Debtor's Prison (`ZONE_PRISON = 2`) & Community Service (`POST /api/ella-world/prison/work`)
+- Players whose balance drops `<= debtPrisonThreshold` (default `-50 🪙`) **or** whose strikes reach `>= prisonStrikeThreshold` (default `3`)—or who are manually sentenced by a parent—are immediately warped into **Debtor's Prison (`ZONE_PRISON = 2`)**, an enclosed `28m × 28m` 3D courtyard (`[-13.2, 13.2]` server-clamped bounds).
+- While imprisoned (`in_debtors_prison == true`), the server blocks portal warps to Plaza/Dungeon, voxel block building (`/block`), item consumables (`/economy/use`), runway theme/vote mutations, and P2P trading (`/trade/*`).
+- Prisoners clear their sentence either by completing **6 glowing 3D community-service stations** (`prison_rock_1`, `prison_rock_2`, `prison_sweep_1`, `prison_sweep_2`, `prison_lantern_1`, `prison_lantern_2`, 6s recharge; each awards `+5 🪙` strictly capped at `0 🪙` with zero positive-coin farming exploit and decrements `prison_tasks_remaining`) and walking through the unlocked Release Gate Arch at `(0, 0, 11.5)` once `coins >= 0 && prison_tasks_remaining == 0`, **or** by receiving an instant **🕊️ Parent Pardon** from the Parent Admin Panel / CLI.
+
+### 8.4 Comprehensive Parental Controls (`POST /api/ella-world/admin/moderate` & `/admin/settings`)
+- **Per-Child Controls**: Server-enforced Voice Mic Mute (`voiceMutedByParent` drops Opus RTP/UDP frames inside both `WebRtcSfu` and `NativeUdpServer`), Text Chat Policy (`normal`, `quick_only` allowing only `SAFE_QUICK_CHAT_PHRASES`, or `muted`), Build Lock (`canBuild`), Trade Lock (`canTrade`), Account Pause/Grounding (`suspended` returning `403 Forbidden` + instant live session kick), `+ / -` Coin Adjust, Send to Prison, Parent Pardon, and Reset Strikes.
+- **Global Safety Switches**: World Pause Lock (`worldLocked`), Automatic Bedtime Curfew Window (`curfewEnabled`, `curfewStart`..`curfewEnd` in 24h local server time), Global Voice Toggle (`globalVoiceEnabled`), Global Chat Policy (`globalChatMode`), and configurable `profanityFineBase` / `debtPrisonThreshold` / `prisonStrikeThreshold`.

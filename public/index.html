@@ -52,7 +52,7 @@
         <div class="field-group">
           <div class="label-row">
             <label for="login-password">Secret Password</label>
-            <button type="button" id="toggle-login-password" class="text-btn" aria-controls="login-password">
+            <button type="button" id="toggle-login-password" class="text-btn" aria-controls="login-password" aria-pressed="false">
               Show password
             </button>
           </div>
@@ -183,6 +183,22 @@
       </div>
     </section>
 
+    <!-- Debtor's Prison Sentence & Community Service Banner (Shown only in ZONE_PRISON) -->
+    <section id="prison-sentence-banner" class="prison-sentence-banner" hidden aria-label="Debtor's Prison Sentence Status">
+      <div class="prison-banner-header">
+        <span class="prison-badge">⚖️ DEBTOR'S PRISON</span>
+        <strong id="prison-banner-title">Community Service Active</strong>
+      </div>
+      <p id="prison-banner-reason" class="prison-banner-reason">
+        Keep ELLA World kind! Press E at glowing courtyard chores to pay off negative debt (+5 🪙 each) and unlock the Release Gate.
+      </p>
+      <div class="prison-banner-metrics">
+        <span id="prison-debt-pill" class="prison-metric-pill is-debt">🪙 Balance: 0</span>
+        <span id="prison-chores-pill" class="prison-metric-pill">🪨 Chores Left: 0</span>
+        <span id="prison-gate-pill" class="prison-metric-pill">🔒 Gate Locked</span>
+      </div>
+    </section>
+
     <!-- Center Toast Banner for Obby Checkpoints / Trophy Celebration / Runway Votes -->
     <div id="hud-toast" class="hud-toast" role="status" aria-live="polite" hidden></div>
 
@@ -238,6 +254,9 @@
         <button type="button" class="reaction-btn" data-react="💃 Meet me at the Fashion Runway!">💃 Runway!</button>
         <button type="button" class="reaction-btn" data-react="🎉 Let's race the Sky Obby!">🏃‍♀️ Obby!</button>
         <button type="button" class="reaction-btn" data-react="👗 Check out my new Glam Closet look!">👗 New Fit!</button>
+        <button type="button" class="reaction-btn" data-react="💎 Let's explore Crystal Cavern!">💎 Cavern!</button>
+        <button type="button" class="reaction-btn" data-react="🙏 Sorry! Working hard!">🙏 Sorry!</button>
+        <button type="button" class="reaction-btn" data-react="👍 Good game!">👍 GG!</button>
         <button type="button" class="reaction-btn" data-react="👋 Hi besties!!">👋 Hi!</button>
       </div>
       <form id="chat-form" class="chat-form">
@@ -763,6 +782,7 @@
           <li><strong>Look Around (3D Camera):</strong> Drag anywhere on the 3D view with your mouse and scroll to zoom in/out.</li>
           <li><strong>Voice Chat:</strong> Press <kbd>M</kbd> to Mute/Unmute your mic, or turn on <strong>Push-to-Talk</strong> and hold <kbd>V</kbd> to speak.</li>
           <li><strong>Co-Op Block Building:</strong> Press <kbd>B</kbd> in Starlight Plaza to build colorful creations together in real time!</li>
+          <li><strong>Kindness Rules &amp; Debtor's Prison:</strong> Cursing or unkind chat deducts escalating Starlight Coin fines (even into negative debt!). Dropping below the debt limit or hitting the strike limit sends you to <strong>⚖️ Debtor's Prison</strong>, where you press <kbd>E</kbd> at glowing courtyard chores (+5 🪙 toward clearing debt) or ask a parent for a pardon!</li>
         </ul>
         <div class="modal-footer">
           <button type="button" class="primary-cta-btn" data-close-dialog="help-dialog" autofocus>Got It!</button>
@@ -771,23 +791,23 @@
     </div>
   </dialog>
 
-  <!-- MODAL 4: Parent Admin Panel (Add/Remove Friends, Set Passwords, World Settings) -->
+  <!-- MODAL 4: Parent Admin Panel (Add/Remove Friends, Set Passwords, Parental Controls & Debtor's Prison Judge) -->
   <dialog id="admin-dialog" closedby="any" aria-labelledby="admin-dialog-title">
     <div class="modal-shell modal-wide">
       <header class="modal-header">
-        <h2 id="admin-dialog-title">🔐 Parent Admin Panel — Friend Accounts &amp; World Controls</h2>
+        <h2 id="admin-dialog-title">🔐 Parent Admin Panel — Safety, Fines &amp; Debtor's Prison Controls</h2>
         <button type="button" class="modal-close-btn" data-close-dialog="admin-dialog" aria-label="Close Parent Admin Panel">✕</button>
       </header>
 
       <div class="modal-body">
-        <form id="admin-auth-form" class="auth-form">
+        <form id="admin-auth-form" class="auth-form" method="post" action="/api/ella-world/admin/login">
           <p class="small-note">
-            Enter the <strong>Parent Master Password</strong> (stored in <code>data/world_users.json</code> on the standalone Rust server) to add friends, reset passwords, or manage the world.
+            Enter the <strong>Parent Master Password</strong> (stored in <code>data/world_users.json</code> on the standalone Rust server) to manage friend accounts, parental safety locks, coin fines, and Debtor's Prison sentences.
           </p>
           <div class="field-group">
             <div class="label-row">
               <label for="admin-master-password">Parent Master Password</label>
-              <button type="button" id="toggle-admin-password" class="text-btn" aria-controls="admin-master-password">
+              <button type="button" id="toggle-admin-password" class="text-btn" aria-controls="admin-master-password" aria-pressed="false">
                 Show password
               </button>
             </div>
@@ -809,20 +829,27 @@
         <div id="admin-dashboard-content" hidden>
           <div class="admin-columns">
             <div class="admin-card">
-              <h3>👧 Whitelisted Friends (<span id="admin-user-count">0</span>)</h3>
+              <div class="admin-card-header-row">
+                <h3 id="admin-friends-heading">👧 Whitelisted Friends &amp; Judicial Status (<span id="admin-user-count">0</span>)</h3>
+                <div class="btn-group">
+                  <span class="mode-badge" title="Global session token epoch">Epoch #<span id="admin-session-epoch">1</span></span>
+                  <button type="button" id="admin-revoke-all-btn" class="small-action-btn danger-action">🔒 Expire All Logged-In Tokens</button>
+                </div>
+              </div>
               <p class="small-note">
-                Only friends listed below can sign into the world. Changes automatically sync to <code>data/world_users.json</code> on the Rust server.
+                Toggle per-child Mic, Safe Quick-Chat, Build/Trade permissions, Grounding, Coin fines/bonuses, or issue instant <strong>⚖️ Debtor's Prison</strong> sentences and <strong>🕊️ Parent Pardons</strong>.
               </p>
-              <div class="table-scroll">
-                <table class="admin-table">
+              <p id="admin-session-feedback" class="feedback-note" hidden role="status"></p>
+              <div class="table-scroll" tabindex="0" role="region" aria-labelledby="admin-friends-heading">
+                <table class="admin-table admin-users-table">
                   <thead>
                     <tr>
-                      <th>Username</th>
-                      <th>Display Name</th>
-                      <th>Coins / Items</th>
-                      <th>Password</th>
-                      <th>Status</th>
-                      <th>Actions</th>
+                      <th scope="col">Friend</th>
+                      <th scope="col">Coins / Debt</th>
+                      <th scope="col">Password</th>
+                      <th scope="col">Safety &amp; Status</th>
+                      <th scope="col">⚖️ Parental &amp; Court Controls</th>
+                      <th scope="col">Account</th>
                     </tr>
                   </thead>
                   <tbody id="admin-users-tbody"></tbody>
@@ -831,8 +858,8 @@
             </div>
 
             <div class="admin-side-stack">
-              <form id="admin-upsert-user-form" class="admin-card">
-                <h3>➕ Add or Update a Friend</h3>
+              <form id="admin-upsert-user-form" class="admin-card" method="post" action="/api/ella-world/admin/users" aria-labelledby="admin-upsert-heading">
+                <h3 id="admin-upsert-heading">➕ Add or Update a Friend</h3>
                 <div class="field-group">
                   <label for="admin-friend-username">Username (login ID)</label>
                   <input
@@ -866,6 +893,8 @@
                     name="password"
                     autocomplete="off"
                     spellcheck="false"
+                    autocorrect="off"
+                    autocapitalize="none"
                     placeholder="e.g. sparkle2026"
                     required
                   />
@@ -886,8 +915,8 @@
                 <button type="submit" class="primary-cta-btn">Save Friend Account</button>
               </form>
 
-              <form id="admin-settings-form" class="admin-card">
-                <h3>🌍 World &amp; Security Settings</h3>
+              <form id="admin-settings-form" class="admin-card" method="post" action="/api/ella-world/admin/settings" aria-labelledby="admin-settings-heading">
+                <h3 id="admin-settings-heading">🌍 World, Curfew &amp; Judicial Settings</h3>
                 <div class="field-group">
                   <label for="admin-world-name">World Title</label>
                   <input type="text" id="admin-world-name" name="worldName" required />
@@ -899,6 +928,99 @@
                     <option value="proximity">3D Proximity Voice (Louder when standing close)</option>
                   </select>
                 </div>
+
+                <fieldset class="admin-fieldset">
+                  <legend>🛡️ Global Parental Safety &amp; Bedtime Curfew</legend>
+                  <div class="admin-check-row">
+                    <input type="checkbox" id="admin-world-locked" name="worldLocked" />
+                    <label for="admin-world-locked">⏸️ Pause / Lock Entire World Now (signs out active players)</label>
+                  </div>
+                  <div class="admin-check-row">
+                    <input type="checkbox" id="admin-global-voice-enabled" name="globalVoiceEnabled" checked />
+                    <label for="admin-global-voice-enabled">🎤 Allow Live Voice Chat Globally</label>
+                  </div>
+                  <div class="field-group">
+                    <label for="admin-global-chat-mode">Global Text Chat Policy</label>
+                    <select id="admin-global-chat-mode" name="globalChatMode">
+                      <option value="normal">💬 Normal Filtered Text Chat</option>
+                      <option value="quick_only">🛡️ Safe Preset Quick-Chat Phrases Only</option>
+                      <option value="muted">🔇 Mute All Player Text Chat</option>
+                    </select>
+                  </div>
+                  <div class="admin-check-row">
+                    <input type="checkbox" id="admin-curfew-enabled" name="curfewEnabled" />
+                    <label for="admin-curfew-enabled">🌙 Enforce Automatic Bedtime Curfew Window</label>
+                  </div>
+                  <div class="admin-inline-grid">
+                    <div class="field-group">
+                      <label for="admin-curfew-start">Curfew Starts (24h)</label>
+                      <input type="time" id="admin-curfew-start" name="curfewStart" value="21:00" />
+                    </div>
+                    <div class="field-group">
+                      <label for="admin-curfew-end">Curfew Ends (24h)</label>
+                      <input type="time" id="admin-curfew-end" name="curfewEnd" value="07:00" />
+                    </div>
+                  </div>
+                </fieldset>
+
+                <fieldset class="admin-fieldset">
+                  <legend>⚖️ Cursing Fines &amp; Debtor's Prison Policy</legend>
+                  <div class="admin-check-row">
+                    <input type="checkbox" id="admin-chat-filter-enabled" name="chatFilterEnabled" checked />
+                    <label for="admin-chat-filter-enabled">Enable Chat Safety Word Filter &amp; Escalating Fines</label>
+                  </div>
+                  <div class="admin-inline-grid three-up">
+                    <div class="field-group">
+                      <label for="admin-profanity-fine-base">Base Fine (🪙)</label>
+                      <input
+                        type="number"
+                        id="admin-profanity-fine-base"
+                        name="profanityFineBase"
+                        min="1"
+                        max="500"
+                        step="1"
+                        inputmode="numeric"
+                        value="15"
+                      />
+                    </div>
+                    <div class="field-group">
+                      <label for="admin-debt-prison-threshold">Prison Debt (🪙)</label>
+                      <input
+                        type="number"
+                        id="admin-debt-prison-threshold"
+                        name="debtPrisonThreshold"
+                        min="-5000"
+                        max="-5"
+                        step="5"
+                        inputmode="numeric"
+                        value="-50"
+                      />
+                    </div>
+                    <div class="field-group">
+                      <label for="admin-prison-strike-threshold">Strike Limit</label>
+                      <input
+                        type="number"
+                        id="admin-prison-strike-threshold"
+                        name="prisonStrikeThreshold"
+                        min="1"
+                        max="20"
+                        step="1"
+                        inputmode="numeric"
+                        value="3"
+                      />
+                    </div>
+                  </div>
+                  <div class="field-group">
+                    <label for="admin-blocked-words">Blocked Words &amp; Phrases (comma-separated)</label>
+                    <textarea
+                      id="admin-blocked-words"
+                      name="blockedWords"
+                      rows="2"
+                      placeholder="fuck, shit, bitch, kill yourself, ..."
+                    ></textarea>
+                  </div>
+                </fieldset>
+
                 <div class="field-group">
                   <label for="admin-new-master-password">Change Parent Master Password (optional)</label>
                   <input
@@ -909,19 +1031,8 @@
                     placeholder="Leave blank to keep current password"
                   />
                 </div>
-                <label class="admin-checkbox-row">
-                  <input type="checkbox" id="admin-chat-filter-enabled" checked />
-                  <span>Enable Chat Safety Word Filter</span>
-                </label>
-                <div class="field-group">
-                  <label for="admin-blocked-words">Blocked Words (comma-separated)</label>
-                  <textarea
-                    id="admin-blocked-words"
-                    rows="2"
-                    placeholder="fuck, shit, bitch, ..."
-                  ></textarea>
-                </div>
-                <button type="submit" class="secondary-outline-btn">Save World Settings</button>
+                <p id="admin-settings-feedback" class="feedback-note" hidden role="status"></p>
+                <button type="submit" class="secondary-outline-btn">Save World &amp; Safety Settings</button>
 
                 <hr class="divider" />
                 <div class="world-reset-row">
@@ -937,35 +1048,41 @@
 
           <div class="admin-card admin-chat-card">
             <div class="admin-chat-header">
-              <h3>💬 Chat History &amp; Safety Audit (<span id="admin-chat-count">0</span> logged, <span id="admin-blocked-chat-count">0</span> blocked)</h3>
-              <div class="admin-chat-toolbar">
+              <h3 id="admin-chats-heading">💬 Chat History &amp; Violation Fines Audit (<span id="admin-chat-count">0</span> logged, <span id="admin-blocked-chat-count">0</span> blocked)</h3>
+              <search class="admin-chat-toolbar" aria-label="Filter chat audit history">
                 <input
                   type="text"
                   id="admin-chat-user-filter"
+                  name="userFilter"
+                  autocomplete="off"
+                  spellcheck="false"
+                  autocorrect="off"
+                  autocapitalize="none"
                   placeholder="Filter player..."
                   aria-label="Filter chat by player"
                 />
                 <input
                   type="text"
                   id="admin-chat-search"
+                  name="searchFilter"
                   placeholder="Search messages..."
                   aria-label="Search chat messages"
                 />
-                <label class="admin-checkbox-row compact">
-                  <input type="checkbox" id="admin-chat-include-blocked" />
-                  <span>Include Blocked</span>
-                </label>
+                <div class="admin-check-row compact">
+                  <input type="checkbox" id="admin-chat-include-blocked" name="includeBlocked" checked />
+                  <label for="admin-chat-include-blocked">Include Blocked &amp; Fines</label>
+                </div>
                 <button type="button" id="admin-chat-refresh-btn" class="small-action-btn">↻ Refresh</button>
-              </div>
+              </search>
             </div>
-            <div class="table-scroll admin-chat-scroll">
-              <table class="admin-table">
+            <div class="table-scroll admin-chat-scroll" tabindex="0" role="region" aria-labelledby="admin-chats-heading">
+              <table class="admin-table admin-chats-table">
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Player</th>
-                    <th>Message</th>
-                    <th>Status</th>
+                    <th scope="col">Player</th>
+                    <th scope="col">Time</th>
+                    <th scope="col">Message</th>
+                    <th scope="col">Enforcement &amp; Fine</th>
                   </tr>
                 </thead>
                 <tbody id="admin-chats-tbody"></tbody>

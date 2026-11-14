@@ -2,6 +2,16 @@
   "worldName": "Ella's Starlight Glam Plaza",
   "adminPassword": "changeme-parent-admin",
   "voiceDefaultMode": "party",
+  "globalVoiceEnabled": true,
+  "globalChatMode": "normal",
+  "worldLocked": false,
+  "curfewEnabled": false,
+  "curfewStart": "21:00",
+  "curfewEnd": "07:00",
+  "chatFilterEnabled": true,
+  "profanityFineBase": 15,
+  "debtPrisonThreshold": -50,
+  "prisonStrikeThreshold": 3,
   "iceServers": [
     {
       "urls": [

@@ -33,6 +33,7 @@ const utf8Decoder = new TextDecoder();
 
 export const ZONE_PLAZA = 0;
 export const ZONE_DUNGEON = 1;
+export const ZONE_PRISON = 2;
 
 export function encodeBinaryC2SState(seq, clientTimeMs, state) {
   const buf = new ArrayBuffer(28);
@@ -108,7 +109,8 @@ export class VoiceChatManager {
     onWorldStateSnapshot,
     onWorldEvent,
     onUdpTransportStatus,
-    onStatusChange
+    onStatusChange,
+    onAuthRejected
   }) {
     this.outboundSeq = 0;
     this.nextSeq =
@@ -123,6 +125,7 @@ export class VoiceChatManager {
     this.onWorldEvent = onWorldEvent || (() => {});
     this.onUdpTransportStatus = onUdpTransportStatus || (() => {});
     this.onStatusChange = onStatusChange || (() => {});
+    this.onAuthRejected = onAuthRejected || (() => {});
 
     this.selfId = null;
     this.sessionToken = '';
@@ -136,6 +139,7 @@ export class VoiceChatManager {
     this.selectedDeviceId = '';
 
     this.isMuted = false;
+    this.serverForceMuted = false;
     this.pushToTalk = false;
     this.pttKeyDown = false;
     this.proximityMode = false;
@@ -377,6 +381,12 @@ export class VoiceChatManager {
           return;
         }
         if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'session_revoked') {
+          const reason = msg.reason || 'Your session has expired. Please sign in again.';
+          this.disconnectSession();
+          this.onAuthRejected(reason);
+          return;
+        }
         if (msg.type === 'voice_slot_map' && msg.slots) {
           this.applyVoiceSlotMap(msg.slots);
           return;
@@ -456,6 +466,18 @@ export class VoiceChatManager {
         })
       });
 
+      if (res.status === 401) {
+        let errMsg = 'Your session has expired. Please sign in again.';
+        try {
+          const errJson = await res.json();
+          if (errJson && errJson.error) errMsg = errJson.error;
+        } catch {
+          // ignore parse failure
+        }
+        this.disconnectSession();
+        this.onAuthRejected(errMsg);
+        return false;
+      }
       if (!res.ok) {
         throw new Error(`RTC offer HTTP ${res.status}`);
       }
@@ -754,7 +776,18 @@ export class VoiceChatManager {
     this._notifyLocalState();
   }
 
+  setServerForceMuted(forceMuted) {
+    const next = Boolean(forceMuted);
+    if (this.serverForceMuted === next) return;
+    this.serverForceMuted = next;
+    this._applyMicTrackEnabledState();
+    this._notifyLocalState();
+  }
+
   toggleMute() {
+    if (this.serverForceMuted) {
+      return true;
+    }
     if (this.pushToTalk) {
       this.pushToTalk = false;
     }
@@ -770,7 +803,7 @@ export class VoiceChatManager {
   }
 
   setPttKeyActive(down) {
-    if (!this.pushToTalk) return;
+    if (this.serverForceMuted || !this.pushToTalk) return;
     if (this.pttKeyDown === down) return;
     this.pttKeyDown = Boolean(down);
     this._applyMicTrackEnabledState();
@@ -783,6 +816,9 @@ export class VoiceChatManager {
   }
 
   isEffectivelyMuted() {
+    if (this.serverForceMuted) {
+      return true;
+    }
     if (this.pushToTalk) {
       return !this.pttKeyDown;
     }
