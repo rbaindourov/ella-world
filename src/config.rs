@@ -13,6 +13,8 @@ pub struct ServerConfig {
     pub public_dir: PathBuf,
     pub seed_users_file: PathBuf,
     pub hmac_secret: String,
+    pub tls_cert_path: Option<PathBuf>,
+    pub tls_key_path: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -56,6 +58,18 @@ impl ServerConfig {
         let hmac_secret = env::var("ELLA_HMAC_SECRET")
             .unwrap_or_else(|_| "ella-world-rust-udp-dev-hmac-change-in-prod".to_string());
 
+        let tls_cert_path = env::var("ELLA_TLS_CERT")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+
+        let tls_key_path = env::var("ELLA_TLS_KEY")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+
         Self {
             http_addr,
             webrtc_udp_bind_ip,
@@ -66,6 +80,8 @@ impl ServerConfig {
             public_dir,
             seed_users_file,
             hmac_secret,
+            tls_cert_path,
+            tls_key_path,
         }
     }
 }

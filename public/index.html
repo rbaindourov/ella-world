@@ -818,6 +818,18 @@
                     placeholder="Leave blank to keep current password"
                   />
                 </div>
+                <label class="admin-checkbox-row">
+                  <input type="checkbox" id="admin-chat-filter-enabled" checked />
+                  <span>Enable Chat Safety Word Filter</span>
+                </label>
+                <div class="field-group">
+                  <label for="admin-blocked-words">Blocked Words (comma-separated)</label>
+                  <textarea
+                    id="admin-blocked-words"
+                    rows="2"
+                    placeholder="fuck, shit, bitch, ..."
+                  ></textarea>
+                </div>
                 <button type="submit" class="secondary-outline-btn">Save World Settings</button>
 
                 <hr class="divider" />
@@ -829,6 +841,44 @@
                   </div>
                 </div>
               </form>
+            </div>
+          </div>
+
+          <div class="admin-card admin-chat-card">
+            <div class="admin-chat-header">
+              <h3>💬 Chat History &amp; Safety Audit (<span id="admin-chat-count">0</span> logged, <span id="admin-blocked-chat-count">0</span> blocked)</h3>
+              <div class="admin-chat-toolbar">
+                <input
+                  type="text"
+                  id="admin-chat-user-filter"
+                  placeholder="Filter player..."
+                  aria-label="Filter chat by player"
+                />
+                <input
+                  type="text"
+                  id="admin-chat-search"
+                  placeholder="Search messages..."
+                  aria-label="Search chat messages"
+                />
+                <label class="admin-checkbox-row compact">
+                  <input type="checkbox" id="admin-chat-include-blocked" />
+                  <span>Include Blocked</span>
+                </label>
+                <button type="button" id="admin-chat-refresh-btn" class="small-action-btn">↻ Refresh</button>
+              </div>
+            </div>
+            <div class="table-scroll admin-chat-scroll">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Player</th>
+                    <th>Message</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="admin-chats-tbody"></tbody>
+              </table>
             </div>
           </div>
         </div>

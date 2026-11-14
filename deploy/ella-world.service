@@ -11,11 +11,14 @@ Restart=always
 RestartSec=2
 LimitNOFILE=65536
 
-# Bind HTTP only on loopback behind Nginx HTTPS reverse proxy
-Environment=ELLA_HTTP_ADDR=127.0.0.1:8097
-# Bind single-port multiplexed WebRTC UDP Voice + 20Hz Binary State on :44444/udp
+# Standalone HTTPS + WSS directly on :4444/tcp (no Nginx / port 443 needed)
+Environment=ELLA_HTTP_ADDR=0.0.0.0:4444
+# Native Rust TLS certificate & key paths (provide via systemd drop-in or /etc/ella-world/tls)
+Environment=ELLA_TLS_CERT=/etc/ella-world/tls/fullchain.pem
+Environment=ELLA_TLS_KEY=/etc/ella-world/tls/privkey.pem
+# Bind single-port multiplexed WebRTC UDP Voice + 20Hz Binary State on :4444/udp
 Environment=ELLA_WEBRTC_BIND_IP=0.0.0.0
-Environment=ELLA_WEBRTC_UDP_PORT=44444
+Environment=ELLA_WEBRTC_UDP_PORT=4444
 # Bind Native Raw UDP EWLD v1 Voice + State on :44445/udp
 Environment=ELLA_NATIVE_UDP_PORT=44445
 # Optional: set ELLA_PUBLIC_IP via systemd drop-in (/etc/systemd/system/ella-world.service.d/override.conf)

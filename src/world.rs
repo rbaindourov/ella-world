@@ -1,9 +1,9 @@
 use crate::auth::{sign_token, verify_token, TokenClaims};
 use crate::config::ServerConfig;
 use crate::models::{
-    default_starter_blocks, is_valid_hex_color, now_ms, BlocksDataFile, ChatMessage,
-    PlayerRuntimeState, RunwayPublicSummary, RunwayState, SanitizedUser, SavedPosition,
-    UserAccount, UsersConfigFile, VoxelBlock, RUNWAY_THEMES,
+    default_starter_blocks, is_valid_hex_color, now_ms, BlockedChatEntry, BlocksDataFile,
+    ChatMessage, PlayerRuntimeState, RunwayPublicSummary, RunwayState, SanitizedUser,
+    SavedPosition, UserAccount, UsersConfigFile, VoxelBlock, RUNWAY_THEMES,
 };
 use crate::persistence::PersistenceStore;
 use crate::udp_wire::{encode_s2c_world_state, DecodedC2SState};
@@ -109,6 +109,7 @@ pub struct WorldEngine {
     pub blocks_data: RwLock<BlocksDataFile>,
     pub players: RwLock<HashMap<String, PlayerRuntimeState>>,
     pub chats: RwLock<VecDeque<ChatMessage>>,
+    pub chat_cooldowns: RwLock<HashMap<String, VecDeque<u64>>>,
     pub runway: RwLock<RunwayState>,
     pub server_tick: AtomicU32,
     pub state_seq: AtomicU64,
@@ -122,6 +123,11 @@ impl WorldEngine {
         let store = PersistenceStore::new(&config.data_dir, &config.seed_users_file)?;
         let users_cfg = store.load_or_init_users()?;
         let blocks_data = store.load_or_init_blocks()?;
+        let recent_chats = store.load_recent_chats(60);
+        let mut chat_deque = VecDeque::with_capacity(64);
+        for c in recent_chats {
+            chat_deque.push_back(c);
+        }
         let (udp_event_tx, _) = broadcast::channel(1024);
         let (opus_bridge_tx, _) = broadcast::channel(1024);
 
@@ -131,7 +137,8 @@ impl WorldEngine {
             users_cfg: RwLock::new(users_cfg),
             blocks_data: RwLock::new(blocks_data),
             players: RwLock::new(HashMap::new()),
-            chats: RwLock::new(VecDeque::with_capacity(64)),
+            chats: RwLock::new(chat_deque),
+            chat_cooldowns: RwLock::new(HashMap::new()),
             runway: RwLock::new(RunwayState::default()),
             server_tick: AtomicU32::new(1),
             state_seq: AtomicU64::new(1),
@@ -764,15 +771,23 @@ impl WorldEngine {
         username: &str,
         raw_text: Option<&str>,
         is_trophy_win: bool,
-    ) -> Option<ChatMessage> {
-        let (disp_name, role) = {
+    ) -> Result<ChatMessage, String> {
+        let (disp_name, role, filter_enabled, blocked_words) = {
             let cfg = self.users_cfg.read().await;
-            let u = cfg
+            let Some(u) = cfg
                 .users
                 .iter()
-                .find(|u| u.username.eq_ignore_ascii_case(username))?;
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            else {
+                return Err("Account is no longer active.".into());
+            };
             let s = u.sanitized();
-            (s.display_name, s.role)
+            (
+                s.display_name,
+                s.role,
+                cfg.chat_filter_enabled,
+                cfg.blocked_words.clone(),
+            )
         };
 
         let ts = now_ms();
@@ -797,7 +812,51 @@ impl WorldEngine {
         };
 
         if clean_text.is_empty() {
-            return None;
+            return Err("Chat message cannot be empty.".into());
+        }
+
+        if !is_trophy_win {
+            if filter_enabled {
+                if let Some(matched) = find_blocked_word(&clean_text, &blocked_words) {
+                    let blocked = BlockedChatEntry {
+                        id: format!("{ts}-{:06x}", rand::random::<u32>() & 0xffffff),
+                        sender_id: self_id.to_string(),
+                        username: username.to_string(),
+                        display_name: disp_name,
+                        text: clean_text,
+                        reason: "blocked_word".into(),
+                        matched_word: Some(matched),
+                        ts,
+                    };
+                    let _ = self.store.append_blocked_chat(&blocked);
+                    return Err("Keep chat friendly! Please avoid inappropriate words.".into());
+                }
+            }
+
+            let mut cooldowns = self.chat_cooldowns.write().await;
+            let q = cooldowns.entry(username.to_lowercase()).or_default();
+            while let Some(&oldest) = q.front() {
+                if ts.saturating_sub(oldest) > 8_000 {
+                    q.pop_front();
+                } else {
+                    break;
+                }
+            }
+            if q.len() >= 6 {
+                let blocked = BlockedChatEntry {
+                    id: format!("{ts}-{:06x}", rand::random::<u32>() & 0xffffff),
+                    sender_id: self_id.to_string(),
+                    username: username.to_string(),
+                    display_name: disp_name,
+                    text: clean_text,
+                    reason: "rate_limit".into(),
+                    matched_word: None,
+                    ts,
+                };
+                let _ = self.store.append_blocked_chat(&blocked);
+                return Err("Slow down a tiny bit! Wait a couple seconds before chatting again.".into());
+            }
+            q.push_back(ts);
         }
 
         let entry = ChatMessage {
@@ -819,6 +878,7 @@ impl WorldEngine {
             }
             chats.push_back(entry.clone());
         }
+        let _ = self.store.append_chat(&entry);
 
         let seq = self.next_state_seq();
         let _ = self.udp_event_tx.send(UdpWorldEvent::Chat {
@@ -826,7 +886,7 @@ impl WorldEngine {
             chat: entry.clone(),
         });
 
-        Some(entry)
+        Ok(entry)
     }
 
     pub async fn mutate_runway(
@@ -924,4 +984,86 @@ impl WorldEngine {
         });
         next_blocks
     }
+}
+
+fn normalize_leet_char(c: char) -> Option<char> {
+    let lc = c.to_ascii_lowercase();
+    match lc {
+        'a'..='z' => Some(lc),
+        '0' => Some('o'),
+        '1' | '!' => Some('i'),
+        '3' => Some('e'),
+        '4' | '@' => Some('a'),
+        '5' | '$' => Some('s'),
+        '7' => Some('t'),
+        _ => None,
+    }
+}
+
+fn collapse_repeats(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev: Option<char> = None;
+    for c in s.chars() {
+        if prev != Some(c) {
+            out.push(c);
+            prev = Some(c);
+        }
+    }
+    out
+}
+
+pub fn find_blocked_word(text: &str, blocked_words: &[String]) -> Option<String> {
+    if blocked_words.is_empty() {
+        return None;
+    }
+
+    let normalized_blocked: Vec<String> = blocked_words
+        .iter()
+        .map(|w| {
+            w.trim()
+                .chars()
+                .filter_map(normalize_leet_char)
+                .collect::<String>()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    const SAFE_SUBSTRING_ROOTS: &[&str] = &["fuck", "shit", "bitch", "asshole", "nigger", "nigga", "faggot", "cunt", "whore", "slut"];
+
+    for raw_token in text.split_whitespace() {
+        let alnum_token: String = raw_token.chars().filter_map(normalize_leet_char).collect();
+        if alnum_token.is_empty() {
+            continue;
+        }
+        let collapsed = collapse_repeats(&alnum_token);
+
+        for bw in &normalized_blocked {
+            let collapsed_bw = collapse_repeats(bw);
+            if alnum_token == *bw || collapsed == collapsed_bw {
+                return Some(bw.clone());
+            }
+            if bw.len() >= 4
+                && SAFE_SUBSTRING_ROOTS.iter().any(|root| bw.contains(root))
+                && (alnum_token.contains(bw) || collapsed.contains(&collapsed_bw))
+            {
+                return Some(bw.clone());
+            }
+        }
+
+        // Also check strict alphanumeric sub-segments split on non-alnum (e.g. "hi,bitch!")
+        for sub in raw_token.split(|c: char| !c.is_ascii_alphanumeric()) {
+            let sub_norm: String = sub.chars().filter_map(normalize_leet_char).collect();
+            if sub_norm.is_empty() {
+                continue;
+            }
+            let sub_col = collapse_repeats(&sub_norm);
+            for bw in &normalized_blocked {
+                if sub_norm == *bw || sub_col == collapse_repeats(bw) {
+                    return Some(bw.clone());
+                }
+            }
+        }
+    }
+
+    None
 }

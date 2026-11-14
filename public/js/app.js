@@ -1173,12 +1173,14 @@ async function submitChatText(text) {
       headers: JSON_HEADERS,
       body: JSON.stringify({ token: sessionToken, text })
     });
+    const data = await res.json().catch(() => ({}));
     if (res.ok) {
-      const data = await res.json();
       const c = data.message;
       if (c) {
         handleIncomingChatEntry(c);
       }
+    } else if (data.error) {
+      showToast(`🛡️ ${data.error}`, 3600);
     }
   } catch {
     // ignore transient chat error
@@ -1832,6 +1834,23 @@ function renderAdminDashboard(dashboard) {
   document.getElementById('admin-world-name').value = dashboard.worldName || '';
   document.getElementById('admin-default-voice').value = dashboard.voiceDefaultMode || 'party';
 
+  const filterCheckbox = document.getElementById('admin-chat-filter-enabled');
+  if (filterCheckbox) {
+    filterCheckbox.checked = dashboard.chatFilterEnabled !== false;
+  }
+  const blockedWordsBox = document.getElementById('admin-blocked-words');
+  if (blockedWordsBox && Array.isArray(dashboard.blockedWords)) {
+    blockedWordsBox.value = dashboard.blockedWords.join(', ');
+  }
+  const chatCountEl = document.getElementById('admin-chat-count');
+  if (chatCountEl) {
+    chatCountEl.textContent = String(dashboard.chatCount || 0);
+  }
+  const blockedCountEl = document.getElementById('admin-blocked-chat-count');
+  if (blockedCountEl) {
+    blockedCountEl.textContent = String(dashboard.blockedChatCount || 0);
+  }
+
   const tbody = document.getElementById('admin-users-tbody');
   tbody.innerHTML = '';
 
@@ -1884,7 +1903,88 @@ function renderAdminDashboard(dashboard) {
     tr.append(tdUser, tdDisplay, tdPass, tdStatus, tdActions);
     tbody.appendChild(tr);
   }
+
+  refreshAdminChats();
 }
+
+async function refreshAdminChats() {
+  if (!adminToken) return;
+  const userFilter = (document.getElementById('admin-chat-user-filter')?.value || '').trim();
+  const searchFilter = (document.getElementById('admin-chat-search')?.value || '').trim();
+  const includeBlocked = Boolean(document.getElementById('admin-chat-include-blocked')?.checked);
+
+  const params = new URLSearchParams({
+    limit: '250',
+    includeBlocked: String(includeBlocked)
+  });
+  if (userFilter) params.set('user', userFilter);
+  if (searchFilter) params.set('search', searchFilter);
+
+  const res = await fetch(`/api/ella-world/admin/chats?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${adminToken}` }
+  });
+  if (!res.ok) return;
+  const data = await res.json();
+
+  const chatCountEl = document.getElementById('admin-chat-count');
+  if (chatCountEl) chatCountEl.textContent = String(data.total ?? 0);
+  const blockedCountEl = document.getElementById('admin-blocked-chat-count');
+  if (blockedCountEl) blockedCountEl.textContent = String(data.blockedTotal ?? 0);
+
+  const combined = [
+    ...(data.chats || []).map((c) => ({ ...c, _blocked: false })),
+    ...(data.blockedChats || []).map((c) => ({ ...c, _blocked: true }))
+  ].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
+  const tbody = document.getElementById('admin-chats-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  if (combined.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.textContent = 'No matching chat entries yet.';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+
+  for (const item of combined.slice(0, 250)) {
+    const tr = document.createElement('tr');
+
+    const tdTime = document.createElement('td');
+    tdTime.textContent = item.ts ? new Date(item.ts).toLocaleString() : '—';
+
+    const tdPlayer = document.createElement('td');
+    tdPlayer.textContent = `${item.displayName || item.username} (@${item.username})`;
+
+    const tdMsg = document.createElement('td');
+    tdMsg.textContent = item.text || '';
+
+    const tdStatus = document.createElement('td');
+    const badge = document.createElement('span');
+    if (item._blocked) {
+      badge.className = 'admin-chat-badge-blocked';
+      badge.textContent =
+        item.reason === 'blocked_word'
+          ? `Blocked (${item.matchedWord || 'filter'})`
+          : `Blocked (${item.reason || 'rate'})`;
+    } else {
+      badge.className = 'admin-chat-badge-ok';
+      badge.textContent = item.isSystem ? 'System' : 'Sent';
+    }
+    tdStatus.appendChild(badge);
+
+    tr.append(tdTime, tdPlayer, tdMsg, tdStatus);
+    tbody.appendChild(tr);
+  }
+}
+
+document.getElementById('admin-chat-refresh-btn')?.addEventListener('click', refreshAdminChats);
+document.getElementById('admin-chat-include-blocked')?.addEventListener('change', refreshAdminChats);
+document.getElementById('admin-chat-user-filter')?.addEventListener('input', refreshAdminChats);
+document.getElementById('admin-chat-search')?.addEventListener('input', refreshAdminChats);
 
 document.getElementById('admin-upsert-user-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1924,10 +2024,17 @@ document.getElementById('admin-upsert-user-form').addEventListener('submit', asy
 
 document.getElementById('admin-settings-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const rawWords = document.getElementById('admin-blocked-words')?.value || '';
+  const blockedWords = rawWords
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length >= 2);
   const payload = {
     worldName: document.getElementById('admin-world-name').value.trim(),
     voiceDefaultMode: document.getElementById('admin-default-voice').value,
-    newAdminPassword: document.getElementById('admin-new-master-password').value.trim()
+    newAdminPassword: document.getElementById('admin-new-master-password').value.trim(),
+    chatFilterEnabled: Boolean(document.getElementById('admin-chat-filter-enabled')?.checked),
+    blockedWords
   };
 
   const res = await fetch('/api/ella-world/admin/settings', {

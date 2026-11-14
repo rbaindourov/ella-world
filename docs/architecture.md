@@ -84,7 +84,15 @@ Raw UDP datagrams on `44445/udp` prefix a 6-byte magic header `[b"EWLD"][version
 ## 4. Atomic Disk Persistence (`src/persistence.rs`)
 
 All persistent state lives in `ELLA_DATA_DIR` (e.g., `/var/lib/ella-world/`):
-- `world_users.json`: Whitelisted friend accounts, outfits, master admin password, and throttled `lastPos` builder coordinates (`chmod 0600` on Unix).
+- `world_users.json`: Whitelisted friend accounts, outfits, master admin password, chat filter settings (`chatFilterEnabled`, `blockedWords`), and throttled `lastPos` builder coordinates (`chmod 0600` on Unix).
 - `world_blocks.json`: Monotonically versioned co-op voxel blocks (`blocksVersion` + `blocks[]`).
+- `world_chat.jsonl`: Append-only newline-delimited JSON history of delivered in-world chat messages; the most recent 60 messages hydrate on startup so chat survives restarts and feeds the Parent Admin Chat Viewer (`GET /api/ella-world/admin/chats`).
+- `world_chat_blocked.jsonl`: Append-only audit trail of rejected chat attempts (profanity/blocked-word matches and anti-flood rate blocks) inspectable in the Parent Admin Dashboard.
 
-Writes serialize to `.tmp.<pid>` in the same directory and execute an atomic POSIX `rename()` so power loss or process restarts never corrupt world files.
+JSON state writes serialize to `.tmp.<pid>` in the same directory and execute an atomic POSIX `rename()` so power loss or process restarts never corrupt world files. Chat `.jsonl` logs append line-by-line via `OpenOptions::append(true)`.
+
+---
+
+## 5. Native Rust TLS (`ELLA_TLS_CERT` / `ELLA_TLS_KEY`)
+
+When `ELLA_TLS_CERT` and `ELLA_TLS_KEY` are configured (e.g., for dedicated deployment on `192.168.11.24:4444`), `start_all_servers` wraps the TCP accept loop in `tokio_rustls::TlsAcceptor` (`ring` crypto provider, `http/1.1` ALPN + `TCP_NODELAY`) and `hyper::server::conn::http1` with `.with_upgrades()` so HTTPS static assets, REST APIs, and `wss://<host>:4444/api/ella-world/ws` run natively without Nginx or port `443`.

@@ -23,7 +23,7 @@
 - **Illuminated Fashion Runway**: Live rotating runway themes, 8 runway poses & dances (`1`–`8`), and 1–5 ⭐ live star voting with celebration confetti.
 - **Persistent Co-Op Voxel Builder**: Place and remove colorful 3D blocks together in real time; creations and character outfits persist atomically to `data/world_blocks.json` and `data/world_users.json`.
 - **Synchronized Sky Obby Course**: Multi-stage floating parkour course with server-phase-locked moving platforms, checkpoints (`R`), and a Golden Trophy summit celebration.
-- **Parent-Controlled Whitelist & Admin Panel**: Password-protected friend accounts and master parent dashboard — zero public sign-ups or unmoderated strangers.
+- **Parent-Controlled Whitelist, Persistent Chat History & Word Filter**: Password-protected friend accounts, durable `world_chat.jsonl` chat logging with blocked-attempt auditing (`world_chat_blocked.jsonl`), customizable word filter (`chatFilterEnabled` + `blockedWords`), and master parent dashboard — zero public sign-ups or unmoderated strangers.
 
 ---
 
@@ -55,12 +55,14 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `ELLA_HTTP_ADDR` | `0.0.0.0:8097` | Bind address for static WebGL assets, `/ws` spine & `/rtc/offer` |
+| `ELLA_HTTP_ADDR` | `0.0.0.0:8097` | Bind address for static WebGL assets, `/ws` spine & `/rtc/offer` (`0.0.0.0:4444` for standalone TLS) |
+| `ELLA_TLS_CERT` | *(unset)* | Optional PEM certificate chain (`fullchain.pem`) to serve native Rust HTTPS + `wss://` directly without Nginx |
+| `ELLA_TLS_KEY` | *(unset)* | Optional PEM private key (`privkey.pem`) paired with `ELLA_TLS_CERT` |
 | `ELLA_WEBRTC_BIND_IP` | `0.0.0.0` | Bind IP for the single-port multiplexed WebRTC UDP socket |
-| `ELLA_WEBRTC_UDP_PORT` | `44444` | **UDP port** carrying browser Opus voice + 20 Hz binary game state |
+| `ELLA_WEBRTC_UDP_PORT` | `44444` | **UDP port** carrying browser Opus voice + 20 Hz binary game state (`4444` in standalone `:4444` mode) |
 | `ELLA_NATIVE_UDP_PORT` | `44445` | **UDP port** carrying raw `EWLD` v1 native client voice + state |
 | `ELLA_PUBLIC_IP` | *(unset)* | Optional public WAN IPv4 advertised as an additional `srflx` UDP ICE candidate alongside LAN `host` candidates |
-| `ELLA_DATA_DIR` | `./data` | Persistent storage directory for `world_users.json` & `world_blocks.json` |
+| `ELLA_DATA_DIR` | `./data` | Persistent storage directory for `world_users.json`, `world_blocks.json`, `world_chat.jsonl`, & `world_chat_blocked.jsonl` |
 | `ELLA_PUBLIC_DIR` | `./public` | Path to static Three.js client directory |
 | `ELLA_SEED_USERS_FILE` | `./config/users.example.json` | Initial seed template copied into `ELLA_DATA_DIR` on first boot |
 | `ELLA_HMAC_SECRET` | *(dev default)* | Secret key used to sign constant-time HMAC-SHA256 session tokens |
@@ -69,8 +71,8 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 ## 🔥 Firewall & Router Port-Forwarding Summary
 
-1. **HTTPS + WebSocket Spine (`TCP 443`)**: Carries static WebGL assets, auth, the persistent `wss://<host>/api/ella-world/ws` state/presence spine, and automatic 20 Hz binary fallback (`deploy/nginx-ella-world.conf`).
-2. **Browser Opus Voice + UDP Fast-Lane (`UDP 44444`)**: Open/forward **`44444/udp`** on your host firewall and NAT router to your server's LAN IP for sub-millisecond UDP movement and Opus voice.
+1. **Standalone HTTPS + WebSocket Spine (`TCP 4444`, zero port `443`)**: With `ELLA_TLS_CERT` / `ELLA_TLS_KEY` set and `ELLA_HTTP_ADDR=0.0.0.0:4444`, Rust serves HTTPS WebGL assets, auth, `wss://<host>:4444/api/ella-world/ws`, and 20 Hz fallback natively without Nginx.
+2. **Browser Opus Voice + UDP Fast-Lane (`UDP 4444`)**: Open/forward **`4444/udp`** on your host firewall and NAT router to your dedicated game server's LAN IP (`192.168.11.24`) for sub-millisecond UDP movement and Opus voice.
 3. **Native Raw UDP Protocol (`UDP 44445`, optional)**: Open/forward **`44445/udp`** only if connecting native desktop/CLI `EWLD` UDP clients from outside your LAN.
 
 See [`docs/architecture.md`](docs/architecture.md) and [`docs/firewall_and_network_setup.md`](docs/firewall_and_network_setup.md) for complete protocol frame layouts and deployment instructions.

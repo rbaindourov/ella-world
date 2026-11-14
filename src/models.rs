@@ -408,8 +408,26 @@ pub struct UsersConfigFile {
     pub voice_default_mode: String,
     #[serde(default = "default_ice_servers")]
     pub ice_servers: Vec<IceServerConfig>,
+    #[serde(default = "default_true")]
+    pub chat_filter_enabled: bool,
+    #[serde(default = "default_blocked_words")]
+    pub blocked_words: Vec<String>,
     #[serde(default)]
     pub users: Vec<UserAccount>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+pub fn default_blocked_words() -> Vec<String> {
+    vec![
+        "fuck", "fucking", "shit", "bitch", "asshole", "bastard", "cunt", "dick", "cock",
+        "pussy", "whore", "slut", "nigger", "nigga", "faggot", "fag", "retard", "kys",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 pub fn default_world_name() -> String {
@@ -587,6 +605,20 @@ pub struct ChatMessage {
     pub text: String,
     pub is_system: bool,
     pub is_trophy_win: bool,
+    pub ts: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockedChatEntry {
+    pub id: String,
+    pub sender_id: String,
+    pub username: String,
+    pub display_name: String,
+    pub text: String,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_word: Option<String>,
     pub ts: u64,
 }
 

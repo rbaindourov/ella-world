@@ -15,9 +15,14 @@ async fn main() -> anyhow::Result<()> {
     let config = ServerConfig::from_env();
     let running = start_all_servers(config).await?;
 
+    let proto = if running.tls_enabled {
+        "HTTPS+WSS"
+    } else {
+        "HTTP+WS"
+    };
     info!(
-        "✨ ELLA World Standalone Rust UDP Server online! HTTP={} | WebRTC_SFU={}/udp | Native_EWLD={}/udp",
-        running.http_addr, running.webrtc_udp_port, running.native_udp_addr
+        "✨ ELLA World Standalone Rust UDP Server online! {}={} | WebRTC_SFU={}/udp | Native_EWLD={}/udp",
+        proto, running.http_addr, running.webrtc_udp_port, running.native_udp_addr
     );
 
     tokio::select! {

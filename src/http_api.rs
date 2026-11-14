@@ -4,13 +4,14 @@ use crate::udp_native::NativeUdpServer;
 use crate::webrtc_sfu::WebRtcSfu;
 use crate::world::WorldEngine;
 use crate::ws_spine::{ws_upgrade_handler, WsSpineHub};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
@@ -42,6 +43,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/runway", post(runway_handler))
         .route("/admin/login", post(admin_login_handler))
         .route("/admin/state", get(admin_state_handler))
+        .route("/admin/chats", get(admin_chats_handler))
         .route("/admin/users", post(admin_upsert_user_handler))
         .route("/admin/users/:username", delete(admin_delete_user_handler))
         .route("/admin/settings", post(admin_settings_handler))
@@ -109,6 +111,10 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
         "worldName": cfg.world_name,
         "voiceDefaultMode": cfg.voice_default_mode,
         "blockCount": blocks_count,
+        "chatFilterEnabled": cfg.chat_filter_enabled,
+        "blockedWords": cfg.blocked_words,
+        "chatCount": world.store.count_chats(),
+        "blockedChatCount": world.store.count_blocked_chats(),
         "users": users_list
     })
 }
@@ -392,12 +398,12 @@ async fn chat_handler(State(st): State<AppState>, Json(body): Json<ChatPostPaylo
         )
         .await
     {
-        Some(message) => Json(json!({
+        Ok(message) => Json(json!({
             "ok": true,
             "message": message
         }))
         .into_response(),
-        None => json_err(StatusCode::BAD_REQUEST, "Chat message cannot be empty."),
+        Err(reason) => json_err(StatusCode::BAD_REQUEST, &reason),
     }
 }
 
@@ -601,10 +607,56 @@ async fn admin_delete_user_handler(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct AdminChatsQuery {
+    limit: Option<usize>,
+    user: Option<String>,
+    search: Option<String>,
+    #[serde(default)]
+    include_blocked: bool,
+}
+
+async fn admin_chats_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminChatsQuery>,
+) -> Response {
+    if !verify_admin_bearer(&st.world, &headers) {
+        return json_err(StatusCode::UNAUTHORIZED, "Unauthorized admin token.");
+    }
+
+    let limit = query.limit.unwrap_or(200).clamp(1, 1000);
+    let user_filter = query.user.as_deref();
+    let search_filter = query.search.as_deref();
+    let (total, chats) = st.world.store.query_chats(limit, user_filter, search_filter);
+    let (blocked_total, blocked_chats) = if query.include_blocked {
+        st.world
+            .store
+            .query_blocked_chats(limit, user_filter, search_filter)
+    } else {
+        (st.world.store.count_blocked_chats(), Vec::new())
+    };
+    let cfg = st.world.users_cfg.read().await;
+
+    Json(json!({
+        "ok": true,
+        "total": total,
+        "chats": chats,
+        "blockedTotal": blocked_total,
+        "blockedChats": blocked_chats,
+        "chatFilterEnabled": cfg.chat_filter_enabled,
+        "blockedWords": cfg.blocked_words
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AdminSettingsPayload {
     world_name: Option<String>,
     voice_default_mode: Option<String>,
     new_admin_password: Option<String>,
+    chat_filter_enabled: Option<bool>,
+    blocked_words: Option<Vec<String>>,
 }
 
 async fn admin_settings_handler(
@@ -636,6 +688,20 @@ async fn admin_settings_handler(
             .filter(|s| s.len() >= 4)
         {
             cfg.admin_password = new_pw;
+        }
+        if let Some(enabled) = body.chat_filter_enabled {
+            cfg.chat_filter_enabled = enabled;
+        }
+        if let Some(words) = body.blocked_words {
+            let mut seen = HashSet::new();
+            let mut clean = Vec::new();
+            for raw in words {
+                let w = raw.trim().to_lowercase();
+                if w.len() >= 2 && w.len() <= 48 && seen.insert(w.clone()) {
+                    clean.push(w);
+                }
+            }
+            cfg.blocked_words = clean;
         }
         let _ = st.world.store.save_users(&cfg);
     }

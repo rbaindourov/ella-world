@@ -1641,6 +1641,76 @@ kbd {
   gap: 0.4rem;
 }
 
+.admin-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #e2e8f0;
+  cursor: pointer;
+}
+
+.admin-checkbox-row.compact {
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.admin-chat-card {
+  margin-top: 0.9rem;
+}
+
+.admin-chat-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.admin-chat-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.admin-chat-toolbar input[type="text"] {
+  padding: 0.3rem 0.5rem;
+  border-radius: 7px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.85);
+  color: #f8fafc;
+  font-size: 0.78rem;
+  min-width: 130px;
+}
+
+.admin-chat-scroll {
+  max-height: 260px;
+}
+
+.admin-chat-badge-blocked {
+  display: inline-block;
+  padding: 0.12rem 0.4rem;
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.admin-chat-badge-ok {
+  display: inline-block;
+  padding: 0.12rem 0.4rem;
+  border-radius: 6px;
+  background: rgba(34, 197, 94, 0.16);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  color: #86efac;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
 @media (max-width: 900px) {
   .admin-columns {
     grid-template-columns: 1fr;

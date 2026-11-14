@@ -53,6 +53,8 @@ fn make_test_config(test_name: &str) -> ServerConfig {
         public_dir: manifest_dir.join("public"),
         seed_users_file: manifest_dir.join("config/users.example.json"),
         hmac_secret: "integration-test-hmac-secret-2026".into(),
+        tls_cert_path: None,
+        tls_key_path: None,
     }
 }
 
@@ -177,6 +179,8 @@ async fn http_persistence_and_zero_sse_contract() {
         public_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("public"),
         seed_users_file: seed_file,
         hmac_secret: "integration-test-hmac-secret-2026".into(),
+        tls_cert_path: None,
+        tls_key_path: None,
     };
     let reloaded = WorldEngine::new(reload_cfg).expect("reload world");
     let ella = reloaded
@@ -1074,4 +1078,166 @@ async fn hybrid_ws_plus_zero_renegotiation_sfu_failover_stability() {
     );
 
     running.http_task.abort();
+}
+
+async fn http_json_auth_request(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    bearer: &str,
+    body: Option<Value>,
+) -> (u16, Value) {
+    let mut stream = TcpStream::connect(addr).await.expect("connect HTTP");
+    let body_bytes = body
+        .map(|v| serde_json::to_vec(&v).unwrap())
+        .unwrap_or_default();
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {bearer}\r\nContent-Type: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        body_bytes.len()
+    );
+    stream.write_all(req.as_bytes()).await.unwrap();
+    if !body_bytes.is_empty() {
+        stream.write_all(&body_bytes).await.unwrap();
+    }
+    let mut raw_resp = Vec::new();
+    stream.read_to_end(&mut raw_resp).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&raw_resp);
+    let (head, body_part) = resp_str
+        .split_once("\r\n\r\n")
+        .expect("valid HTTP response headers");
+    let status: u16 = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
+    let parsed: Value = serde_json::from_str(body_part.trim()).unwrap_or_else(|_| json!({}));
+    (status, parsed)
+}
+
+#[tokio::test]
+async fn chat_persistence_word_filter_and_admin_chat_viewer_work_across_restart() {
+    let cfg = make_test_config("chat-safety");
+    let data_dir = cfg.data_dir.clone();
+    let seed_file = cfg.seed_users_file.clone();
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    // 1. Login as ella
+    let (st_login, login_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight" })),
+    )
+    .await;
+    assert_eq!(st_login, 200);
+    let token = login_res["token"].as_str().unwrap().to_string();
+
+    // 2. Clean friendly messages succeed (and legitimate words like "classic" / "butterfly" pass)
+    let (st_ok1, ok1) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/chat",
+        Some(json!({ "token": token, "text": "hello bestie! classic butterfly runway look!" })),
+    )
+    .await;
+    assert_eq!(st_ok1, 200);
+    assert_eq!(ok1["ok"], true);
+
+    // 3. Profanity / masked profanity is rejected with 400 and logged to world_chat_blocked.jsonl
+    let (st_bad1, bad1) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/chat",
+        Some(json!({ "token": token, "text": "what the fuuuck" })),
+    )
+    .await;
+    assert_eq!(st_bad1, 400);
+    assert_eq!(bad1["ok"], false);
+
+    let (st_bad2, _bad2) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/chat",
+        Some(json!({ "token": token, "text": "stop being a b1tch" })),
+    )
+    .await;
+    assert_eq!(st_bad2, 400);
+
+    // 4. Parent Admin login -> inspect /admin/chats?includeBlocked=true and customize blockedWords
+    let (st_adm, adm_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/login",
+        Some(json!({ "password": "changeme-parent-admin" })),
+    )
+    .await;
+    assert_eq!(st_adm, 200);
+    let admin_token = adm_res["adminToken"].as_str().unwrap().to_string();
+    assert_eq!(adm_res["dashboard"]["chatCount"], 1);
+    assert_eq!(adm_res["dashboard"]["blockedChatCount"], 2);
+
+    let (st_chats, chats_res) = http_json_auth_request(
+        running.http_addr,
+        "GET",
+        "/api/ella-world/admin/chats?includeBlocked=true&limit=50",
+        &admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_chats, 200);
+    assert_eq!(chats_res["total"], 1);
+    assert_eq!(chats_res["blockedTotal"], 2);
+    assert_eq!(
+        chats_res["chats"][0]["text"],
+        "hello bestie! classic butterfly runway look!"
+    );
+
+    // Add a custom blocked word via /admin/settings
+    let (st_set, _set_res) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/settings",
+        &admin_token,
+        Some(json!({
+            "chatFilterEnabled": true,
+            "blockedWords": ["fuck", "meanyhead"]
+        })),
+    )
+    .await;
+    assert_eq!(st_set, 200);
+
+    let (st_custom_blk, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/chat",
+        Some(json!({ "token": token, "text": "you are a meanyhead" })),
+    )
+    .await;
+    assert_eq!(st_custom_blk, 400);
+
+    running.http_task.abort();
+
+    // 5. Boot a fresh WorldEngine on the same data_dir -> chats must hydrate from world_chat.jsonl!
+    let reload_cfg = ServerConfig {
+        http_addr: "127.0.0.1:0".parse().unwrap(),
+        webrtc_udp_bind_ip: "127.0.0.1".into(),
+        webrtc_udp_port: 0,
+        native_udp_addr: "127.0.0.1:0".parse().unwrap(),
+        public_ip: None,
+        data_dir,
+        public_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("public"),
+        seed_users_file: seed_file,
+        hmac_secret: "integration-test-hmac-secret-2026".into(),
+        tls_cert_path: None,
+        tls_key_path: None,
+    };
+    let reloaded = WorldEngine::new(reload_cfg).expect("reload world");
+    let chats_after_restart = reloaded.chats.read().await;
+    assert_eq!(chats_after_restart.len(), 1);
+    assert_eq!(
+        chats_after_restart[0].text,
+        "hello bestie! classic butterfly runway look!"
+    );
+    assert_eq!(reloaded.users_cfg.read().await.blocked_words, vec!["fuck", "meanyhead"]);
 }
