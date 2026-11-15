@@ -104,7 +104,8 @@ function parseArgs(argv) {
     muteVoice: undefined,
     canBuild: undefined,
     canTrade: undefined,
-    suspended: undefined
+    suspended: undefined,
+    skipLoginVerify: false
   };
   for (let i = 2; i < argv.length; i++) {
     const k = argv[i];
@@ -149,6 +150,7 @@ function parseArgs(argv) {
     else if (k === '--can-build') { out.canBuild = parseBoolFlag(v); i++; }
     else if (k === '--can-trade') { out.canTrade = parseBoolFlag(v); i++; }
     else if (k === '--suspended') { out.suspended = parseBoolFlag(v); i++; }
+    else if (k === '--skip-login-verify') { out.skipLoginVerify = true; }
   }
   return out;
 }
@@ -496,6 +498,28 @@ async function main() {
     throw new Error(`User upsert failed: HTTP ${upsertRes.status} ${await upsertRes.text()}`);
   }
   const upsertOut = await upsertRes.json();
+
+  if (opts.skipLoginVerify) {
+    const updatedUser = (upsertOut.dashboard?.users || []).find(
+      (u) => u.username?.toLowerCase() === opts.username.toLowerCase()
+    );
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          username: updatedUser?.username || opts.username,
+          displayName: updatedUser?.displayName || opts.displayName || opts.username,
+          passwordRotated: upsertOut.passwordRotated,
+          kickedSessions: upsertOut.kickedSessions,
+          tokenEpoch: updatedUser?.tokenEpoch,
+          skippedLoginVerify: true
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
 
   // 3. Verify player login works with exact credentials, then immediately logout so no ghost avatar remains
   const loginRes = await fetch(`${opts.baseUrl}/api/ella-world/login`, {
