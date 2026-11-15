@@ -7,6 +7,7 @@ import {
 } from '/ella-world/js/device_sig.js';
 import {
   BlockyWorld3D,
+  GlamSalonStage3D,
   BLOCK_COLORS,
   BUILD_CATALOG
 } from '/ella-world/js/world3d.js';
@@ -243,6 +244,7 @@ let draftAvatar = null;
 let salonOriginalAvatar = null;
 let avatarAutoSaveTimer = null;
 let isSalonOpen = false;
+let currentRunwayTheme = '';
 let udpTimer = null;
 let sharedOutboundSeq = 0;
 let sessionEnteredWallMs = 0;
@@ -1025,8 +1027,17 @@ function applyWorldMeta(meta) {
 
 function applyRunwaySummary(runway) {
   if (!runway) return;
-  if (runway.theme && runwayThemeLabel) {
-    runwayThemeLabel.textContent = runway.theme;
+  if (runway.theme) {
+    currentRunwayTheme = runway.theme;
+    if (runwayThemeLabel) {
+      runwayThemeLabel.textContent = runway.theme;
+    }
+    const glamThemePill = document.getElementById('glam-runway-theme-pill');
+    const glamThemeText = document.getElementById('glam-runway-theme-text');
+    if (glamThemePill && glamThemeText) {
+      glamThemeText.textContent = runway.theme;
+      glamThemePill.hidden = false;
+    }
   }
   if (runwayLeaderPill) {
     const top = Array.isArray(runway.leaderboard) && runway.leaderboard[0];
@@ -2275,11 +2286,12 @@ function renderBackpackGrid() {
           if (backpackDialog && backpackDialog.open) backpackDialog.close();
           openGlamSalon();
           const accTab = document.getElementById('glam-tab-acc');
-          if (accTab) activateGlamTab(accTab, false);
+          if (accTab) activateGlamTab(accTab, false, false);
           if (draftAvatar && item.cosmeticSlot && item.cosmeticValue) {
             draftAvatar[item.cosmeticSlot] = item.cosmeticValue;
             draftAvatar.characterPreset = 'custom';
-            previewDraftInMirror();
+            previewDraftInMirror('#38bdf8');
+            setGlamStageFraming(item.cosmeticSlot === 'hat' ? 'head' : 'torso', true);
             scheduleAutoSaveAvatar(120);
           }
         });
@@ -3624,14 +3636,91 @@ if (touchActionBtn) {
   });
 }
 
-// 11. Accessible Glam Salon Closet Tabs & Live 3D Mirror Preview (modern-web-guidance: dialog + tabs)
+// 11. Top-Layer Modal Glam Studio & 3D Fitting Stage (modern-web-guidance: dialog Rule 1 + tabs + toolbar)
+const glamStage = new GlamSalonStage3D({
+  container: document.getElementById('glam-stage-canvas-wrap')
+});
 const glamTablist = document.getElementById('glam-tablist');
 const glamTabs = Array.from(glamTablist.querySelectorAll('[role="tab"]'));
 const glamPanels = Array.from(avatarDialog.querySelectorAll('[role="tabpanel"]'));
+const glamStageToolbar = document.getElementById('glam-stage-toolbar');
+const glamPoseToolbar = document.getElementById('glam-pose-toolbar');
+const glamSaveStatusEl = document.getElementById('glam-save-status');
+const glamRunwayThemePill = document.getElementById('glam-runway-theme-pill');
+const glamRunwayThemeText = document.getElementById('glam-runway-theme-text');
+const glamAutoSpinBtn = document.getElementById('glam-autospin-btn');
+const glamCompareBtn = document.getElementById('glam-compare-btn');
+const glamSurpriseBtn = document.getElementById('glam-surprise-btn');
 
 const supportsUntilFound = 'onbeforematch' in HTMLElement.prototype;
+let isComparingOriginal = false;
+let manualCameraFramingLocked = false;
+let skipAutoFlushOnNextClose = false;
 
-function activateGlamTab(nextTab, moveFocus = false) {
+const TAB_ID_TO_STAGE_FRAME = {
+  'glam-tab-looks': 'full',
+  'glam-tab-hair': 'head',
+  'glam-tab-tops': 'torso',
+  'glam-tab-bottoms': 'shoes',
+  'glam-tab-acc': 'full'
+};
+
+const HARMONIOUS_GLAM_PALETTES = [
+  { name: 'Starlight Rose', top: '#f472b6', bottom: '#fce7f3', shoe: '#fbbf24', hat: '#fbbf24', acc: '#a5f3fc', hair: '#fde047', eye: '#60a5fa' },
+  { name: 'Cyber Lagoon', top: '#38bdf8', bottom: '#1e293b', shoe: '#38bdf8', hat: '#22d3ee', acc: '#f472b6', hair: '#1e1b4b', eye: '#34d399' },
+  { name: 'Lavender Coquette', top: '#c084fc', bottom: '#f8fafc', shoe: '#a855f7', hat: '#f472b6', acc: '#fde047', hair: '#78350f', eye: '#8b5cf6' },
+  { name: 'Golden Gala', top: '#fbbf24', bottom: '#1e1b4b', shoe: '#fbbf24', hat: '#fde047', acc: '#f59e0b', hair: '#1e1b4b', eye: '#34d399' },
+  { name: 'Mint Pop Idol', top: '#34d399', bottom: '#3b82f6', shoe: '#f8fafc', hat: '#fbbf24', acc: '#f472b6', hair: '#f472b6', eye: '#60a5fa' },
+  { name: 'Tech-49 Horizon', top: '#e2e8f0', bottom: '#334155', shoe: '#1e293b', hat: '#334155', acc: '#38bdf8', hair: '#3b2516', eye: '#38bdf8' },
+  { name: 'Velvet Cherry', top: '#1e1b4b', bottom: '#475569', shoe: '#ec4899', hat: '#a855f7', acc: '#f472b6', hair: '#dc2626', eye: '#ec4899' }
+];
+
+function setGlamStatusMessage(text, comparing = false) {
+  if (!glamSaveStatusEl) return;
+  glamSaveStatusEl.textContent = text;
+  glamSaveStatusEl.classList.toggle('is-comparing', Boolean(comparing));
+}
+
+function setGlamStageFraming(presetName, lockManual = false) {
+  const validPreset = glamStage.FRAMING_PRESETS[presetName] ? presetName : 'full';
+  if (lockManual) {
+    manualCameraFramingLocked = validPreset !== 'full';
+  }
+  glamStage.setFraming(validPreset, false);
+  if (glamStageToolbar) {
+    for (const btn of glamStageToolbar.querySelectorAll('[data-glam-frame]')) {
+      const active = btn.getAttribute('data-glam-frame') === validPreset;
+      btn.setAttribute('aria-pressed', String(active));
+    }
+  }
+}
+
+function setGlamStagePose(poseName, syncWorldEmote = false) {
+  const nextPose = glamStage.setPose(poseName);
+  if (glamPoseToolbar) {
+    for (const btn of glamPoseToolbar.querySelectorAll('[data-glam-pose]')) {
+      const active = btn.getAttribute('data-glam-pose') === nextPose;
+      btn.setAttribute('aria-pressed', String(active));
+    }
+  }
+  if (syncWorldEmote && world3d.selfAvatar) {
+    world3d.selfAvatar.emote = nextPose === 'idle' ? null : nextPose;
+    world3d._emitMoveNow();
+    for (const b of document.querySelectorAll('.emote-btn')) {
+      b.classList.toggle('active', b.getAttribute('data-emote') === world3d.selfAvatar.emote);
+    }
+  }
+}
+
+function exitGlamCompareIfActive() {
+  if (!isComparingOriginal) return;
+  isComparingOriginal = false;
+  if (glamCompareBtn) {
+    glamCompareBtn.setAttribute('aria-pressed', 'false');
+  }
+}
+
+function activateGlamTab(nextTab, moveFocus = false, allowAutoFrame = true) {
   if (!nextTab) return;
   for (const tab of glamTabs) {
     const isSelected = tab === nextTab;
@@ -3640,7 +3729,7 @@ function activateGlamTab(nextTab, moveFocus = false) {
     tab.toggleAttribute('focusgroupstart', isSelected);
   }
   for (const panel of glamPanels) {
-    const isTarget = panel.id === nextTab.getAttribute('aria-controls');
+    const isTarget = panel.getAttribute('aria-labelledby') === nextTab.id;
     if (isTarget) {
       panel.hidden = false;
       panel.removeAttribute('hidden');
@@ -3658,36 +3747,91 @@ function activateGlamTab(nextTab, moveFocus = false) {
   if (moveFocus) {
     nextTab.focus();
   }
+  if (allowAutoFrame && isSalonOpen && !manualCameraFramingLocked) {
+    const targetFrame = TAB_ID_TO_STAGE_FRAME[nextTab.id] || 'full';
+    setGlamStageFraming(targetFrame, false);
+  }
 }
 
 for (const tab of glamTabs) {
-  tab.addEventListener('click', () => activateGlamTab(tab, false));
+  tab.addEventListener('click', () => activateGlamTab(tab, false, true));
 }
 
 // Sync selection if browser find-in-page reveals a `hidden="until-found"` panel
 for (const panel of glamPanels) {
   panel.addEventListener('beforematch', () => {
-    const matchingTab = glamTabs.find((t) => t.getAttribute('aria-controls') === panel.id);
-    if (matchingTab) activateGlamTab(matchingTab, false);
+    const tabId = panel.getAttribute('aria-labelledby');
+    const matchingTab = tabId ? document.getElementById(tabId) : null;
+    if (matchingTab) activateGlamTab(matchingTab, false, false);
   });
 }
 
 // Keyboard roving tabindex fallback for browsers without native CSS/HTML `focusgroup`
-if (!Object.hasOwn(HTMLElement.prototype, 'focusGroup')) {
+if (!('focusGroup' in HTMLElement.prototype)) {
   glamTablist.addEventListener('keydown', (e) => {
     const currentIdx = glamTabs.indexOf(document.activeElement);
     if (currentIdx === -1) return;
+    const rtl = getComputedStyle(glamTablist).direction === 'rtl';
     let nextIdx = -1;
-    if (e.key === 'ArrowRight') nextIdx = (currentIdx + 1) % glamTabs.length;
-    else if (e.key === 'ArrowLeft') nextIdx = (currentIdx - 1 + glamTabs.length) % glamTabs.length;
-    else if (e.key === 'Home') nextIdx = 0;
-    else if (e.key === 'End') nextIdx = glamTabs.length - 1;
+    if (e.key === 'ArrowRight') {
+      nextIdx = (currentIdx + (rtl ? -1 : 1) + glamTabs.length) % glamTabs.length;
+    } else if (e.key === 'ArrowLeft') {
+      nextIdx = (currentIdx + (rtl ? 1 : -1) + glamTabs.length) % glamTabs.length;
+    } else if (e.key === 'Home') {
+      nextIdx = 0;
+    } else if (e.key === 'End') {
+      nextIdx = glamTabs.length - 1;
+    }
     if (nextIdx !== -1) {
       e.preventDefault();
-      activateGlamTab(glamTabs[nextIdx], true);
+      activateGlamTab(glamTabs[nextIdx], true, true);
     }
   });
 }
+
+function installHorizontalToolbarFocusFallback(toolbarEl) {
+  if (!toolbarEl || 'focusGroup' in HTMLElement.prototype) return;
+  const getItems = () => [
+    ...toolbarEl.querySelectorAll('button:not([disabled]):not([aria-disabled="true"])')
+  ];
+  const initialItems = getItems();
+  initialItems.forEach((btn, i) => {
+    btn.tabIndex = i === 0 ? 0 : -1;
+  });
+  toolbarEl.addEventListener('focusin', ({ target }) => {
+    const items = getItems();
+    if (items.includes(target)) {
+      items.forEach((btn) => {
+        btn.tabIndex = btn === target ? 0 : -1;
+      });
+    }
+  });
+  toolbarEl.addEventListener('keydown', (e) => {
+    const items = getItems();
+    const idx = items.indexOf(e.target);
+    if (idx < 0 || items.length === 0) return;
+    const rtl = getComputedStyle(toolbarEl).direction === 'rtl';
+    let nextIdx = -1;
+    if (e.key === 'ArrowRight') {
+      nextIdx = (idx + (rtl ? -1 : 1) + items.length) % items.length;
+    } else if (e.key === 'ArrowLeft') {
+      nextIdx = (idx + (rtl ? 1 : -1) + items.length) % items.length;
+    } else if (e.key === 'Home') {
+      nextIdx = 0;
+    } else if (e.key === 'End') {
+      nextIdx = items.length - 1;
+    }
+    if (nextIdx < 0) return;
+    e.preventDefault();
+    items.forEach((btn, bi) => {
+      btn.tabIndex = bi === nextIdx ? 0 : -1;
+    });
+    items[nextIdx].focus();
+  });
+}
+
+installHorizontalToolbarFocusFallback(glamStageToolbar);
+installHorizontalToolbarFocusFallback(glamPoseToolbar);
 
 // Scroll-fade fallback via IntersectionObserver when scroll-driven animations aren't supported
 if (!CSS.supports('animation-timeline', 'scroll()') && glamTabs.length > 1) {
@@ -3753,11 +3897,18 @@ function syncSalonControlsFromDraft() {
   }
 }
 
-function previewDraftInMirror() {
+function previewDraftInMirror(sparkleHex = null) {
   if (!draftAvatar) return;
+  exitGlamCompareIfActive();
   draftAvatar.torsoColor = draftAvatar.topColor;
   draftAvatar.legsColor = draftAvatar.bottomColor;
   syncSalonControlsFromDraft();
+  if (selfUser) {
+    glamStage.setCharacter(selfUser, draftAvatar);
+    if (sparkleHex) {
+      glamStage.triggerSparkleBurst(sparkleHex);
+    }
+  }
   if (world3d.selfAvatar) {
     world3d.selfAvatar.updateAvatarAppearance(draftAvatar);
   }
@@ -3789,24 +3940,121 @@ async function persistAvatarDraftNow(showSuccessToast = false) {
     if (selfId && playersMap.has(selfId)) {
       playersMap.get(selfId).user = selfUser;
     }
-    if (world3d.selfAvatar) {
+    if (world3d.selfAvatar && !isComparingOriginal) {
       world3d.selfAvatar.updateAvatarAppearance(selfUser.avatar);
+    }
+    if (!isComparingOriginal) {
+      setGlamStatusMessage('✨ Saved to World!', false);
     }
     if (showSuccessToast) {
       showToast('💖 Slay! Your new 3D Glam Runway Look is saved & live for all friends!');
     }
     return true;
   } catch {
+    setGlamStatusMessage('⚠️ Offline — will retry on save', false);
     return false;
   }
 }
 
 function scheduleAutoSaveAvatar(delayMs = 240) {
   if (avatarAutoSaveTimer) clearTimeout(avatarAutoSaveTimer);
+  if (!isComparingOriginal) {
+    setGlamStatusMessage('⏳ Saving look…', false);
+  }
   avatarAutoSaveTimer = setTimeout(() => {
     avatarAutoSaveTimer = null;
     persistAvatarDraftNow(false);
   }, delayMs);
+}
+
+function randomizeGlamOutfit() {
+  if (!draftAvatar) return;
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const inv = playerEconomy.inventory || {};
+
+  const isMale =
+    draftAvatar.bodyType === 'male' ||
+    draftAvatar.characterPreset === 'jack_tech49' ||
+    draftAvatar.characterPreset === 'maverick_cabin';
+
+  const palette = pick(HARMONIOUS_GLAM_PALETTES);
+  const skinTones = ['#ffe4d0', '#ffdfc4', '#f3c6a5', '#e5b887', '#c68652', '#8d5524'];
+
+  const hairPool = isMale
+    ? ['tech_crop', 'maverick_quiff', 'lizzy_bob']
+    : ['twin_pigtails', 'glam_ponytail', 'katey_long', 'amy_waves', 'lizzy_bob', 'mom_bun'];
+
+  const topPool = isMale
+    ? ['tech_jacket', 'hero_henley', 'crew_tee', 'sweater', 'star_tee']
+    : ['glam_gown', 'puff_blouse', 'star_tee', 'sweater', 'crop_top', 'crew_tee'];
+
+  const bottomPool = isMale
+    ? ['tech_pants', 'cargo_pants', 'jeans']
+    : ['pleated_skirt', 'ruffle_mini', 'jeans', 'cargo_pants', 'overalls'];
+
+  const shoePool = isMale
+    ? ['flight_boots', 'sneakers', 'platform_boots']
+    : ['runway_heels', 'platform_boots', 'sneakers'];
+
+  const hatPool = isMale
+    ? ['none', 'recon_cap', 'astronaut', 'tophat']
+    : ['crown', 'hair_bow', 'catears', 'beret', 'wizard', 'none'];
+  if (Number(inv.cosmetic_hat_obsidian_crown || 0) > 0) hatPool.push('obsidian_crown');
+  if (Number(inv.cosmetic_hat_shadow_hood || 0) > 0) hatPool.push('ninja');
+
+  const accPool = isMale
+    ? ['aviators', 'sunglasses', 'none']
+    : ['star_purse', 'wings', 'sunglasses', 'choker', 'pearls', 'none'];
+  if (Number(inv.cosmetic_acc_crystal_wings || 0) > 0) accPool.push('crystal_wings');
+  if (Number(inv.cosmetic_acc_star_lantern || 0) > 0) accPool.push('star_lantern');
+  if (Number(inv.legendary_ray_gun || 0) > 0) accPool.push('ray_gun');
+
+  const chosenTop = pick(topPool);
+  let chosenBottom = pick(bottomPool);
+  if (chosenBottom === 'overalls' && chosenTop !== 'crew_tee' && chosenTop !== 'glam_gown') {
+    chosenBottom = isMale ? 'tech_pants' : 'pleated_skirt';
+  }
+
+  draftAvatar = {
+    ...draftAvatar,
+    avatarMode: 'stylized',
+    bodyType: isMale ? 'male' : 'female',
+    characterPreset: 'custom',
+    skinColor: draftAvatar.skinColor || pick(skinTones),
+    eyeColor: palette.eye,
+    hairStyle: pick(hairPool),
+    hairColor: palette.hair,
+    topStyle: chosenTop,
+    topColor: palette.top,
+    bottomStyle: chosenBottom,
+    bottomColor: palette.bottom,
+    shoeStyle: pick(shoePool),
+    shoeColor: palette.shoe,
+    hat: pick(hatPool),
+    hatColor: palette.hat,
+    accessory: pick(accPool),
+    accessoryColor: palette.acc,
+    fabricFinish: isMale ? pick(['matte', 'satin']) : pick(['matte', 'satin', 'glitter'])
+  };
+
+  previewDraftInMirror('#fde047');
+  setGlamStatusMessage(`🎲 Surprise Look: ${palette.name}!`, false);
+  scheduleAutoSaveAvatar(200);
+}
+
+function toggleGlamCompare() {
+  if (!salonOriginalAvatar || !draftAvatar || !selfUser) return;
+  isComparingOriginal = !isComparingOriginal;
+  if (glamCompareBtn) {
+    glamCompareBtn.setAttribute('aria-pressed', String(isComparingOriginal));
+  }
+  if (isComparingOriginal) {
+    glamStage.setCharacter(selfUser, salonOriginalAvatar);
+    setGlamStatusMessage('👀 Comparing previous outfit (pick any item to return)', true);
+  } else {
+    glamStage.setCharacter(selfUser, draftAvatar);
+    setGlamStatusMessage('✨ Back to your new look', false);
+  }
 }
 
 function openGlamSalon() {
@@ -3816,43 +4064,79 @@ function openGlamSalon() {
     ...(selfUser.avatar || {})
   };
   salonOriginalAvatar = JSON.parse(JSON.stringify(draftAvatar));
+  isComparingOriginal = false;
+  manualCameraFramingLocked = false;
+  if (glamCompareBtn) {
+    glamCompareBtn.setAttribute('aria-pressed', 'false');
+  }
+  if (glamRunwayThemePill && glamRunwayThemeText) {
+    const themeText = currentRunwayTheme || runwayThemeLabel?.textContent?.trim() || '';
+    if (themeText) {
+      glamRunwayThemeText.textContent = themeText;
+      glamRunwayThemePill.hidden = false;
+    }
+  }
+  setGlamStatusMessage('✨ Live 3D Fitting Stage', false);
   syncSalonControlsFromDraft();
 
-  if (typeof avatarDialog.showPopover === 'function') {
-    try {
-      avatarDialog.showPopover();
-    } catch {
+  if (!avatarDialog.open) {
+    if (typeof avatarDialog.showModal === 'function') {
+      avatarDialog.showModal();
+    } else {
       avatarDialog.setAttribute('open', '');
     }
-  } else {
-    avatarDialog.show();
   }
+
   isSalonOpen = true;
-  if (hudChatPanel) hudChatPanel.hidden = true;
   world3d.setSalonMirrorMode(true);
+
+  glamStage.resetTurntable();
+  glamStage.setCharacter(selfUser, draftAvatar);
+  const currentWorldEmote = world3d.selfAvatar?.emote || 'idle';
+  setGlamStagePose(currentWorldEmote, false);
+  setGlamStageFraming('full', false);
+  glamStage.setFraming('full', true);
+  glamStage.setActive(true);
+  glamStage.triggerSparkleBurst(draftAvatar.topColor || '#f472b6');
+  requestAnimationFrame(() => {
+    if (isSalonOpen) glamStage.handleResize();
+  });
+}
+
+function finalizeGlamSalonClosed() {
+  if (skipAutoFlushOnNextClose) {
+    skipAutoFlushOnNextClose = false;
+  } else if (avatarAutoSaveTimer) {
+    persistAvatarDraftNow(false);
+  }
+
+  if (isComparingOriginal && draftAvatar && world3d.selfAvatar) {
+    world3d.selfAvatar.updateAvatarAppearance(draftAvatar);
+  }
+  exitGlamCompareIfActive();
+  avatarDialog.returnValue = '';
+  glamStage.setActive(false);
+  isSalonOpen = false;
+  world3d.setSalonMirrorMode(false);
 }
 
 function closeGlamSalon(revertToOriginal = false) {
   if (revertToOriginal && salonOriginalAvatar) {
+    skipAutoFlushOnNextClose = true;
     draftAvatar = JSON.parse(JSON.stringify(salonOriginalAvatar));
     previewDraftInMirror();
     persistAvatarDraftNow(false);
-  } else if (avatarAutoSaveTimer) {
-    persistAvatarDraftNow(false);
   }
-  if (typeof avatarDialog.hidePopover === 'function') {
-    try {
-      avatarDialog.hidePopover();
-    } catch {
-      avatarDialog.removeAttribute('open');
-    }
-  } else {
+  if (avatarDialog.open) {
     avatarDialog.close();
+  } else {
+    finalizeGlamSalonClosed();
   }
-  isSalonOpen = false;
-  if (hudChatPanel) hudChatPanel.hidden = false;
-  world3d.setSalonMirrorMode(false);
 }
+
+avatarDialog.addEventListener('close', () => {
+  finalizeGlamSalonClosed();
+});
 
 document.getElementById('open-avatar-btn').addEventListener('click', () => {
   if (isSalonOpen) closeGlamSalon(false);
@@ -3862,6 +4146,86 @@ document.getElementById('close-salon-btn').addEventListener('click', () => close
 document.getElementById('cancel-salon-btn').addEventListener('click', () => {
   closeGlamSalon(true);
   showToast('↩️ Restored your previous outfit.');
+});
+
+if (glamStageToolbar) {
+  glamStageToolbar.addEventListener('click', (e) => {
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+    const frameBtn = target.closest('[data-glam-frame]');
+    if (frameBtn) {
+      const preset = frameBtn.getAttribute('data-glam-frame') || 'full';
+      setGlamStageFraming(preset, true);
+    }
+  });
+}
+
+if (glamAutoSpinBtn) {
+  glamAutoSpinBtn.addEventListener('click', () => {
+    const enabled = glamStage.setAutoSpin(!glamStage.autoSpin);
+    glamAutoSpinBtn.setAttribute('aria-pressed', String(enabled));
+    setGlamStatusMessage(enabled ? '🔄 Turntable auto-spin ON' : '✨ Turntable auto-spin paused', isComparingOriginal);
+  });
+}
+
+if (glamCompareBtn) {
+  glamCompareBtn.addEventListener('click', () => {
+    toggleGlamCompare();
+  });
+}
+
+if (glamSurpriseBtn) {
+  glamSurpriseBtn.addEventListener('click', () => {
+    randomizeGlamOutfit();
+  });
+}
+
+if (glamPoseToolbar) {
+  glamPoseToolbar.addEventListener('click', (e) => {
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+    const poseBtn = target.closest('[data-glam-pose]');
+    if (poseBtn) {
+      const pose = poseBtn.getAttribute('data-glam-pose') || 'idle';
+      const nextPose = pose !== 'idle' && glamStage.currentPose === pose ? 'idle' : pose;
+      setGlamStagePose(nextPose, true);
+    }
+  });
+}
+
+// In-modal keyboard shortcuts for poses (0-8) and quick salon toggle (C)
+avatarDialog.addEventListener('keydown', (e) => {
+  const tag = document.activeElement ? document.activeElement.tagName : '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+  const k = e.key.toLowerCase();
+  if (k === 'c') {
+    e.preventDefault();
+    closeGlamSalon(false);
+    return;
+  }
+  if (k === '0') {
+    e.preventDefault();
+    setGlamStagePose('idle', true);
+    return;
+  }
+  const modalEmoteMap = {
+    '1': 'pose',
+    '2': 'peace',
+    '3': 'dance',
+    '4': 'spin',
+    '5': 'wave',
+    '6': 'cheer',
+    '7': 'flip',
+    '8': 'sit'
+  };
+  if (modalEmoteMap[k]) {
+    e.preventDefault();
+    const desired = modalEmoteMap[k];
+    const nextPose = glamStage.currentPose === desired ? 'idle' : desired;
+    setGlamStagePose(nextPose, true);
+  }
 });
 
 // Color Pickers & Quick Swatches mapping
@@ -3888,7 +4252,7 @@ avatarDialog.addEventListener('click', (e) => {
     const preset = SIGNATURE_GLAM_PRESETS[pid];
     if (preset) {
       draftAvatar = { ...draftAvatar, ...preset, avatarMode: 'stylized' };
-      previewDraftInMirror();
+      previewDraftInMirror(draftAvatar.topColor || '#f472b6');
       scheduleAutoSaveAvatar(180);
       showToast(`✨ Equipped ${presetCard.querySelector('strong')?.textContent || 'Signature Look'}!`);
     }
@@ -3909,17 +4273,12 @@ avatarDialog.addEventListener('click', (e) => {
     const field = itemCard.getAttribute('data-field');
     const val = itemCard.getAttribute('data-val');
     if (field && val !== null) {
-      // Ensure 3D Glam mode is active when selecting stylized wardrobe pieces
       if (draftAvatar.avatarMode === 'blocky' && field !== 'hat') {
         draftAvatar.avatarMode = 'stylized';
       }
-      // Smart garment unblocking: picking a skirt/pants/overalls while wearing the full-length gown
-      // automatically swaps the top to a matching blouse/tee so the bottom is immediately visible!
       if (field === 'bottomStyle' && draftAvatar.topStyle === 'glam_gown') {
         draftAvatar.topStyle = val === 'overalls' ? 'crew_tee' : 'puff_blouse';
       }
-      // Picking a blouse/sweater/crop-top while wearing full overalls switches bottoms to jeans
-      // unless crew_tee (which layers cleanly under overalls) or glam_gown is chosen.
       if (
         field === 'topStyle' &&
         val !== 'crew_tee' &&
@@ -3931,7 +4290,7 @@ avatarDialog.addEventListener('click', (e) => {
 
       draftAvatar[field] = val;
       draftAvatar.characterPreset = 'custom';
-      previewDraftInMirror();
+      previewDraftInMirror('#f472b6');
       scheduleAutoSaveAvatar(180);
     }
     return;
@@ -3966,7 +4325,7 @@ avatarDialog.addEventListener('click', (e) => {
           draftAvatar.characterPreset = 'custom';
         }
       }
-      previewDraftInMirror();
+      previewDraftInMirror(field === 'fabricFinish' ? '#fde047' : '#38bdf8');
       scheduleAutoSaveAvatar(180);
     }
     return;
@@ -3982,7 +4341,7 @@ avatarDialog.addEventListener('click', (e) => {
     if (fieldName && hex) {
       draftAvatar[fieldName] = hex;
       draftAvatar.characterPreset = 'custom';
-      previewDraftInMirror();
+      previewDraftInMirror(hex);
       scheduleAutoSaveAvatar(180);
     }
   }
@@ -4004,6 +4363,7 @@ for (const [inputId, fieldName] of Object.entries(COLOR_INPUT_TO_FIELD)) {
 document.getElementById('avatar-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!draftAvatar) return;
+  skipAutoFlushOnNextClose = true;
   await persistAvatarDraftNow(true);
   closeGlamSalon(false);
 });

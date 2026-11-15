@@ -117,7 +117,7 @@ export function loadPropsAndLootPack() {
   return propsPackPromise;
 }
 
-function clonePropTemplate(templateName, tintHex = null, extraUserData = null) {
+function clonePropTemplate(templateName, tintHex = null, extraUserData = null, cloneGeo = false) {
   const tpl = propsTemplates.get(templateName);
   if (!tpl) return null;
   const clone = tpl.clone(true);
@@ -130,6 +130,9 @@ function clonePropTemplate(templateName, tintHex = null, extraUserData = null) {
     if (sub.isMesh) {
       sub.castShadow = true;
       sub.receiveShadow = true;
+      if (cloneGeo && sub.geometry) {
+        sub.geometry = sub.geometry.clone();
+      }
       const cloneMat = (m) => {
         if (!m) return m;
         const mc = m.clone();
@@ -605,9 +608,9 @@ function buildStarLanternAttachment(accentHex = '#fbbf24') {
   return group;
 }
 
-function buildRayGunAttachment(accentHex = '#ec4899') {
+function buildRayGunAttachment(accentHex = '#ec4899', cloneGeo = false) {
   const group = new THREE.Group();
-  const glbGun = clonePropTemplate('Loot_Ray_Gun', accentHex);
+  const glbGun = clonePropTemplate('Loot_Ray_Gun', accentHex, null, cloneGeo);
   if (glbGun) {
     glbGun.position.set(0, -0.14, 0.04);
     group.add(glbGun);
@@ -785,7 +788,8 @@ function createOverheadLabelSprite({ displayName, role, speaking, muted, speechT
  * Stylized 3D Blender Character Rig (Ella Forensics + Dress to Impress Modular Wardrobe)
  */
 class StylizedCharacterRig {
-  constructor(gltf, avatarConfig) {
+  constructor(gltf, avatarConfig, options = {}) {
+    this.cloneGeometries = Boolean(options.cloneGeometries);
     this.root = new THREE.Group();
     this.model = SkeletonUtils.clone(gltf.scene);
     this.model.scale.setScalar(1.55);
@@ -826,6 +830,10 @@ class StylizedCharacterRig {
         node.castShadow = true;
         node.receiveShadow = true;
         node.frustumCulled = false;
+
+        if (this.cloneGeometries && node.geometry) {
+          node.geometry = node.geometry.clone();
+        }
 
         if (Array.isArray(node.material)) {
           node.material = node.material.map((m) => m.clone());
@@ -1089,7 +1097,7 @@ class StylizedCharacterRig {
     }
     this.customRayGun = null;
     if (accessory === 'ray_gun') {
-      this.customRayGun = buildRayGunAttachment(accessoryColor);
+      this.customRayGun = buildRayGunAttachment(accessoryColor, this.cloneGeometries);
       this.dungeonRightHandMount.add(this.customRayGun);
     }
   }
@@ -1158,7 +1166,8 @@ class StylizedCharacterRig {
  * Classic Retro Blocky Rig (preserved as optional 'blocky' nostalgia mode)
  */
 class ClassicBlockyRig {
-  constructor(avatarConfig) {
+  constructor(avatarConfig, options = {}) {
+    this.cloneGeometries = Boolean(options.cloneGeometries);
     this.root = new THREE.Group();
     this.bodyGroup = new THREE.Group();
     this.root.add(this.bodyGroup);
@@ -1280,7 +1289,7 @@ class ClassicBlockyRig {
     this.rightArmPivot.add(rightArm);
     this.rayGunGroup = null;
     if (av.accessory === 'ray_gun') {
-      this.rayGunGroup = buildRayGunAttachment(av.accessoryColor || '#ec4899');
+      this.rayGunGroup = buildRayGunAttachment(av.accessoryColor || '#ec4899', this.cloneGeometries);
       this.rayGunGroup.scale.setScalar(0.92);
       this.rayGunGroup.position.set(0.02, -0.88, 0.22);
       this.rayGunGroup.rotation.x = 0.55;
@@ -1433,7 +1442,8 @@ function createWorldBannerSprite(title, subtitle = '', accentHex = '#c084fc') {
  * Unified WorldAvatar (Defaults to 3D Rigged Forensics + DTI Character, with live Blocky toggle)
  */
 class WorldAvatar {
-  constructor(playerData) {
+  constructor(playerData, options = {}) {
+    this.studioMode = Boolean(options.studioMode);
     this.id = playerData.id;
     this.user = playerData.user || { username: 'friend', displayName: 'Friend', avatar: {} };
     this.zone = Number(playerData.zone) || 0;
@@ -1452,25 +1462,29 @@ class WorldAvatar {
     this.muted = Boolean(playerData.muted);
     this.speechText = '';
     this.speechExpiresAt = 0;
-    this.animClock = Math.random() * 10;
+    this.animClock = this.studioMode ? 0 : Math.random() * 10;
 
     this.activeMode = null;
     this.stylizedRig = null;
     this.blockyRig = null;
+    this.voiceRing = null;
+    this.labelSprite = null;
 
-    const ringGeo = new THREE.RingGeometry(0.75, 1.02, 32);
-    ringGeo.rotateX(-Math.PI / 2);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: '#22c55e',
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.0
-    });
-    this.voiceRing = new THREE.Mesh(ringGeo, ringMat);
-    this.voiceRing.position.y = 0.04;
-    this.group.add(this.voiceRing);
+    if (!this.studioMode) {
+      const ringGeo = new THREE.RingGeometry(0.75, 1.02, 32);
+      ringGeo.rotateX(-Math.PI / 2);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: '#22c55e',
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.0
+      });
+      this.voiceRing = new THREE.Mesh(ringGeo, ringMat);
+      this.voiceRing.position.y = 0.04;
+      this.group.add(this.voiceRing);
 
-    this._refreshLabelSprite();
+      this._refreshLabelSprite();
+    }
     this._syncRigMode();
   }
 
@@ -1503,7 +1517,7 @@ class WorldAvatar {
       this.rigContainer.remove(this.rigContainer.children[0]);
     }
     if (!this.stylizedRig) {
-      this.stylizedRig = new StylizedCharacterRig(gltf, av);
+      this.stylizedRig = new StylizedCharacterRig(gltf, av, { cloneGeometries: this.studioMode });
     } else {
       this.stylizedRig.applyAppearance(av);
     }
@@ -1519,7 +1533,7 @@ class WorldAvatar {
       this.rigContainer.remove(this.rigContainer.children[0]);
     }
     if (!this.blockyRig) {
-      this.blockyRig = new ClassicBlockyRig(av);
+      this.blockyRig = new ClassicBlockyRig(av, { cloneGeometries: this.studioMode });
     } else {
       this.blockyRig.applyAppearance(av);
     }
@@ -1531,6 +1545,7 @@ class WorldAvatar {
   }
 
   _refreshLabelSprite() {
+    if (this.studioMode) return;
     const tex = createOverheadLabelSprite({
       displayName: this.user.displayName || this.user.username,
       role: this.user.role,
@@ -3691,16 +3706,22 @@ export class BlockyWorld3D {
     if (!this.selfAvatar) return;
     if (enabled && !this.salonMirrorMode) {
       this.salonMirrorMode = true;
+      this.keys.clear();
+      this.touchMove = { forward: false, backward: false, left: false, right: false };
+      this.isDraggingCamera = false;
+      if (this.ghostMesh) {
+        this.ghostMesh.visible = false;
+      }
       this.savedCameraBeforeSalon = {
         yaw: this.cameraYaw,
         pitch: this.cameraPitch,
         dist: this.cameraDist
       };
-      this.cameraYaw = this.selfAvatar.group.rotation.y;
-      this.cameraPitch = 0.14;
-      this.cameraDist = 4.65;
     } else if (!enabled && this.salonMirrorMode) {
       this.salonMirrorMode = false;
+      this.keys.clear();
+      this.touchMove = { forward: false, backward: false, left: false, right: false };
+      this.isDraggingCamera = false;
       if (this.savedCameraBeforeSalon) {
         this.cameraYaw = this.savedCameraBeforeSalon.yaw;
         this.cameraPitch = this.savedCameraBeforeSalon.pitch;
@@ -4552,5 +4573,468 @@ export class BlockyWorld3D {
     }
 
     this.renderer.render(this.scene, this.camera);
+  }
+}
+
+/**
+ * Top-Layer 3D Glam Fitting Stage rendered inside `<dialog id="avatar-dialog">`
+ * directly IN FRONT OF `dialog::backdrop`, isolating character geometry/materials
+ * in its own transparent WebGL context with zero world or HUD obstructions.
+ */
+export class GlamSalonStage3D {
+  constructor({ container }) {
+    this.container = container;
+    this.active = false;
+    this.rafId = 0;
+    this.lastFrameTime = 0;
+    this.elapsed = 0;
+    this.studioAvatar = null;
+    this.currentPose = 'idle';
+    this.autoSpin = false;
+
+    this.FRAMING_PRESETS = {
+      full: { lookY: 1.44, dist: 4.55, pitch: 0.08 },
+      head: { lookY: 2.22, dist: 2.18, pitch: 0.06 },
+      torso: { lookY: 1.54, dist: 2.95, pitch: 0.07 },
+      shoes: { lookY: 0.72, dist: 2.65, pitch: 0.14 }
+    };
+
+    this.currentFraming = 'full';
+    this.lookY = 1.44;
+    this.targetLookY = 1.44;
+    this.dist = 4.55;
+    this.targetDist = 4.55;
+    this.pitch = 0.08;
+    this.targetPitch = 0.08;
+    this.aspectDistBoost = 0;
+
+    this.turntableYaw = 0;
+    this.targetTurntableYaw = 0;
+
+    this.activePointers = new Map();
+    this.lastPinchDist = null;
+    this.sparkles = [];
+    this.burstRings = [];
+
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(44, 1, 0.1, 40);
+
+    this.renderer = null;
+    if (this.container) {
+      try {
+        this.renderer = new THREE.WebGLRenderer({
+          alpha: true,
+          antialias: true,
+          powerPreference: 'high-performance'
+        });
+        this.renderer.setClearColor(0x000000, 0);
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        this.renderer.toneMappingExposure = 1.14;
+        this.container.prepend(this.renderer.domElement);
+      } catch (err) {
+        console.warn('[EllaWorld] Could not initialize GlamSalonStage3D WebGLRenderer:', err);
+      }
+    }
+
+    this.turntableGroup = new THREE.Group();
+    this.scene.add(this.turntableGroup);
+
+    this._setupStudioLighting();
+    this._buildStarlightPedestal();
+    this._bindStageEvents();
+
+    loadDtiWardrobePack().catch(() => {});
+    loadPropsAndLootPack()
+      .then(() => {
+        if (this.studioAvatar && this.studioAvatar.user?.avatar?.accessory === 'ray_gun') {
+          this.studioAvatar.updateAvatarAppearance(this.studioAvatar.user.avatar);
+        }
+      })
+      .catch(() => {});
+
+    this._tick = this._tick.bind(this);
+  }
+
+  _setupStudioLighting() {
+    const hemi = new THREE.HemisphereLight('#fff1f2', '#312e81', 1.18);
+    hemi.position.set(0, 6, 0);
+    this.scene.add(hemi);
+
+    const keyLight = new THREE.DirectionalLight('#fffbeb', 1.85);
+    keyLight.position.set(2.8, 4.6, 4.4);
+    this.scene.add(keyLight);
+
+    const fillLight = new THREE.DirectionalLight('#bae6fd', 0.92);
+    fillLight.position.set(-3.2, 3.2, 3.6);
+    this.scene.add(fillLight);
+
+    const pinkRim = new THREE.PointLight('#f472b6', 2.4, 9.5, 1.4);
+    pinkRim.position.set(-2.1, 2.7, -2.4);
+    this.scene.add(pinkRim);
+
+    const cyanRim = new THREE.PointLight('#38bdf8', 2.1, 9.5, 1.4);
+    cyanRim.position.set(2.2, 2.5, -2.3);
+    this.scene.add(cyanRim);
+
+    const pedestalUpLight = new THREE.PointLight('#fde047', 0.85, 4.5, 1.6);
+    pedestalUpLight.position.set(0, 0.28, 1.15);
+    this.scene.add(pedestalUpLight);
+  }
+
+  _buildStarlightPedestal() {
+    this.pedestalGroup = new THREE.Group();
+
+    const basePlinth = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.26, 1.42, 0.22, 48),
+      new THREE.MeshStandardMaterial({
+        color: '#1e1b4b',
+        roughness: 0.28,
+        metalness: 0.52
+      })
+    );
+    basePlinth.position.y = -0.11;
+    this.pedestalGroup.add(basePlinth);
+
+    const mirrorDeck = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.18, 1.18, 0.024, 48),
+      new THREE.MeshStandardMaterial({
+        color: '#312e81',
+        emissive: '#4c1d95',
+        emissiveIntensity: 0.28,
+        roughness: 0.14,
+        metalness: 0.65
+      })
+    );
+    mirrorDeck.position.y = -0.01;
+    this.pedestalGroup.add(mirrorDeck);
+
+    const goldRim = new THREE.Mesh(
+      new THREE.TorusGeometry(1.25, 0.042, 12, 64),
+      new THREE.MeshStandardMaterial({
+        color: '#fbbf24',
+        emissive: '#f59e0b',
+        emissiveIntensity: 0.28,
+        roughness: 0.2,
+        metalness: 0.82
+      })
+    );
+    goldRim.rotation.x = Math.PI / 2;
+    goldRim.position.y = -0.01;
+    this.pedestalGroup.add(goldRim);
+
+    const innerGlowGeo = new THREE.RingGeometry(0.86, 1.0, 48);
+    innerGlowGeo.rotateX(-Math.PI / 2);
+    this.innerGlowMat = new THREE.MeshBasicMaterial({
+      color: '#f472b6',
+      transparent: true,
+      opacity: 0.78,
+      side: THREE.DoubleSide
+    });
+    const innerGlowRing = new THREE.Mesh(innerGlowGeo, this.innerGlowMat);
+    innerGlowRing.position.y = 0.005;
+    this.pedestalGroup.add(innerGlowRing);
+
+    this.pedestalGemsGroup = new THREE.Group();
+    const gemGeo = new THREE.OctahedronGeometry(0.055, 0);
+    const gemPinkMat = new THREE.MeshStandardMaterial({
+      color: '#f472b6',
+      emissive: '#ec4899',
+      emissiveIntensity: 0.75,
+      roughness: 0.15
+    });
+    const gemCyanMat = new THREE.MeshStandardMaterial({
+      color: '#38bdf8',
+      emissive: '#0ea5e9',
+      emissiveIntensity: 0.75,
+      roughness: 0.15
+    });
+    for (let i = 0; i < 8; i++) {
+      const angle = (i / 8) * Math.PI * 2;
+      const gem = new THREE.Mesh(gemGeo, i % 2 === 0 ? gemPinkMat : gemCyanMat);
+      gem.position.set(Math.cos(angle) * 1.24, 0.055, Math.sin(angle) * 1.24);
+      this.pedestalGemsGroup.add(gem);
+    }
+    this.pedestalGroup.add(this.pedestalGemsGroup);
+    this.turntableGroup.add(this.pedestalGroup);
+
+    this.sharedSparkleGeo = new THREE.OctahedronGeometry(0.052, 0);
+    this.sharedRingGeo = new THREE.TorusGeometry(0.55, 0.032, 8, 36);
+  }
+
+  _bindStageEvents() {
+    if (!this.container) return;
+
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(() => this.handleResize());
+      this.resizeObserver.observe(this.container);
+    }
+    window.addEventListener('resize', () => {
+      if (this.active) this.handleResize();
+    });
+
+    this.container.addEventListener('pointerdown', (e) => {
+      if (e.button !== undefined && e.button !== 0) return;
+      this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      try {
+        this.container.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore synthetic events
+      }
+      if (this.activePointers.size === 2) {
+        const pts = [...this.activePointers.values()];
+        this.lastPinchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      }
+    });
+
+    this.container.addEventListener('pointermove', (e) => {
+      const prev = this.activePointers.get(e.pointerId);
+      if (!prev) return;
+      const cur = { x: e.clientX, y: e.clientY };
+      this.activePointers.set(e.pointerId, cur);
+
+      if (this.activePointers.size === 1) {
+        const dx = cur.x - prev.x;
+        const dy = cur.y - prev.y;
+        this.targetTurntableYaw += dx * 0.0125;
+        this.targetPitch = Math.max(-0.12, Math.min(0.42, this.targetPitch + dy * 0.0055));
+      } else if (this.activePointers.size === 2) {
+        const pts = [...this.activePointers.values()];
+        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        if (this.lastPinchDist && dist > 8) {
+          const delta = (this.lastPinchDist - dist) * 0.014;
+          this.targetDist = Math.max(1.65, Math.min(6.2, this.targetDist + delta));
+        }
+        this.lastPinchDist = dist;
+      }
+    });
+
+    const releasePointer = (e) => {
+      this.activePointers.delete(e.pointerId);
+      if (this.activePointers.size < 2) {
+        this.lastPinchDist = null;
+      }
+    };
+    this.container.addEventListener('pointerup', releasePointer);
+    this.container.addEventListener('pointercancel', releasePointer);
+
+    this.container.addEventListener(
+      'wheel',
+      (e) => {
+        e.preventDefault();
+        const step = Math.sign(e.deltaY) * 0.28;
+        this.targetDist = Math.max(1.65, Math.min(6.2, this.targetDist + step));
+      },
+      { passive: false }
+    );
+  }
+
+  handleResize() {
+    if (!this.container || !this.renderer) return;
+    const width = Math.max(200, this.container.clientWidth || 480);
+    const height = Math.max(180, this.container.clientHeight || 520);
+    const aspect = width / height;
+    this.camera.aspect = aspect;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(width, height, false);
+    this.aspectDistBoost = aspect < 0.85 ? (0.85 - aspect) * 1.45 : 0;
+  }
+
+  setActive(enabled) {
+    const next = Boolean(enabled);
+    if (next === this.active) return;
+    this.active = next;
+    this.activePointers.clear();
+    this.lastPinchDist = null;
+
+    if (this.active) {
+      this.handleResize();
+      this.lastFrameTime = performance.now();
+      this.rafId = requestAnimationFrame(this._tick);
+    } else if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+  }
+
+  setCharacter(userProfile, draftAvatar) {
+    const safeUser = {
+      username: userProfile?.username || 'friend',
+      displayName: userProfile?.displayName || 'Friend',
+      role: userProfile?.role || 'friend',
+      avatar: { ...(draftAvatar || userProfile?.avatar || {}) }
+    };
+
+    if (!this.studioAvatar) {
+      this.studioAvatar = new WorldAvatar(
+        {
+          id: 'glam-studio-self',
+          user: safeUser,
+          x: 0,
+          y: 0,
+          z: 0,
+          ry: 0,
+          anim: 'idle',
+          emote: this.currentPose === 'idle' ? null : this.currentPose
+        },
+        { studioMode: true }
+      );
+      this.turntableGroup.add(this.studioAvatar.group);
+    } else {
+      this.studioAvatar.user = safeUser;
+      this.studioAvatar.updateAvatarAppearance(safeUser.avatar);
+      this.studioAvatar.emote = this.currentPose === 'idle' ? null : this.currentPose;
+      this.studioAvatar.anim = 'idle';
+    }
+  }
+
+  setFraming(presetName, snap = false) {
+    const preset = this.FRAMING_PRESETS[presetName] || this.FRAMING_PRESETS.full;
+    this.currentFraming = this.FRAMING_PRESETS[presetName] ? presetName : 'full';
+    this.targetLookY = preset.lookY;
+    this.targetDist = preset.dist;
+    this.targetPitch = preset.pitch;
+    if (snap) {
+      this.lookY = preset.lookY;
+      this.dist = preset.dist;
+      this.pitch = preset.pitch;
+    }
+  }
+
+  resetTurntable() {
+    this.turntableYaw = 0;
+    this.targetTurntableYaw = 0;
+    this.turntableGroup.rotation.y = 0;
+  }
+
+  setAutoSpin(enabled) {
+    this.autoSpin = Boolean(enabled);
+    return this.autoSpin;
+  }
+
+  setPose(poseName) {
+    const nextPose = poseName && poseName !== 'idle' ? poseName : 'idle';
+    this.currentPose = nextPose;
+    if (this.studioAvatar) {
+      this.studioAvatar.emote = nextPose === 'idle' ? null : nextPose;
+      this.studioAvatar.anim = 'idle';
+    }
+    return this.currentPose;
+  }
+
+  triggerSparkleBurst(hexColor = '#f472b6') {
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: hexColor,
+      transparent: true,
+      opacity: 0.9
+    });
+    const ringMesh = new THREE.Mesh(this.sharedRingGeo, ringMat);
+    ringMesh.rotation.x = Math.PI / 2;
+    ringMesh.position.set(0, 0.06, 0);
+    this.scene.add(ringMesh);
+    this.burstRings.push({ mesh: ringMesh, mat: ringMat, age: 0 });
+
+    const palette = [hexColor, '#fde047', '#38bdf8', '#f472b6'];
+    for (let i = 0; i < 16; i++) {
+      const col = palette[i % palette.length];
+      const spMat = new THREE.MeshBasicMaterial({
+        color: col,
+        transparent: true,
+        opacity: 0.95
+      });
+      const spMesh = new THREE.Mesh(this.sharedSparkleGeo, spMat);
+      const angle = (i / 16) * Math.PI * 2 + Math.random() * 0.35;
+      const radius = 0.52 + Math.random() * 0.62;
+      spMesh.position.set(
+        Math.cos(angle) * radius,
+        0.18 + Math.random() * 1.45,
+        Math.sin(angle) * radius
+      );
+      this.scene.add(spMesh);
+      this.sparkles.push({
+        mesh: spMesh,
+        mat: spMat,
+        vy: 0.85 + Math.random() * 0.95,
+        vr: 3.5 + Math.random() * 3.5,
+        age: 0,
+        life: 0.65 + Math.random() * 0.35
+      });
+    }
+  }
+
+  _tick(now) {
+    if (!this.active) return;
+    this.rafId = requestAnimationFrame(this._tick);
+
+    const dt = Math.min(0.05, Math.max(0.001, (now - this.lastFrameTime) / 1000));
+    this.lastFrameTime = now;
+    this.elapsed += dt;
+
+    if (this.autoSpin && this.activePointers.size === 0) {
+      this.targetTurntableYaw += dt * 0.68;
+    }
+
+    const smooth = Math.min(1, dt * 11.5);
+    this.turntableYaw += (this.targetTurntableYaw - this.turntableYaw) * smooth;
+    this.lookY += (this.targetLookY - this.lookY) * smooth;
+    this.dist += (this.targetDist + this.aspectDistBoost - this.dist) * smooth;
+    this.pitch += (this.targetPitch - this.pitch) * smooth;
+
+    this.turntableGroup.rotation.y = this.turntableYaw;
+
+    if (this.pedestalGemsGroup) {
+      this.pedestalGemsGroup.rotation.y = -this.elapsed * 0.45;
+    }
+    if (this.innerGlowMat) {
+      this.innerGlowMat.opacity = 0.64 + Math.sin(this.elapsed * 3.4) * 0.16;
+    }
+
+    for (let i = this.burstRings.length - 1; i >= 0; i--) {
+      const br = this.burstRings[i];
+      br.age += dt;
+      const t = br.age / 0.48;
+      if (t >= 1) {
+        this.scene.remove(br.mesh);
+        br.mat.dispose();
+        this.burstRings.splice(i, 1);
+        continue;
+      }
+      const sc = 1 + t * 2.35;
+      br.mesh.scale.set(sc, sc, 1);
+      br.mat.opacity = (1 - t) * 0.88;
+    }
+
+    for (let i = this.sparkles.length - 1; i >= 0; i--) {
+      const sp = this.sparkles[i];
+      sp.age += dt;
+      const t = sp.age / sp.life;
+      if (t >= 1) {
+        this.scene.remove(sp.mesh);
+        sp.mat.dispose();
+        this.sparkles.splice(i, 1);
+        continue;
+      }
+      sp.mesh.position.y += sp.vy * dt;
+      sp.mesh.rotation.y += sp.vr * dt;
+      sp.mesh.rotation.x += sp.vr * 0.6 * dt;
+      const scale = 1 - t * 0.55;
+      sp.mesh.scale.setScalar(scale);
+      sp.mat.opacity = (1 - t) * 0.95;
+    }
+
+    if (this.studioAvatar) {
+      this.studioAvatar.update(dt, true);
+    }
+
+    const cosP = Math.cos(this.pitch);
+    const camY = Math.max(0.28, this.lookY + Math.sin(this.pitch) * this.dist);
+    const camZ = cosP * this.dist;
+    this.camera.position.set(0, camY, camZ);
+    this.camera.lookAt(0, this.lookY, 0);
+
+    if (this.renderer) {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 }

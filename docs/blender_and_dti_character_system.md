@@ -40,9 +40,10 @@ All garments and body parts bind to a unified 25-bone rig (`root`, `pelvis`, `sp
 
 1. **Self-Hosted Vendor Addons & Importmap (`public/ella-world/index.html`)**:
    - Maps `"three"` to `/ella-world/vendor/three.module.js` and `"three/addons/"` to `/ella-world/vendor/addons/` (`GLTFLoader.js`, `SkeletonUtils.js`, `BufferGeometryUtils.js`) with zero external CDN dependencies.
-2. **Non-Modal Glam Salon Closet & Live 3D Mirror (`modern-web-guidance: dialog` + `tabs`)**:
-   - Uses `<dialog id="avatar-dialog" class="glam-salon-popover" popover="manual">` docked to the right edge while `world3d.setSalonMirrorMode(true)` frames the player's 3D character in the left viewport so players can drag-orbit 360° and press keys `1–8` to preview runway poses before saving.
-   - Uses a single-row horizontally scrolling tablist (`focusgroup="tablist nomemory"`, `@property --fade-start` / `--fade-end` scroll-driven mask fades + `IntersectionObserver` fallback, forced-colors-safe `::after` border underline, and `hidden="until-found"` stacked tabpanels with inner `.glam-panel-inner` wrappers).
+2. **Top-Layer Modal Glam Studio & Dedicated 3D Fitting Stage (`modern-web-guidance: dialog` Rule 1 + `tabs` + `toolbar`)**:
+   - Opens `<dialog id="avatar-dialog" class="glam-studio-modal">` via `avatarDialog.showModal()`, natively rendering `dialog::backdrop` (`rgba(6, 10, 24, 0.82)` + `backdrop-filter: blur(9px)`) above `#canvas-container` and `#game-hud` and marking the entire background document `inert` so zero world/HUD clicks, teleports, or movement keys leak while changing clothes.
+   - Mounts **`GlamSalonStage3D`** inside `#glam-stage-pane` directly inside `<dialog id="avatar-dialog">`, placing the illuminated 3D character on a **Starlight Fitting Pedestal** **in front of** the modal backdrop on both desktop (side-by-side split) and tablet/mobile (`42dvh` top stage + `58dvh` scrollable bottom wardrobe sheet).
+   - Uses a single-row horizontally scrolling tablist (`focusgroup="tablist nomemory"`, zero `aria-controls` on `[role="tab"]`, `@property --fade-start` / `--fade-end` scroll-driven mask fades + `IntersectionObserver` fallback, forced-colors-safe `::after` border underline, and `hidden="until-found"` stacked tabpanels with inner `.glam-panel-inner` wrappers).
 3. **West Plaza *Dress to Impress* Fashion Runway & Star Voting (`POST /api/ella-world/runway`)**:
    - Located off West Plaza (`x = -24, z = -12..+13`, warp shortcut `F`) featuring an illuminated pink-and-gold catwalk, chasing LED edge bulbs, 3 glowing spotlight arches, a velvet backstage photo wall with spinning 3D Star Crest, theme spinner (`10` DTI themes), and live 1–5 `⭐` Star Voting synced via SSE (`event: runway`) and cluster heartbeats.
 
@@ -121,3 +122,22 @@ Automatically rebuilds all 10 male character/wardrobe meshes cleanly (idempotent
 - **`src/models.rs`**: Adds `#[serde(default = "default_body_type")] pub body_type: String` (defaulting to `"female"` so existing `world_users.json` profiles deserialize seamlessly), whitelists all new boy presets/slots/faces (`hero`), includes `body_type` in `AvatarAppearance::short_hash()` for instant 20 Hz binary digest propagation, and adds `"🛸 Sky-Tower Tech Recon"` to `RUNWAY_THEMES`.
 - **Glam Salon Closet (`public/index.html`, `public/js/app.js`, `public/css/styles.css`)**: Adds **Jack Tech-49** (`jack_tech49`) and **Maverick Recon** (`maverick_cabin`) signature preset cards, an accessible `👧 Girl Build` / `👦 Boy Build` `role="group"` segmented toggle with live `aria-pressed` synchronization and `:focus-visible` outlines, and full Classic Blocky fallback parity (`ClassicBlockyRig`).
 - **Admin Player Provisioning CLI ([`scripts/ella_admin_user_cli.mjs`](../scripts/ella_admin_user_cli.mjs))**: Parameterized CLI helper (`--username`, `--display-name`, `--password`, `--preset jack_tech49|maverick_cabin`) that authenticates against `/api/ella-world/admin/login`, upserts player accounts via `/api/ella-world/admin/users`, and verifies login/logout round-trip without storing credentials in source control.
+
+---
+
+## 7. Top-Layer Modal Glam Studio & `GlamSalonStage3D` (`public/js/world3d.js`, `public/js/app.js`)
+
+### 7.1 Why Character Dressing Lives Inside the Top-Layer `<dialog>`
+- Browser `<dialog>` elements opened via `showModal()` promote both `dialog::backdrop` and the `<dialog>` subtree into the browser **Top Layer** above normal `z-index` stacking contexts (`#canvas-container` at `z-index: 1` and `#game-hud` at `z-index: 10`), while natively making the background document `inert`.
+- By hosting a dedicated transparent-alpha WebGL stage (`GlamSalonStage3D` inside `#glam-stage-pane`) as a child of `<dialog id="avatar-dialog">`, the 3D character renders **in front of** `dialog::backdrop` while the background world and HUD remain dimmed, blurred, and completely blocked from stray pointer/touch/keyboard input.
+- Furthermore, isolating the fitting stage from in-world camera coordinates guarantees that voxel walls, 2-story roofs, trees, dungeon pillars, Debtor's Prison bars, and nearby players never occlude the character while dressing up.
+
+### 7.2 Multi-Renderer WebGL Isolation & Zero Idle Overhead
+- Because Two `THREE.WebGLRenderer` instances hold independent WebGL contexts, `WorldAvatar(..., { studioMode: true })` passes `{ cloneGeometries: true }` into `StylizedCharacterRig`, `ClassicBlockyRig`, and `buildRayGunAttachment` / `clonePropTemplate`, cloning `BufferGeometry` alongside `Material` instances and omitting the `3.4m × 1.46m` world nametag sprite so crowns, witch hats, and haloes remain unobstructed.
+- `GlamSalonStage3D.setActive(false)` cancels its `requestAnimationFrame` loop the instant `#avatar-dialog` closes (`close` event), consuming `0%` GPU/CPU during normal gameplay.
+
+### 7.3 Interactive Turntable Lighting, Smart Framing & Creative Styling Tools
+- **Stationary Studio Key/Fill/Rim Lights + Rotating Turntable**: Horizontal pointer/touch drags rotate `turntableGroup` (character + Starlight Fitting Pedestal) rather than orbiting into the shadow side, keeping warm key lighting on whichever angle of the garment faces the player while pink (`#f472b6`) and cyan (`#38bdf8`) rim lights contour hair and wings.
+- **Pinch/Wheel Zoom & Smart Camera Presets (`#glam-stage-toolbar`)**: Accessible `role="toolbar" focusgroup="toolbar wrap"` controls frame `🧍 Full Fit`, `💇‍♀️ Head`, `👗 Outfit`, and `👟 Shoes` (auto-framing on tab switches unless manually locked), plus `🔄 Spin` turntable mode.
+- **In-Modal Pose & Dance Auditioning (`#glam-pose-toolbar` + Keys `0–8`)**: Lets players test `Idle_Glam` (`0`) and all 8 skeletal emotes (`Pose 1`, `Peace 2`, `Dance 3`, `Twirl 4`, `Wave 5`, `Cheer 6`, `Flip 7`, `Sit 8`) inside the modal and syncs the active pose to the world.
+- **`🎲 Surprise Me!` & `👁️ Compare`**: Build-aware outfit randomizer using curated harmonious palettes (including owned Crystal Cavern relics) with 3D starlight sparkle bursts, before/after comparison against `salonOriginalAvatar`, `↩️ Undo Changes`, and a live Runway Theme badge (`#glam-runway-theme-pill`).

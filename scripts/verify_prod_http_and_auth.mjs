@@ -86,6 +86,7 @@ async function main() {
     origin: BASE_ORIGIN,
     htmlStatus: 0,
     hasRevokeAllButtonInHtml: false,
+    hasModalGlamStudioStage: false,
     assets: [],
     healthStatus: 0,
     healthBody: null,
@@ -99,11 +100,23 @@ async function main() {
   const htmlRes = await requestUrl(htmlUrl);
   report.htmlStatus = htmlRes.status;
   report.hasRevokeAllButtonInHtml = htmlRes.body.includes('admin-revoke-all-btn');
+  report.hasModalGlamStudioStage =
+    htmlRes.body.includes('id="avatar-dialog" class="glam-studio-modal"') &&
+    !htmlRes.body.includes('id="avatar-dialog" class="glam-salon-popover"') &&
+    htmlRes.body.includes('id="glam-stage-pane"') &&
+    htmlRes.body.includes('id="glam-stage-canvas-wrap"') &&
+    htmlRes.body.includes('id="glam-stage-toolbar"') &&
+    htmlRes.body.includes('id="glam-pose-toolbar"') &&
+    htmlRes.body.includes('id="glam-surprise-btn"') &&
+    htmlRes.body.includes('id="glam-compare-btn"');
   if (htmlRes.status !== 200) {
     throw new Error(`Root HTML ${htmlUrl} returned HTTP ${htmlRes.status}`);
   }
   if (!report.hasRevokeAllButtonInHtml) {
     throw new Error('Root HTML is missing #admin-revoke-all-btn');
+  }
+  if (!report.hasModalGlamStudioStage) {
+    throw new Error('Root HTML is missing Top-Layer Modal Glam Studio stage markup');
   }
 
   // 2. Verify all local CSS, JS, and ES module assets return 200 OK
@@ -118,6 +131,12 @@ async function main() {
     });
     if (assetRes.status !== 200) {
       throw new Error(`Static asset ${resolved} returned HTTP ${assetRes.status}`);
+    }
+    if (rel.endsWith('world3d.js') && !assetRes.body.includes('export class GlamSalonStage3D')) {
+      throw new Error('world3d.js is missing GlamSalonStage3D export');
+    }
+    if (rel.endsWith('app.js') && !assetRes.body.includes('avatarDialog.showModal()')) {
+      throw new Error('app.js is missing avatarDialog.showModal() modal Glam Studio trigger');
     }
   }
 

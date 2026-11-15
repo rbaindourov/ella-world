@@ -347,26 +347,87 @@
   <!-- Hidden Container for WebRTC Remote Audio Elements -->
   <div id="remote-audio-container" hidden></div>
 
-  <!-- NON-MODAL POPOVER PANEL: Dress to Impress Glam Salon Closet (modern-web-guidance: dialog Rule 2 + tabs) -->
-  <dialog id="avatar-dialog" class="glam-salon-popover" popover="manual" aria-labelledby="avatar-dialog-title">
-    <div class="glam-salon-shell">
-      <header class="glam-salon-header">
-        <div>
-          <h2 id="avatar-dialog-title">👗 Glam Salon &amp; Wardrobe</h2>
-          <p class="glam-mirror-hint">Drag on the 3D mirror to spin your character &amp; press 1–8 to test poses!</p>
+  <!-- MODAL 1: Top-Layer Dress to Impress Glam Studio & 3D Fitting Stage (modern-web-guidance: dialog Rule 1 + tabs + toolbar) -->
+  <dialog id="avatar-dialog" class="glam-studio-modal" aria-labelledby="avatar-dialog-title">
+    <div class="glam-studio-layout">
+      <!-- Spotlight 3D Character Stage rendered IN FRONT OF dialog::backdrop -->
+      <section class="glam-stage-pane" id="glam-stage-pane" aria-label="3D Character Fitting Stage">
+        <div class="glam-stage-hud-top">
+          <span class="glam-stage-pill" id="glam-runway-theme-pill" hidden>
+            🎯 Runway Theme: <strong id="glam-runway-theme-text">Pop Idol</strong>
+          </span>
+          <p class="glam-save-status" id="glam-save-status" role="status">✨ Live 3D Fitting Stage</p>
         </div>
-        <button type="button" class="modal-close-btn" id="close-salon-btn" aria-label="Close Glam Salon">✕</button>
-      </header>
 
-      <form id="avatar-form" class="glam-salon-form">
-        <!-- Accessible Single-Row Scrolling Tablist with CSS Scroll Fades -->
-        <div class="glam-tablist" id="glam-tablist" focusgroup="tablist nomemory" role="tablist" aria-label="Wardrobe Categories">
-          <button type="button" role="tab" id="glam-tab-looks" aria-controls="glam-panel-looks" aria-selected="true" focusgroupstart>🌟 Cast &amp; Looks</button>
-          <button type="button" role="tab" id="glam-tab-hair" aria-controls="glam-panel-hair" aria-selected="false" tabindex="-1">💇‍♀️ Hair &amp; Glam</button>
-          <button type="button" role="tab" id="glam-tab-tops" aria-controls="glam-panel-tops" aria-selected="false" tabindex="-1">👗 Tops &amp; Gowns</button>
-          <button type="button" role="tab" id="glam-tab-bottoms" aria-controls="glam-panel-bottoms" aria-selected="false" tabindex="-1">🩰 Skirts &amp; Shoes</button>
-          <button type="button" role="tab" id="glam-tab-acc" aria-controls="glam-panel-acc" aria-selected="false" tabindex="-1">👑 Crowns &amp; Bags</button>
+        <div class="glam-stage-canvas-wrap" id="glam-stage-canvas-wrap">
+          <p class="glam-stage-gesture-hint" aria-hidden="true">🔄 Drag to spin 360° • Scroll or pinch to zoom</p>
         </div>
+
+        <div class="glam-stage-controls-dock">
+          <div
+            class="glam-stage-toolbar"
+            id="glam-stage-toolbar"
+            role="toolbar"
+            focusgroup="toolbar wrap"
+            aria-label="3D Stage Camera and Outfit Tools"
+            aria-controls="glam-stage-canvas-wrap"
+          >
+            <div class="glam-toolbar-group" role="group" aria-label="Camera Framing">
+              <button type="button" class="glam-tool-btn" data-glam-frame="full" aria-pressed="true" title="Frame Full Outfit">🧍 Full Fit</button>
+              <button type="button" class="glam-tool-btn" data-glam-frame="head" aria-pressed="false" title="Zoom to Hair, Face &amp; Hats">💇‍♀️ Head</button>
+              <button type="button" class="glam-tool-btn" data-glam-frame="torso" aria-pressed="false" title="Frame Top, Jacket &amp; Accessories">👗 Outfit</button>
+              <button type="button" class="glam-tool-btn" data-glam-frame="shoes" aria-pressed="false" title="Zoom to Skirts, Pants &amp; Footwear">👟 Shoes</button>
+            </div>
+            <span role="separator" aria-orientation="vertical" class="glam-toolbar-sep"></span>
+            <div class="glam-toolbar-group" role="group" aria-label="Stage Actions">
+              <button type="button" class="glam-tool-btn" id="glam-autospin-btn" aria-pressed="false" title="Toggle Turntable Auto-Spin">🔄 Spin</button>
+              <button type="button" class="glam-tool-btn" id="glam-compare-btn" aria-pressed="false" title="Toggle before and after outfit comparison">👁️ Compare</button>
+              <button type="button" class="glam-tool-btn glam-surprise-btn" id="glam-surprise-btn" title="Generate a coordinated random look">🎲 Surprise Me!</button>
+            </div>
+          </div>
+
+          <div
+            class="glam-pose-toolbar"
+            id="glam-pose-toolbar"
+            role="toolbar"
+            focusgroup="toolbar wrap"
+            aria-label="Test Character Poses and Dances"
+            aria-controls="glam-stage-canvas-wrap"
+          >
+            <div class="glam-toolbar-group" role="group" aria-label="Preview Poses">
+              <button type="button" class="glam-pose-btn" data-glam-pose="idle" aria-pressed="true" title="Glamour Idle (Shortcut: 0)">✨ Idle</button>
+              <button type="button" class="glam-pose-btn" data-glam-pose="pose" aria-pressed="false" title="Runway Pose (Shortcut: 1)">📸 Pose <kbd>1</kbd></button>
+              <button type="button" class="glam-pose-btn" data-glam-pose="peace" aria-pressed="false" title="Peace Sign (Shortcut: 2)">✌️ Peace <kbd>2</kbd></button>
+              <button type="button" class="glam-pose-btn" data-glam-pose="dance" aria-pressed="false" title="Pop Dance (Shortcut: 3)">💃 Dance <kbd>3</kbd></button>
+              <button type="button" class="glam-pose-btn" data-glam-pose="spin" aria-pressed="false" title="Twirl Gown (Shortcut: 4)">🌀 Twirl <kbd>4</kbd></button>
+              <button type="button" class="glam-pose-btn" data-glam-pose="wave" aria-pressed="false" title="Friendly Wave (Shortcut: 5)">👋 Wave <kbd>5</kbd></button>
+              <button type="button" class="glam-pose-btn" data-glam-pose="cheer" aria-pressed="false" title="Victory Cheer (Shortcut: 6)">🎉 Cheer <kbd>6</kbd></button>
+              <button type="button" class="glam-pose-btn" data-glam-pose="flip" aria-pressed="false" title="Backflip (Shortcut: 7)">🤸‍♀️ Flip <kbd>7</kbd></button>
+              <button type="button" class="glam-pose-btn" data-glam-pose="sit" aria-pressed="false" title="Sit &amp; Chill (Shortcut: 8)">🪑 Sit <kbd>8</kbd></button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Wardrobe Closet Studio Card -->
+      <div class="glam-salon-shell">
+        <header class="glam-salon-header">
+          <div>
+            <h2 id="avatar-dialog-title">👗 Glam Salon &amp; Wardrobe</h2>
+            <p class="glam-mirror-hint">Spin &amp; zoom your 3D character on the stage or press 1–8 to audition runway poses!</p>
+          </div>
+          <button type="button" class="modal-close-btn" id="close-salon-btn" aria-label="Close Glam Salon">✕</button>
+        </header>
+
+        <form id="avatar-form" class="glam-salon-form">
+          <!-- Accessible Single-Row Scrolling Tablist with CSS Scroll Fades -->
+          <div class="glam-tablist" id="glam-tablist" focusgroup="tablist nomemory" role="tablist" aria-label="Wardrobe Categories">
+            <button type="button" role="tab" id="glam-tab-looks" aria-selected="true" focusgroupstart>🌟 Cast &amp; Looks</button>
+            <button type="button" role="tab" id="glam-tab-hair" aria-selected="false" tabindex="-1">💇‍♀️ Hair &amp; Glam</button>
+            <button type="button" role="tab" id="glam-tab-tops" aria-selected="false" tabindex="-1">👗 Tops &amp; Gowns</button>
+            <button type="button" role="tab" id="glam-tab-bottoms" aria-selected="false" tabindex="-1">🩰 Skirts &amp; Shoes</button>
+            <button type="button" role="tab" id="glam-tab-acc" aria-selected="false" tabindex="-1">👑 Crowns &amp; Bags</button>
+          </div>
 
         <!-- Stacked Tab Panels (Zero outer padding/border/margin on [role="tabpanel"] per modern-web-guidance) -->
         <div class="glam-panels-stack">
@@ -787,6 +848,7 @@
           <button type="submit" class="primary-cta-btn">💖 Wear &amp; Save Look!</button>
         </footer>
       </form>
+      </div>
     </div>
   </dialog>
 

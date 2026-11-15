@@ -3776,3 +3776,154 @@ async fn machine_digital_signature_blocks_alt_account_evasion_and_evicts_live_ta
 
     running.http_task.abort();
 }
+
+async fn http_get_text(addr: SocketAddr, path: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(addr).await.expect("connect HTTP");
+    let req = format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(req.as_bytes()).await.unwrap();
+    let mut raw_resp = Vec::new();
+    stream.read_to_end(&mut raw_resp).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&raw_resp);
+    let (head, body_part) = resp_str
+        .split_once("\r\n\r\n")
+        .expect("valid HTTP response headers");
+    let status: u16 = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
+    (status, body_part.to_string())
+}
+
+#[tokio::test]
+async fn glam_studio_modal_stage_and_wardrobe_persistence_contract() {
+    let cfg = make_test_config("glam_studio_modal");
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    // 1. Verify Top-Layer Modal Glam Studio HTML markup & accessibility contracts
+    let (st_html, html) = http_get_text(running.http_addr, "/ella-world/index.html").await;
+    assert_eq!(st_html, 200);
+    assert!(
+        html.contains(r#"<dialog id="avatar-dialog" class="glam-studio-modal" aria-labelledby="avatar-dialog-title">"#),
+        "#avatar-dialog must be a true modal <dialog> without popover=\"manual\""
+    );
+    assert!(
+        !html.contains(r#"id="avatar-dialog" class="glam-salon-popover""#),
+        "Legacy non-modal glam-salon-popover must not remain on #avatar-dialog"
+    );
+    assert!(html.contains(r#"id="glam-stage-pane""#));
+    assert!(html.contains(r#"id="glam-stage-canvas-wrap""#));
+    assert!(html.contains(r#"id="glam-stage-toolbar""#));
+    assert!(html.contains(r#"id="glam-pose-toolbar""#));
+    assert!(html.contains(r#"id="glam-surprise-btn""#));
+    assert!(html.contains(r#"id="glam-compare-btn""#));
+    assert!(html.contains(r#"id="glam-runway-theme-pill""#));
+    assert!(
+        !html.contains(r#"id="glam-tab-looks" aria-controls="#),
+        "Glam tab buttons must omit deprecated aria-controls per modern-web-guidance"
+    );
+
+    // 2. Verify CSS top-layer modal backdrop & responsive stage split rules
+    let (st_css, css) = http_get_text(running.http_addr, "/ella-world/css/styles.css").await;
+    assert_eq!(st_css, 200);
+    assert!(css.contains("dialog.glam-studio-modal::backdrop"));
+    assert!(css.contains(".glam-studio-layout"));
+    assert!(css.contains(".glam-stage-pane"));
+
+    // 3. Verify WebGL GlamSalonStage3D isolation & showModal() lifecycle in JS modules
+    let (st_w3d, w3d_js) = http_get_text(running.http_addr, "/ella-world/js/world3d.js").await;
+    assert_eq!(st_w3d, 200);
+    assert!(w3d_js.contains("export class GlamSalonStage3D"));
+    assert!(w3d_js.contains("cloneGeometries"));
+    assert!(w3d_js.contains("studioMode"));
+
+    let (st_app, app_js) = http_get_text(running.http_addr, "/ella-world/js/app.js").await;
+    assert_eq!(st_app, 200);
+    assert!(app_js.contains("avatarDialog.showModal()"));
+    assert!(app_js.contains("avatarDialog.returnValue = ''"));
+    assert!(app_js.contains("randomizeGlamOutfit"));
+    assert!(app_js.contains("toggleGlamCompare"));
+
+    // 4. Verify end-to-end outfit customization, male/female build switching, revert & /resume persistence
+    let (st_login, login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({
+            "username": "ella",
+            "password": "changeme-starlight",
+            "clientId": "glam_it_1"
+        })),
+    )
+    .await;
+    assert_eq!(st_login, 200);
+    let token = login["token"].as_str().unwrap().to_string();
+    let original_avatar = login["user"]["avatar"].clone();
+
+    // Equip custom Lavender Coquette look
+    let (st_custom, custom_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/avatar",
+        Some(json!({
+            "token": token,
+            "avatar": {
+                "avatarMode": "stylized",
+                "bodyType": "female",
+                "characterPreset": "custom",
+                "hairStyle": "amy_waves",
+                "hairColor": "#78350f",
+                "topStyle": "puff_blouse",
+                "topColor": "#c084fc",
+                "bottomStyle": "pleated_skirt",
+                "bottomColor": "#f8fafc",
+                "shoeStyle": "platform_boots",
+                "shoeColor": "#a855f7",
+                "hat": "beret",
+                "hatColor": "#f472b6",
+                "accessory": "star_purse",
+                "accessoryColor": "#fde047",
+                "fabricFinish": "glitter"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(st_custom, 200);
+    assert_eq!(custom_res["user"]["avatar"]["topStyle"], "puff_blouse");
+    assert_eq!(custom_res["user"]["avatar"]["bottomStyle"], "pleated_skirt");
+    assert_eq!(custom_res["user"]["avatar"]["fabricFinish"], "glitter");
+
+    // Verify /resume restores the saved custom outfit
+    let (st_resume, resume_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/resume",
+        Some(json!({ "token": token, "clientId": "glam_it_1" })),
+    )
+    .await;
+    assert_eq!(st_resume, 200);
+    assert_eq!(resume_res["user"]["avatar"]["topStyle"], "puff_blouse");
+    assert_eq!(resume_res["user"]["avatar"]["hat"], "beret");
+
+    // Verify Undo Changes revert back to salonOriginalAvatar persists cleanly
+    let (st_revert, revert_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/avatar",
+        Some(json!({
+            "token": token,
+            "avatar": original_avatar
+        })),
+    )
+    .await;
+    assert_eq!(st_revert, 200);
+    assert_eq!(
+        revert_res["user"]["avatar"]["topStyle"],
+        original_avatar["topStyle"]
+    );
+
+    running.http_task.abort();
+}
