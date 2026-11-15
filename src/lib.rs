@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod config;
+pub mod device_sig;
 pub mod economy;
 pub mod http_api;
 pub mod models;
@@ -11,6 +12,7 @@ pub mod world;
 pub mod ws_spine;
 
 use crate::config::ServerConfig;
+use crate::device_sig::ClientPeerAddr;
 use crate::http_api::{build_router, AppState};
 use crate::udp_native::NativeUdpServer;
 use crate::webrtc_sfu::WebRtcSfu;
@@ -77,15 +79,13 @@ pub async fn start_all_servers(mut config: ServerConfig) -> anyhow::Result<Runni
         sfu: Arc::clone(&sfu),
         native_udp: Arc::clone(&native_udp),
         ws_hub: Arc::clone(&ws_hub),
+        tls_enabled,
     });
 
     let http_task = if let Some(acceptor) = tls_acceptor {
         tokio::spawn(async move { serve_https_loop(tcp_listener, acceptor, router).await })
     } else {
-        tokio::spawn(async move {
-            axum::serve(tcp_listener, router).tcp_nodelay(true).await?;
-            Ok(())
-        })
+        tokio::spawn(async move { serve_http_loop(tcp_listener, router).await })
     };
 
     Ok(RunningEllaWorld {
@@ -131,6 +131,28 @@ pub fn build_tls_acceptor(cert_path: &Path, key_path: &Path) -> anyhow::Result<T
     Ok(TlsAcceptor::from(Arc::new(tls_cfg)))
 }
 
+async fn serve_http_loop(listener: TcpListener, router: Router) -> anyhow::Result<()> {
+    loop {
+        let (stream, remote_addr) = listener.accept().await?;
+        let _ = stream.set_nodelay(true);
+        let router_for_conn = router
+            .clone()
+            .layer(axum::Extension(ClientPeerAddr(remote_addr)));
+
+        tokio::spawn(async move {
+            let io = TokioIo::new(stream);
+            let service = TowerToHyperService::new(router_for_conn);
+            if let Err(err) = http1::Builder::new()
+                .serve_connection(io, service)
+                .with_upgrades()
+                .await
+            {
+                tracing::debug!(?remote_addr, "HTTP connection ended: {err}");
+            }
+        });
+    }
+}
+
 async fn serve_https_loop(
     listener: TcpListener,
     acceptor: TlsAcceptor,
@@ -140,7 +162,9 @@ async fn serve_https_loop(
         let (stream, remote_addr) = listener.accept().await?;
         let _ = stream.set_nodelay(true);
         let acceptor = acceptor.clone();
-        let router = router.clone();
+        let router_for_conn = router
+            .clone()
+            .layer(axum::Extension(ClientPeerAddr(remote_addr)));
 
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(stream).await {
@@ -151,7 +175,7 @@ async fn serve_https_loop(
                 }
             };
             let io = TokioIo::new(tls_stream);
-            let service = TowerToHyperService::new(router);
+            let service = TowerToHyperService::new(router_for_conn);
             if let Err(err) = http1::Builder::new()
                 .serve_connection(io, service)
                 .with_upgrades()

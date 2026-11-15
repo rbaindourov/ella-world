@@ -1,6 +1,11 @@
 import { VoiceChatManager } from '/ella-world/js/voice.js';
 import { WorldSpineClient } from '/ella-world/js/ws_spine.js';
 import {
+  collectMachineTelemetry,
+  loadStoredMachineSeal,
+  persistMachineSeal
+} from '/ella-world/js/device_sig.js';
+import {
   BlockyWorld3D,
   BLOCK_COLORS,
   BUILD_CATALOG
@@ -524,6 +529,17 @@ async function handleHttpAuthCheck(res) {
   return true;
 }
 
+async function buildMachineAuthFields() {
+  const [machineSeal, deviceTelemetry] = await Promise.all([
+    loadStoredMachineSeal(),
+    collectMachineTelemetry()
+  ]);
+  return {
+    machineSeal: machineSeal || undefined,
+    deviceTelemetry
+  };
+}
+
 async function probeSessionValidityAfterWsFailure() {
   if (!sessionToken || wsHandshakeProbeInFlight) return;
   const now = Date.now();
@@ -531,10 +547,12 @@ async function probeSessionValidityAfterWsFailure() {
   wsHandshakeProbeInFlight = true;
   lastWsHandshakeProbeAt = now;
   try {
+    const machineFields = await buildMachineAuthFields();
     const res = await fetch('/api/ella-world/resume', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: JSON_HEADERS,
-      body: JSON.stringify({ token: sessionToken, clientId })
+      body: JSON.stringify({ token: sessionToken, clientId, ...machineFields })
     });
     if (res.status === 401 || res.status === 403) {
       await handleHttpAuthCheck(res);
@@ -1028,13 +1046,18 @@ function applyRunwaySummary(runway) {
 async function tryAutoResumeSession() {
   if (!sessionToken) return;
   try {
+    const machineFields = await buildMachineAuthFields();
     const res = await fetch('/api/ella-world/resume', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: JSON_HEADERS,
-      body: JSON.stringify({ token: sessionToken, clientId })
+      body: JSON.stringify({ token: sessionToken, clientId, ...machineFields })
     });
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
+      if (errData && errData.machineSeal) {
+        await persistMachineSeal(errData.machineSeal);
+      }
       localStorage.removeItem('ella_world_token');
       sessionToken = '';
       if ((res.status === 401 || res.status === 403) && loginErrorEl) {
@@ -1045,6 +1068,9 @@ async function tryAutoResumeSession() {
       return;
     }
     const data = await res.json();
+    if (data && data.machineSeal) {
+      await persistMachineSeal(data.machineSeal);
+    }
     sessionToken = data.token;
     selfId = data.selfId;
     selfUser = data.user;
@@ -1064,12 +1090,17 @@ friendLoginForm.addEventListener('submit', async (e) => {
   const password = loginPasswordInput.value;
 
   try {
+    const machineFields = await buildMachineAuthFields();
     const res = await fetch('/api/ella-world/login', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: JSON_HEADERS,
-      body: JSON.stringify({ username, password, clientId })
+      body: JSON.stringify({ username, password, clientId, ...machineFields })
     });
     const data = await res.json();
+    if (data && data.machineSeal) {
+      await persistMachineSeal(data.machineSeal);
+    }
     if (!res.ok) {
       loginErrorEl.textContent = data.error || 'Could not sign in.';
       loginErrorEl.hidden = false;
@@ -4151,6 +4182,10 @@ function renderAdminDashboard(dashboard) {
   if (filterCheckbox) {
     filterCheckbox.checked = dashboard.chatFilterEnabled !== false;
   }
+  const enforceMachineSigCheckbox = document.getElementById('admin-enforce-machine-signatures');
+  if (enforceMachineSigCheckbox) {
+    enforceMachineSigCheckbox.checked = dashboard.enforceMachineSignatures !== false;
+  }
   const fineBaseEl = document.getElementById('admin-profanity-fine-base');
   if (fineBaseEl && dashboard.profanityFineBase !== undefined) {
     fineBaseEl.value = String(dashboard.profanityFineBase);
@@ -4185,7 +4220,7 @@ function renderAdminDashboard(dashboard) {
     const strikes = Number(u.violationStrikes || 0);
     const inPrison = Boolean(u.inDebtorsPrison);
 
-    // 1. Row Header (<th scope="row">): Friend Display Name + @username
+    // 1. Row Header (<th scope="row">): Friend Display Name + @username + Machine count
     const thFriend = document.createElement('th');
     thFriend.scope = 'row';
     thFriend.className = 'admin-friend-cell';
@@ -4193,7 +4228,9 @@ function renderAdminDashboard(dashboard) {
     nameStrong.textContent = u.displayName || u.username;
     const handleSub = document.createElement('span');
     handleSub.className = 'admin-handle-sub';
-    handleSub.textContent = `@${u.username}`;
+    const devCount = Number(u.deviceCount || 0);
+    handleSub.textContent =
+      devCount > 0 ? `@${u.username} • 🖥️ ${devCount}` : `@${u.username}`;
     thFriend.append(nameStrong, handleSub);
 
     // 2. Coins / Negative Debt + +/-25 Quick Fine/Bonus Buttons
@@ -4478,8 +4515,289 @@ function renderAdminDashboard(dashboard) {
     tbody.appendChild(tr);
   }
 
+  renderAdminDevicesAndEvasions(dashboard);
   refreshAdminChats();
 }
+
+async function adminManageDevice(payload, successMsg) {
+  if (!adminToken) return;
+  const res = await fetch('/api/ella-world/admin/devices', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`
+    },
+    body: JSON.stringify(payload)
+  });
+  if (res.status === 401) {
+    adminToken = '';
+    adminAuthForm.hidden = false;
+    adminDashboardContent.hidden = true;
+    return;
+  }
+  const out = await res.json().catch(() => ({}));
+  if (res.ok) {
+    if (out.dashboard) {
+      renderAdminDashboard(out.dashboard);
+    } else {
+      await refreshAdminDashboard();
+    }
+    if (successMsg) {
+      showAdminSessionFeedback(successMsg);
+    }
+  } else {
+    showAdminSessionFeedback(`❌ ${out.error || 'Machine update failed.'}`);
+  }
+}
+
+function formatMatchLayerLabel(method) {
+  switch (method) {
+    case 'machine_seal_cookie':
+      return '🔐 HttpOnly Cookie Seal';
+    case 'machine_seal_vault':
+      return '🔐 Client Vault Seal';
+    case 'hardware_exact_sig':
+      return '🧬 Exact Hardware Sig';
+    case 'hardware_cross_browser_sig':
+      return '🌐 Cross-Browser GPU/Screen';
+    case 'network_ip_fallback':
+      return '📡 Network + OS Fallback';
+    case 'live_tab_eviction':
+      return '⚡ Live Tab Eviction';
+    default:
+      return method || 'Signature';
+  }
+}
+
+function renderAdminDevicesAndEvasions(dashboard) {
+  const devices = Array.isArray(dashboard.devices) ? dashboard.devices : [];
+  const evasions = Array.isArray(dashboard.recentDeviceEvasions)
+    ? dashboard.recentDeviceEvasions
+    : [];
+
+  const devCountEl = document.getElementById('admin-device-count');
+  if (devCountEl) devCountEl.textContent = String(devices.length);
+  const evasionCountEl = document.getElementById('admin-evasion-count');
+  if (evasionCountEl) {
+    evasionCountEl.textContent = String(
+      dashboard.deviceEvasionCount !== undefined ? dashboard.deviceEvasionCount : evasions.length
+    );
+  }
+
+  const devTbody = document.getElementById('admin-devices-tbody');
+  if (devTbody) {
+    devTbody.textContent = '';
+    if (devices.length === 0) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 5;
+      td.textContent =
+        'No machines registered yet. Machines automatically register on the next browser sign-in.';
+      tr.appendChild(td);
+      devTbody.appendChild(tr);
+    } else {
+      for (const d of devices) {
+        const tr = document.createElement('tr');
+
+        // 1. Row Header (<th scope="row">): Machine Signature + Label
+        const thSig = document.createElement('th');
+        thSig.scope = 'row';
+        thSig.className = 'admin-device-sig-cell';
+        const sigCode = document.createElement('code');
+        sigCode.className = 'machine-sig-code';
+        sigCode.textContent = d.shortSig || d.deviceId;
+        const labelSub = document.createElement('span');
+        labelSub.className = 'admin-handle-sub';
+        labelSub.textContent = d.label || d.osFamily || 'Device';
+        thSig.append(sigCode, labelSub);
+
+        // 2. Hardware & Network
+        const tdHw = document.createElement('td');
+        const hwPrimary = document.createElement('div');
+        hwPrimary.className = 'device-hw-line';
+        hwPrimary.textContent = [d.osFamily, d.screenSummary].filter(Boolean).join(' • ') || '—';
+        const hwSub = document.createElement('div');
+        hwSub.className = 'admin-handle-sub';
+        const gpuClean = d.gpuSummary ? String(d.gpuSummary).slice(0, 44) : '';
+        hwSub.textContent = [gpuClean, d.lastIp ? `IP ${d.lastIp}` : ''].filter(Boolean).join(' • ');
+        tdHw.append(hwPrimary, hwSub);
+
+        // 3. Linked Friends
+        const tdUsers = document.createElement('td');
+        const usersWrap = document.createElement('div');
+        usersWrap.className = 'device-users-wrap';
+        const assoc = Array.isArray(d.associatedUsers) ? d.associatedUsers : [];
+        if (assoc.length === 0) {
+          const noneSpan = document.createElement('span');
+          noneSpan.className = 'admin-item-sub';
+          noneSpan.textContent = 'Unlinked';
+          usersWrap.appendChild(noneSpan);
+        } else {
+          for (const uname of assoc) {
+            const pill = document.createElement('span');
+            const isLockingOwner =
+              d.lockedByUser && String(d.lockedByUser).toLowerCase() === String(uname).toLowerCase();
+            pill.className = `device-user-pill${isLockingOwner ? ' is-penalized-owner' : ''}`;
+            pill.textContent = `@${uname}`;
+            usersWrap.appendChild(pill);
+          }
+        }
+        tdUsers.appendChild(usersWrap);
+
+        // 4. Lock Status
+        const tdLock = document.createElement('td');
+        const lockStack = document.createElement('div');
+        lockStack.className = 'admin-status-stack';
+        const statusBadge = document.createElement('span');
+        if (d.banned) {
+          statusBadge.className = 'suspended-badge';
+          statusBadge.textContent = '🚫 Machine Banned';
+        } else if (d.trustedShared) {
+          statusBadge.className = 'device-shared-badge';
+          statusBadge.textContent = '🏠 Trusted Shared PC';
+        } else if (d.lockedByUser) {
+          statusBadge.className = 'prison-badge';
+          statusBadge.textContent = `⚖️ Locked to @${d.lockedByUser}`;
+        } else {
+          statusBadge.className = 'device-clean-badge';
+          statusBadge.textContent =
+            Number(d.onlineCount || 0) > 0
+              ? `🟢 Clean (${d.onlineCount} online)`
+              : '🛡️ Clean';
+        }
+        lockStack.appendChild(statusBadge);
+
+        if (Array.isArray(d.activePenalties) && d.activePenalties.length > 0 && !d.trustedShared) {
+          const penSub = document.createElement('span');
+          penSub.className = 'admin-handle-sub';
+          penSub.textContent = d.activePenalties.join(', ');
+          lockStack.appendChild(penSub);
+        }
+        tdLock.appendChild(lockStack);
+
+        // 5. Parent Controls
+        const tdControls = document.createElement('td');
+        const btnWrap = document.createElement('div');
+        btnWrap.className = 'mod-controls-wrap';
+
+        const sharedBtn = document.createElement('button');
+        sharedBtn.type = 'button';
+        sharedBtn.className = `mod-pill-btn${d.trustedShared ? ' pardon-pill' : ''}`;
+        sharedBtn.textContent = d.trustedShared ? '🏠 Shared ON' : '🏠 Shared PC';
+        sharedBtn.title = d.trustedShared
+          ? 'Turn off Shared Family PC exemption (re-enable cross-account penalty lock)'
+          : 'Exempt this family computer so siblings can sign in independently when one child has a penalty';
+        sharedBtn.addEventListener('click', () =>
+          adminManageDevice(
+            {
+              deviceId: d.deviceId,
+              action: 'update',
+              trustedShared: !d.trustedShared
+            },
+            `${!d.trustedShared ? '🏠 Marked' : '🔒 Unmarked'} machine ${d.shortSig} as a Trusted Shared Family PC.`
+          )
+        );
+
+        const banBtn = document.createElement('button');
+        banBtn.type = 'button';
+        banBtn.className = `mod-pill-btn${d.banned ? ' is-locked' : ' warn-pill'}`;
+        banBtn.textContent = d.banned ? '▶️ Unban PC' : '🚫 Ban PC';
+        banBtn.title = d.banned
+          ? 'Unban this machine so accounts can sign in again'
+          : 'Block all logins & immediately sign out active sessions on this machine';
+        banBtn.addEventListener('click', () =>
+          adminManageDevice(
+            {
+              deviceId: d.deviceId,
+              action: 'update',
+              banned: !d.banned
+            },
+            `${!d.banned ? '🚫 Banned' : '▶️ Unbanned'} machine ${d.shortSig}.`
+          )
+        );
+
+        const unlinkBtn = document.createElement('button');
+        unlinkBtn.type = 'button';
+        unlinkBtn.className = 'mod-pill-btn';
+        unlinkBtn.textContent = '🧹 Unlink';
+        unlinkBtn.title = 'Clear historical account associations from this machine';
+        unlinkBtn.addEventListener('click', () =>
+          adminManageDevice(
+            {
+              deviceId: d.deviceId,
+              action: 'unlink_users'
+            },
+            `🧹 Cleared linked accounts from machine ${d.shortSig}.`
+          )
+        );
+
+        btnWrap.append(sharedBtn, banBtn, unlinkBtn);
+        tdControls.appendChild(btnWrap);
+
+        tr.append(thSig, tdHw, tdUsers, tdLock, tdControls);
+        devTbody.appendChild(tr);
+      }
+    }
+  }
+
+  const evTbody = document.getElementById('admin-evasions-tbody');
+  if (evTbody) {
+    evTbody.textContent = '';
+    if (evasions.length === 0) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 5;
+      td.textContent = 'No alt-account penalty evasion attempts recorded.';
+      tr.appendChild(td);
+      evTbody.appendChild(tr);
+    } else {
+      for (const ev of evasions) {
+        const tr = document.createElement('tr');
+
+        const thTime = document.createElement('th');
+        thTime.scope = 'row';
+        thTime.textContent = ev.ts ? new Date(ev.ts).toLocaleString() : '—';
+
+        const tdAttempt = document.createElement('td');
+        const attemptBadge = document.createElement('span');
+        attemptBadge.className = 'device-user-pill';
+        attemptBadge.textContent = `@${ev.attemptedUsername || '?'}`;
+        tdAttempt.appendChild(attemptBadge);
+
+        const tdPenalized = document.createElement('td');
+        const penBadge = document.createElement('span');
+        penBadge.className = 'prison-badge';
+        const blockingUser = ev.blockingUsername || ev.penalizedUsername || '?';
+        penBadge.textContent =
+          blockingUser === 'machine_banned' || blockingUser === 'parent'
+            ? '🚫 Machine Banned'
+            : `⚖️ @${blockingUser}`;
+        tdPenalized.appendChild(penBadge);
+
+        const tdMachine = document.createElement('td');
+        const sigCode = document.createElement('code');
+        sigCode.className = 'machine-sig-code';
+        sigCode.textContent = ev.shortSig || ev.deviceId || '—';
+        const layerSub = document.createElement('span');
+        layerSub.className = 'admin-handle-sub';
+        const peerIp = ev.peerIp || ev.ip || '';
+        layerSub.textContent = `${formatMatchLayerLabel(ev.matchMethod)}${peerIp ? ` • IP ${peerIp}` : ''}`;
+        tdMachine.append(sigCode, layerSub);
+
+        const tdReason = document.createElement('td');
+        tdReason.textContent =
+          Array.isArray(ev.activePenalties) && ev.activePenalties.length > 0
+            ? ev.activePenalties.join(', ')
+            : 'Blocked';
+
+        tr.append(thTime, tdAttempt, tdPenalized, tdMachine, tdReason);
+        evTbody.appendChild(tr);
+      }
+    }
+  }
+}
+
+document.getElementById('admin-devices-refresh-btn')?.addEventListener('click', refreshAdminDashboard);
 
 document.getElementById('admin-revoke-all-btn')?.addEventListener('click', async () => {
   if (!adminToken) return;
@@ -4686,6 +5004,9 @@ document.getElementById('admin-settings-form').addEventListener('submit', async 
     profanityFineBase: Number.isFinite(profanityFineBase) ? profanityFineBase : 15,
     debtPrisonThreshold: Number.isFinite(debtPrisonThreshold) ? debtPrisonThreshold : -50,
     prisonStrikeThreshold: Number.isFinite(prisonStrikeThreshold) ? prisonStrikeThreshold : 3,
+    enforceMachineSignatures: Boolean(
+      document.getElementById('admin-enforce-machine-signatures')?.checked
+    ),
     newAdminPassword: document.getElementById('admin-new-master-password').value.trim(),
     chatFilterEnabled: Boolean(document.getElementById('admin-chat-filter-enabled')?.checked),
     blockedWords

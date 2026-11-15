@@ -582,8 +582,61 @@ pub struct UsersConfigFile {
     pub debt_prison_threshold: i64,
     #[serde(default = "default_prison_strike_threshold")]
     pub prison_strike_threshold: u32,
+    #[serde(default = "default_true")]
+    pub enforce_machine_signatures: bool,
+    #[serde(default)]
+    pub devices: Vec<MachineDeviceRecord>,
     #[serde(default)]
     pub users: Vec<UserAccount>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineDeviceRecord {
+    pub device_id: String,
+    pub short_sig: String,
+    pub label: String,
+    #[serde(default)]
+    pub os_family: String,
+    #[serde(default)]
+    pub gpu_summary: String,
+    #[serde(default)]
+    pub screen_summary: String,
+    #[serde(default)]
+    pub hw_exact_sig: String,
+    #[serde(default)]
+    pub hw_xbrowser_sig: String,
+    #[serde(default)]
+    pub net_os_sig: String,
+    #[serde(default)]
+    pub last_ip: String,
+    #[serde(default)]
+    pub associated_users: Vec<String>,
+    #[serde(default)]
+    pub last_username: String,
+    pub first_seen_ms: u64,
+    pub last_seen_ms: u64,
+    #[serde(default)]
+    pub trusted_shared: bool,
+    #[serde(default)]
+    pub banned: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceEvasionEntry {
+    pub id: String,
+    pub device_id: String,
+    pub short_sig: String,
+    pub device_label: String,
+    pub attempted_username: String,
+    pub blocking_username: String,
+    #[serde(default)]
+    pub active_penalties: Vec<String>,
+    pub match_method: String,
+    #[serde(default)]
+    pub peer_ip: String,
+    pub ts: u64,
 }
 
 pub fn default_session_epoch() -> u64 {
@@ -802,6 +855,8 @@ pub struct PlayerRuntimeState {
     pub jump_boost_until_ms: u64,
     #[serde(skip)]
     pub server_voice_muted: bool,
+    #[serde(skip)]
+    pub device_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -52,7 +52,7 @@ pub async fn ws_upgrade_handler(
     Query(query): Query<WsAuthQuery>,
     State(st): State<AppState>,
 ) -> Response {
-    let Some((self_id, username, user_acc, session_epoch, pwd_sig)) = st
+    let Some((self_id, username, user_acc, session_epoch, pwd_sig, device_id)) = st
         .world
         .verify_active_player_token(query.token.trim())
         .await
@@ -78,6 +78,7 @@ pub async fn ws_upgrade_handler(
             session_epoch,
             user_token_epoch,
             pwd_sig,
+            device_id,
         )
     })
 }
@@ -92,10 +93,17 @@ async fn run_ws_spine_session(
     session_epoch: u64,
     user_token_epoch: u64,
     pwd_sig: String,
+    device_id: Option<String>,
 ) {
     let mut revoke_rx = world.session_revoke_tx.subscribe();
     if !world
-        .is_session_still_authorized(&username, session_epoch, user_token_epoch, &pwd_sig)
+        .is_session_still_authorized(
+            &username,
+            session_epoch,
+            user_token_epoch,
+            &pwd_sig,
+            device_id.as_deref(),
+        )
         .await
     {
         let notice = json!({
@@ -107,7 +115,10 @@ async fn run_ws_spine_session(
         return;
     }
 
-    let Some((epoch, _player)) = world.mark_ws_connected(&self_id, &username).await else {
+    let Some((epoch, _player)) = world
+        .mark_ws_connected(&self_id, &username, device_id.as_deref())
+        .await
+    else {
         let _ = socket.close().await;
         return;
     };
@@ -332,7 +343,7 @@ async fn run_ws_spine_session(
             }
 
             Ok(sig) = revoke_rx.recv() => {
-                if sig.matches(&self_id, &username) {
+                if sig.matches(&self_id, &username, device_id.as_deref()) {
                     was_revoked = true;
                     let notice = json!({
                         "type": "session_revoked",
@@ -351,6 +362,7 @@ async fn run_ws_spine_session(
                         session_epoch,
                         user_token_epoch,
                         &pwd_sig,
+                        device_id.as_deref(),
                     )
                     .await
                 {

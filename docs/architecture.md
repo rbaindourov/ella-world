@@ -142,8 +142,8 @@ To ensure parent password rotations and emergency sign-outs take effect **instan
    - **Global Revoke (`{}`)**: Increments `UsersConfigFile::session_epoch` and every user's `token_epoch`, disconnects all WebSocket, WebRTC SFU, and Native UDP sessions immediately, and returns a freshly minted `adminToken` for the parent dashboard.
    - **Per-User Revoke (`{ "username": "<id>" }`)**: Increments that account's `token_epoch` and kicks only that player's active transports.
    - **CLI & UI**: Accessible both from the Parent Admin Panel (**"🔒 Expire All Logged-In Tokens"** and per-row **"Expire"** buttons) and via `node scripts/ella_admin_user_cli.mjs --revoke-all` / `--revoke-user <username>`.
-   - **Emergency HMAC Signing Key Rotation & Production Verifier**: `node scripts/rotate_prod_hmac_secret.mjs` losslessly archives `/etc/systemd/system/ella-world.service.d/override.conf` to `/var/lib/ella-world/`, rotates `ELLA_HMAC_SECRET` to a fresh 256-bit key, restarts `ella-world.service`, and confirms `HTTP 401` on prior tokens; `node scripts/verify_prod_http_and_auth.mjs` verifies live HTML, static CSS/ES-module asset integrity, stale-token `401` rejection, and `Clear-Site-Data` header emission.
-   - **Browser Cleanup (`Clear-Site-Data`)**: `POST /api/ella-world/logout` emits `Clear-Site-Data: "cookies", "storage", "cache"`, and browser clients immediately purge `localStorage` `ella_world_token` and return to the Login Screen upon receiving `session_revoked` or `401`.
+   - **Emergency HMAC Signing Key Rotation & Production Verifier**: `node scripts/rotate_prod_hmac_secret.mjs` losslessly archives `/etc/systemd/system/ella-world.service.d/override.conf` to `/var/lib/ella-world/`, rotates `ELLA_HMAC_SECRET` to a fresh 256-bit key, restarts `ella-world.service`, and confirms `HTTP 401` on prior tokens; `node scripts/verify_prod_http_and_auth.mjs` verifies live HTML, static CSS/ES-module asset integrity (`device_sig.js`, `ws_spine.js`, `voice.js`, `world3d.js`), stale-token `401` rejection, and `/logout` machine-seal preservation.
+   - **Sign-Out Token Eviction + Machine-Seal Preservation**: `POST /api/ella-world/logout` tears down server-side WebRTC SFU, Native UDP, and WebSocket sessions while intentionally omitting `Clear-Site-Data` so `__Host-ewld_machine_seal` / `ewld_machine_seal` and client `IndexedDB`/`localStorage` vaults survive sign-outs; browser clients purge only `localStorage['ella_world_token']` on sign-out or `401`/`403` revocation.
 
 ---
 
@@ -165,3 +165,25 @@ To ensure parent password rotations and emergency sign-outs take effect **instan
 ### 8.4 Comprehensive Parental Controls (`POST /api/ella-world/admin/moderate` & `/admin/settings`)
 - **Per-Child Controls**: Server-enforced Voice Mic Mute (`voiceMutedByParent` drops Opus RTP/UDP frames inside both `WebRtcSfu` and `NativeUdpServer`), Text Chat Policy (`normal`, `quick_only` allowing only `SAFE_QUICK_CHAT_PHRASES`, or `muted`), Build Lock (`canBuild`), Trade Lock (`canTrade`), Account Pause/Grounding (`suspended` returning `403 Forbidden` + instant live session kick), `+ / -` Coin Adjust, Send to Prison, Parent Pardon, and Reset Strikes.
 - **Global Safety Switches**: World Pause Lock (`worldLocked`), Automatic Bedtime Curfew Window (`curfewEnabled`, `curfewStart`..`curfewEnd` in 24h local server time), Global Voice Toggle (`globalVoiceEnabled`), Global Chat Policy (`globalChatMode`), and configurable `profanityFineBase` / `debtPrisonThreshold` / `prisonStrikeThreshold`.
+
+---
+
+## 9. Cryptographic Machine Digital Signatures & Anti-Alt-Evasion (`src/device_sig.rs`, `public/js/device_sig.js`)
+
+To prevent penalized players from signing out, opening an Incognito window, or launching an alternate browser on the same computer to log into a friend's unpunished account:
+
+### 9.1 Three-Layer Machine Identification
+1. **Layer 1 — Server-Signed Cryptographic Machine Seal (`__Host-ewld_machine_seal` / `ewld_machine_seal`)**:
+   - Signed with constant-time `HMAC-SHA256` (`subtle::ConstantTimeEq`) using `ELLA_HMAC_SECRET` (`purpose: "machine_seal_v1"`).
+   - Delivered in an `HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000` cookie (`Secure` + `__Host-` prefix when TLS is active) AND stored redundantly in client `localStorage` + `IndexedDB` (`ella_world_device_vault`), automatically self-healing if a user deletes one client store in DevTools.
+2. **Layer 2 — Exact Hardware Digital Signature (`hw_exact_sig`)**:
+   - Keyed `HMAC-SHA256` digest of canonical WebGL GPU renderer/capabilities, 2D Canvas raster digest, time-bounded `OfflineAudioContext` DSP digest, orientation-invariant screen bounds, pixel ratio, CPU core count, touch points, OS family, and timezone. Catches Incognito/Private windows and cookie wipes where no seal is presented.
+3. **Layer 3 — Cross-Browser Physical Machine + Subnet Signature (`hw_xbrowser_sig` & `net_os_sig`)**:
+   - Excludes browser-engine-specific Canvas/Audio/colorDepth perturbations and canonicalizes ANGLE vs. native WebGL GPU strings (`"ANGLE (Apple, Apple M2...)"` -> `"apple m2"`), combined with exact RFC1918 LAN host IP (`/32`) or public WAN `/24` (IPv4) / `/64` (IPv6) subnet (`X-Forwarded-For` trusted **only** when the TCP peer is loopback `127.0.0.1` / `::1`). Catches Chrome -> Safari/Firefox/Edge switches on a penalized computer while keeping unpenalized sibling devices distinct.
+   - **Sibling Zero-Collision Guarantee**: When a request carries a valid cryptographic seal for an already-registered sibling device (`dev_B`), Layer 1 resolves `dev_B` directly and never falls through to fuzzy hardware/subnet matching—preventing false positives between two identical-model family iPads or MacBooks on the same home Wi-Fi.
+
+### 9.2 Cross-Account Penalty Lock, Live Tab Eviction & Parent Shared-PC Override
+- **Triggering Penalties (`active_penalties_for_user`)**: Any active penalty on a user linked to a non-exempt machine (`inDebtorsPrison`, `suspended`, `coins < 0`, `voiceMutedByParent`, `chatMode != "normal"`, `!canBuild`, or `!canTrade`) locks that machine exclusively to the penalized account.
+- **403 Login/Resume Block + Audit Trail**: Attempting to log in or `/resume` as any other friend account on that locked machine returns `403 Forbidden`, leaves the friend's account completely unpenalized, and appends a forensic record to `world_device_evasion.jsonl`.
+- **Instant Multi-Tab Eviction (`SessionRevokeSignal::DeviceOtherUsers`)**: Whenever an account incurs a penalty (via profanity fine/Debtor's Prison sentence in `submit_chat` or parent action in `admin_moderate_user`), `evict_other_accounts_on_user_machines` immediately revokes and disconnects any other accounts' open WebSocket, WebRTC SFU, and Native UDP sessions on that machine (`TokenClaims::device_id` + `PlayerRuntimeState::device_id`).
+- **Parent Controls (`POST /api/ella-world/admin/devices` & CLI)**: Parents can mark a shared household computer as **🏠 Shared PC** (`trustedShared: true`) so siblings can play independently, **🚫 Ban PC** (`banned: true`), or **🧹 Unlink** historical accounts in the Parent Admin Panel or via `node scripts/ella_admin_user_cli.mjs --devices` / `--trust-device` / `--ban-device` / `--unlink-device`.

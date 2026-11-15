@@ -12,6 +12,7 @@
   "profanityFineBase": 15,
   "debtPrisonThreshold": -50,
   "prisonStrikeThreshold": 3,
+  "enforceMachineSignatures": true,
   "iceServers": [
     {
       "urls": [

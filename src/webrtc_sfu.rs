@@ -59,6 +59,7 @@ struct PeerRtcSession {
     session_nonce: u64,
     self_id: String,
     username: String,
+    device_id: Option<String>,
     revoked: AtomicBool,
     pc: Arc<RTCPeerConnection>,
     events_dc: RwLock<Option<Arc<RTCDataChannel>>>,
@@ -258,7 +259,7 @@ impl WebRtcSfu {
                 let matching: Vec<Arc<PeerRtcSession>> = {
                     let map = revoke_sfu.sessions.read().await;
                     map.values()
-                        .filter(|s| sig.matches(&s.self_id, &s.username))
+                        .filter(|s| sig.matches(&s.self_id, &s.username, s.device_id.as_deref()))
                         .cloned()
                         .collect()
                 };
@@ -485,6 +486,7 @@ impl WebRtcSfu {
         self: &Arc<Self>,
         self_id: String,
         username: String,
+        device_id: Option<String>,
         offer_sdp: String,
     ) -> anyhow::Result<String> {
         let _ = self.world.ensure_player_online(&self_id, &username).await;
@@ -558,6 +560,7 @@ impl WebRtcSfu {
             session_nonce,
             self_id: self_id.clone(),
             username: username.clone(),
+            device_id,
             revoked: AtomicBool::new(false),
             pc: Arc::clone(&pc),
             events_dc: RwLock::new(None),

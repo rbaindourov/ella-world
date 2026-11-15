@@ -12,6 +12,11 @@
  *      - `node scripts/ella_admin_user_cli.mjs --username <u> --pardon`
  *      - `node scripts/ella_admin_user_cli.mjs --username <u> --reset-strikes`
  *      - `node scripts/ella_admin_user_cli.mjs --username <u> [--mute-voice true|false] [--chat-mode normal|quick_only|muted] [--can-build true|false] [--can-trade true|false] [--suspended true|false]`
+ *   6. Machine digital signatures & anti-cheat evasion:
+ *      - `node scripts/ella_admin_user_cli.mjs --devices`
+ *      - `node scripts/ella_admin_user_cli.mjs --trust-device <deviceId|shortSig> <true|false>`
+ *      - `node scripts/ella_admin_user_cli.mjs --ban-device <deviceId|shortSig> <true|false>`
+ *      - `node scripts/ella_admin_user_cli.mjs --unlink-device <deviceId|shortSig>`
  */
 
 import { execFileSync } from 'node:child_process';
@@ -84,6 +89,12 @@ function parseArgs(argv) {
     revokeAll: false,
     revokeUser: '',
     listOnly: false,
+    devicesOnly: false,
+    trustDeviceId: '',
+    trustDeviceVal: undefined,
+    banDeviceId: '',
+    banDeviceVal: undefined,
+    unlinkDeviceId: '',
     coinDelta: null,
     pardon: false,
     sentenceTasks: null,
@@ -109,6 +120,18 @@ function parseArgs(argv) {
     else if (k === '--revoke-all') { out.revokeAll = true; }
     else if (k === '--revoke-user') { out.revokeUser = v; i++; }
     else if (k === '--list') { out.listOnly = true; }
+    else if (k === '--devices') { out.devicesOnly = true; }
+    else if (k === '--trust-device') {
+      out.trustDeviceId = v || '';
+      out.trustDeviceVal = parseBoolFlag(argv[i + 2] ?? 'true');
+      i += argv[i + 2] && !argv[i + 2].startsWith('--') ? 2 : 1;
+    }
+    else if (k === '--ban-device') {
+      out.banDeviceId = v || '';
+      out.banDeviceVal = parseBoolFlag(argv[i + 2] ?? 'true');
+      i += argv[i + 2] && !argv[i + 2].startsWith('--') ? 2 : 1;
+    }
+    else if (k === '--unlink-device') { out.unlinkDeviceId = v || ''; i++; }
     else if (k === '--coins') { out.coinDelta = Number(v); i++; }
     else if (k === '--pardon') { out.pardon = true; }
     else if (k === '--sentence') {
@@ -145,8 +168,37 @@ async function postAdminModerate(baseUrl, adminToken, payload) {
   return res.json();
 }
 
+async function postAdminDevice(baseUrl, adminToken, payload) {
+  const res = await fetch(`${baseUrl}/api/ella-world/admin/devices`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    throw new Error(`Admin device management failed: HTTP ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
+function resolveDeviceIdFromDashboard(dashboard, queryId) {
+  const q = String(queryId || '').trim();
+  if (!q) return '';
+  const list = Array.isArray(dashboard?.devices) ? dashboard.devices : [];
+  const exact = list.find(
+    (d) =>
+      String(d.deviceId || '').toLowerCase() === q.toLowerCase() ||
+      String(d.shortSig || '').toLowerCase() === q.toLowerCase()
+  );
+  return exact ? exact.deviceId : q;
+}
+
 async function main() {
   const opts = parseArgs(process.argv);
+  const hasDeviceAction =
+    Boolean(opts.trustDeviceId) || Boolean(opts.banDeviceId) || Boolean(opts.unlinkDeviceId);
   const hasControlUpdates =
     opts.chatMode !== null ||
     opts.muteVoice !== undefined ||
@@ -165,6 +217,8 @@ async function main() {
     opts.revokeAll ||
     Boolean(opts.revokeUser) ||
     opts.listOnly ||
+    opts.devicesOnly ||
+    hasDeviceAction ||
     hasModerationAction ||
     Boolean(opts.username && opts.password);
 
@@ -175,6 +229,10 @@ async function main() {
         '  node scripts/ella_admin_user_cli.mjs --revoke-all',
         '  node scripts/ella_admin_user_cli.mjs --revoke-user <username>',
         '  node scripts/ella_admin_user_cli.mjs --list',
+        '  node scripts/ella_admin_user_cli.mjs --devices',
+        '  node scripts/ella_admin_user_cli.mjs --trust-device <deviceId|shortSig> <true|false>',
+        '  node scripts/ella_admin_user_cli.mjs --ban-device <deviceId|shortSig> <true|false>',
+        '  node scripts/ella_admin_user_cli.mjs --unlink-device <deviceId|shortSig>',
         '  node scripts/ella_admin_user_cli.mjs --username <u> --password <p> [--display-name <n>] [--preset jack_tech49]',
         '  node scripts/ella_admin_user_cli.mjs --username <u> --coins <-50|+50>',
         '  node scripts/ella_admin_user_cli.mjs --username <u> --sentence [tasks] [--reason "..."]',
@@ -206,6 +264,71 @@ async function main() {
     throw new Error(`Admin login failed: HTTP ${adminLoginRes.status}`);
   }
   const { adminToken, dashboard: initialDashboard } = await adminLoginRes.json();
+
+  if (opts.devicesOnly) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          worldName: initialDashboard?.worldName,
+          enforceMachineSignatures: initialDashboard?.enforceMachineSignatures,
+          deviceCount: (initialDashboard?.devices || []).length,
+          deviceEvasionCount: initialDashboard?.deviceEvasionCount ?? 0,
+          devices: initialDashboard?.devices || [],
+          recentDeviceEvasions: initialDashboard?.recentDeviceEvasions || []
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  if (hasDeviceAction) {
+    const receipts = [];
+    if (opts.trustDeviceId) {
+      const deviceId = resolveDeviceIdFromDashboard(initialDashboard, opts.trustDeviceId);
+      receipts.push(
+        await postAdminDevice(opts.baseUrl, adminToken, {
+          deviceId,
+          action: 'update',
+          trustedShared: opts.trustDeviceVal
+        })
+      );
+    }
+    if (opts.banDeviceId) {
+      const deviceId = resolveDeviceIdFromDashboard(initialDashboard, opts.banDeviceId);
+      receipts.push(
+        await postAdminDevice(opts.baseUrl, adminToken, {
+          deviceId,
+          action: 'update',
+          banned: opts.banDeviceVal
+        })
+      );
+    }
+    if (opts.unlinkDeviceId) {
+      const deviceId = resolveDeviceIdFromDashboard(initialDashboard, opts.unlinkDeviceId);
+      receipts.push(
+        await postAdminDevice(opts.baseUrl, adminToken, {
+          deviceId,
+          action: 'unlink_users'
+        })
+      );
+    }
+    const latest = receipts[receipts.length - 1] || {};
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          device: latest.device,
+          kickedCount: latest.kickedCount ?? 0
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
 
   if (opts.listOnly) {
     console.log(

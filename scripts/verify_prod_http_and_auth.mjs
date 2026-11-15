@@ -6,12 +6,12 @@
  * Verifies against `ELLA_VERIFY_ORIGIN` (default `https://robertscreations.com:4444`):
  *   1. Root HTML (`/ella-world`) returns HTTP 200 OK and renders `#admin-revoke-all-btn`.
  *   2. All HTML `<link>`/`<script>` assets plus ES module imports (`ws_spine.js`, `voice.js`,
- *      `world3d.js`) return HTTP 200 OK.
+ *      `device_sig.js`, `world3d.js`) return HTTP 200 OK.
  *   3. Health endpoint (`/api/ella-world/health`) returns HTTP 200 OK.
  *   4. Stale / legacy session tokens presented to `POST /api/ella-world/resume` return
  *      HTTP 401 Unauthorized.
- *   5. Logout endpoint (`POST /api/ella-world/logout`) returns HTTP 200 OK with
- *      `Clear-Site-Data: "cookies", "storage", "cache"`.
+ *   5. Logout endpoint (`POST /api/ella-world/logout`) returns HTTP 200 OK and omits
+ *      `Clear-Site-Data` so cryptographic machine seals survive sign-out.
  */
 
 import https from 'node:https';
@@ -60,6 +60,7 @@ function extractAssetPaths(html) {
   const paths = new Set([
     'js/ws_spine.js',
     'js/voice.js',
+    'js/device_sig.js',
     'js/world3d.js',
     'models/ella_dti_wardrobe.glb',
     'models/ella_world_props_loot.glb',
@@ -160,6 +161,11 @@ async function main() {
   report.logoutClearSiteData = logoutRes.headers['clear-site-data'] || null;
   if (logoutRes.status !== 200) {
     throw new Error(`Expected HTTP 200 on /logout, got ${logoutRes.status}`);
+  }
+  if (report.logoutClearSiteData !== null) {
+    throw new Error(
+      `Expected /logout to preserve machine seals (no Clear-Site-Data), got ${report.logoutClearSiteData}`
+    );
   }
 
   console.log(JSON.stringify(report, null, 2));

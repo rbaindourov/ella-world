@@ -522,6 +522,7 @@ mod tests {
                 speed_boost_until_ms: 0,
                 jump_boost_until_ms: 0,
                 server_voice_muted: false,
+                device_id: None,
             },
             PlayerRuntimeState {
                 id: "peer_maya_tab1".into(),
@@ -553,6 +554,7 @@ mod tests {
                 speed_boost_until_ms: 0,
                 jump_boost_until_ms: 0,
                 server_voice_muted: false,
+                device_id: None,
             },
         ];
 
@@ -604,6 +606,7 @@ mod tests {
                 speed_boost_until_ms: 0,
                 jump_boost_until_ms: 0,
                 server_voice_muted: false,
+                device_id: None,
             };
             entries.push((p.id.clone(), encode_player_binary_entry(&p)));
         }

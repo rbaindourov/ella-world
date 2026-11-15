@@ -97,6 +97,12 @@ node scripts/ella_admin_user_cli.mjs --username ella --sentence 4 --reason "Habi
 node scripts/ella_admin_user_cli.mjs --username ella --pardon
 node scripts/ella_admin_user_cli.mjs --username ella --reset-strikes
 node scripts/ella_admin_user_cli.mjs --username ella --mute-voice true --chat-mode quick_only
+
+# Inspect Machine Digital Signatures, blocked alt-account evasions & Shared Family PC overrides:
+node scripts/ella_admin_user_cli.mjs --devices
+node scripts/ella_admin_user_cli.mjs --trust-device SIG-AB12CD34 true
+node scripts/ella_admin_user_cli.mjs --ban-device SIG-AB12CD34 true
+node scripts/ella_admin_user_cli.mjs --unlink-device SIG-AB12CD34
 ```
 
 ---

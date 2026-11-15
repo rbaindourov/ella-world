@@ -1,4 +1,8 @@
 use crate::auth::constant_time_str_eq;
+use crate::device_sig::{
+    active_penalties_for_user, build_machine_seal_set_cookie, extract_effective_client_ip,
+    extract_machine_seal_cookie, ClientDeviceTelemetry, ClientPeerAddr,
+};
 use crate::economy::ITEM_CATALOG;
 use crate::models::{
     normalize_chat_mode, now_ms, AvatarAppearance, UserAccount, SAFE_QUICK_CHAT_PHRASES,
@@ -7,10 +11,10 @@ use crate::udp_native::NativeUdpServer;
 use crate::webrtc_sfu::WebRtcSfu;
 use crate::world::{
     is_within_curfew_window, local_minutes_since_midnight, parse_hhmm_minutes,
-    AdminModerateUserInput, BlockMutationInput, WorldEngine,
+    AdminManageDeviceInput, AdminModerateUserInput, BlockMutationInput, WorldEngine,
 };
 use crate::ws_spine::{ws_upgrade_handler, WsSpineHub};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -29,6 +33,7 @@ pub struct AppState {
     pub sfu: Arc<WebRtcSfu>,
     pub native_udp: Arc<NativeUdpServer>,
     pub ws_hub: Arc<WsSpineHub>,
+    pub tls_enabled: bool,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -67,6 +72,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/users", post(admin_upsert_user_handler))
         .route("/admin/users/:username", delete(admin_delete_user_handler))
         .route("/admin/moderate", post(admin_moderate_handler))
+        .route("/admin/devices", post(admin_devices_handler))
         .route(
             "/admin/sessions/revoke",
             post(admin_revoke_sessions_handler),
@@ -92,7 +98,7 @@ fn json_err(status: StatusCode, msg: &str) -> Response {
 }
 
 async fn extract_player_claims(world: &WorldEngine, token: &str) -> Option<(String, String)> {
-    let (self_id, username, _, _, _) = world.verify_active_player_token(token).await?;
+    let (self_id, username, _, _, _, _) = world.verify_active_player_token(token).await?;
     Some((self_id, username))
 }
 
@@ -116,6 +122,15 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
             let online = active
                 .values()
                 .any(|p| p.user.username.eq_ignore_ascii_case(&u.username));
+            let device_count = cfg
+                .devices
+                .iter()
+                .filter(|d| {
+                    d.associated_users
+                        .iter()
+                        .any(|au| au.eq_ignore_ascii_case(&u.username))
+                })
+                .count();
             json!({
                 "username": u.username,
                 "displayName": if u.display_name.is_empty() { &u.username } else { &u.display_name },
@@ -133,11 +148,66 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
                 "suspended": u.suspended,
                 "canBuild": u.can_build,
                 "canTrade": u.can_trade,
+                "deviceCount": device_count,
                 "avatar": u.avatar,
                 "online": online
             })
         })
         .collect();
+
+    let mut devices_list: Vec<Value> = cfg
+        .devices
+        .iter()
+        .map(|d| {
+            let online_count = active
+                .values()
+                .filter(|p| p.device_id.as_deref() == Some(d.device_id.as_str()))
+                .count();
+            let mut locked_by_user: Option<String> = None;
+            let mut active_pens: Vec<String> = Vec::new();
+            if cfg.enforce_machine_signatures && !d.trusted_shared {
+                for au in &d.associated_users {
+                    if let Some(u_acc) = cfg
+                        .users
+                        .iter()
+                        .find(|u| u.username.eq_ignore_ascii_case(au))
+                    {
+                        let pens = active_penalties_for_user(u_acc);
+                        if !pens.is_empty() {
+                            locked_by_user = Some(u_acc.username.clone());
+                            active_pens = pens;
+                            break;
+                        }
+                    }
+                }
+            }
+            json!({
+                "deviceId": d.device_id,
+                "shortSig": d.short_sig,
+                "label": d.label,
+                "osFamily": d.os_family,
+                "gpuSummary": d.gpu_summary,
+                "screenSummary": d.screen_summary,
+                "lastIp": d.last_ip,
+                "associatedUsers": d.associated_users,
+                "lastUsername": d.last_username,
+                "firstSeenMs": d.first_seen_ms,
+                "lastSeenMs": d.last_seen_ms,
+                "trustedShared": d.trusted_shared,
+                "banned": d.banned,
+                "lockedByUser": locked_by_user,
+                "activePenalties": active_pens,
+                "onlineCount": online_count
+            })
+        })
+        .collect();
+    devices_list.sort_by(|a, b| {
+        let ta = a.get("lastSeenMs").and_then(Value::as_u64).unwrap_or(0);
+        let tb = b.get("lastSeenMs").and_then(Value::as_u64).unwrap_or(0);
+        tb.cmp(&ta)
+    });
+
+    let recent_evasions = world.store.load_recent_device_evasions(80);
 
     json!({
         "worldName": cfg.world_name,
@@ -152,12 +222,16 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
         "profanityFineBase": cfg.profanity_fine_base,
         "debtPrisonThreshold": cfg.debt_prison_threshold,
         "prisonStrikeThreshold": cfg.prison_strike_threshold,
+        "enforceMachineSignatures": cfg.enforce_machine_signatures,
         "safeQuickChatPhrases": SAFE_QUICK_CHAT_PHRASES,
         "blockCount": blocks_count,
         "chatFilterEnabled": cfg.chat_filter_enabled,
         "blockedWords": cfg.blocked_words,
         "chatCount": world.cached_chat_count.load(std::sync::atomic::Ordering::Relaxed),
         "blockedChatCount": world.cached_blocked_chat_count.load(std::sync::atomic::Ordering::Relaxed),
+        "deviceEvasionCount": world.cached_device_evasion_count.load(std::sync::atomic::Ordering::Relaxed),
+        "devices": devices_list,
+        "recentDeviceEvasions": recent_evasions,
         "users": users_list
     })
 }
@@ -225,9 +299,24 @@ struct LoginPayload {
     username: String,
     password: String,
     client_id: Option<String>,
+    machine_seal: Option<String>,
+    device_telemetry: Option<ClientDeviceTelemetry>,
 }
 
-async fn login_handler(State(st): State<AppState>, Json(body): Json<LoginPayload>) -> Response {
+fn attach_machine_seal_cookie(mut resp: Response, seal_token: &str, tls_enabled: bool) -> Response {
+    let cookie_val = build_machine_seal_set_cookie(seal_token, tls_enabled);
+    if let Ok(hv) = HeaderValue::from_str(&cookie_val) {
+        resp.headers_mut().insert(header::SET_COOKIE, hv);
+    }
+    resp
+}
+
+async fn login_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer_ext: Option<Extension<ClientPeerAddr>>,
+    Json(body): Json<LoginPayload>,
+) -> Response {
     let uname = body.username.trim();
     if uname.is_empty() || body.password.is_empty() {
         return json_err(
@@ -254,15 +343,52 @@ async fn login_handler(State(st): State<AppState>, Json(body): Json<LoginPayload
         );
     };
 
+    let cookie_seal = extract_machine_seal_cookie(&headers);
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    let peer_ip = extract_effective_client_ip(&headers, peer_ext.map(|e| e.0 .0));
+
+    let resolved_machine = match st
+        .world
+        .resolve_and_authorize_machine_login(
+            &user.username,
+            cookie_seal.as_deref(),
+            body.machine_seal.as_deref(),
+            None,
+            body.device_telemetry.as_ref(),
+            user_agent,
+            peer_ip,
+        )
+        .await
+    {
+        Ok(m) => m,
+        Err(lock_reason) => return json_err(StatusCode::FORBIDDEN, &lock_reason),
+    };
+
     if let Err(reason) = st.world.check_world_access_for_user(&user).await {
-        return json_err(StatusCode::FORBIDDEN, &reason);
+        let mut payload = json!({ "ok": false, "error": reason });
+        if let Some(ref m) = resolved_machine {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("machineSeal".into(), json!(m.seal_token));
+                obj.insert("machineShortSig".into(), json!(m.short_sig));
+            }
+            let resp = (StatusCode::FORBIDDEN, Json(payload)).into_response();
+            return attach_machine_seal_cookie(resp, &m.seal_token, st.tls_enabled);
+        }
+        return (StatusCode::FORBIDDEN, Json(payload)).into_response();
     }
 
     let session_doc = st
         .world
-        .create_or_resume_session(&user, body.client_id.as_deref())
+        .create_or_resume_session(&user, body.client_id.as_deref(), resolved_machine.as_ref())
         .await;
-    Json(session_doc).into_response()
+    let resp = Json(session_doc).into_response();
+    if let Some(ref m) = resolved_machine {
+        attach_machine_seal_cookie(resp, &m.seal_token, st.tls_enabled)
+    } else {
+        resp
+    }
 }
 
 #[derive(Deserialize)]
@@ -270,10 +396,17 @@ async fn login_handler(State(st): State<AppState>, Json(body): Json<LoginPayload
 struct ResumePayload {
     token: String,
     client_id: Option<String>,
+    machine_seal: Option<String>,
+    device_telemetry: Option<ClientDeviceTelemetry>,
 }
 
-async fn resume_handler(State(st): State<AppState>, Json(body): Json<ResumePayload>) -> Response {
-    let Some((_old_id, _username, user, _, _)) =
+async fn resume_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer_ext: Option<Extension<ClientPeerAddr>>,
+    Json(body): Json<ResumePayload>,
+) -> Response {
+    let Some((_old_id, _username, user, _, _, claim_device_id)) =
         st.world.verify_player_token_claims_only(&body.token).await
     else {
         return json_err(
@@ -282,15 +415,52 @@ async fn resume_handler(State(st): State<AppState>, Json(body): Json<ResumePaylo
         );
     };
 
+    let cookie_seal = extract_machine_seal_cookie(&headers);
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    let peer_ip = extract_effective_client_ip(&headers, peer_ext.map(|e| e.0 .0));
+
+    let resolved_machine = match st
+        .world
+        .resolve_and_authorize_machine_login(
+            &user.username,
+            cookie_seal.as_deref(),
+            body.machine_seal.as_deref(),
+            claim_device_id.as_deref(),
+            body.device_telemetry.as_ref(),
+            user_agent,
+            peer_ip,
+        )
+        .await
+    {
+        Ok(m) => m,
+        Err(lock_reason) => return json_err(StatusCode::FORBIDDEN, &lock_reason),
+    };
+
     if let Err(reason) = st.world.check_world_access_for_user(&user).await {
-        return json_err(StatusCode::FORBIDDEN, &reason);
+        let mut payload = json!({ "ok": false, "error": reason });
+        if let Some(ref m) = resolved_machine {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("machineSeal".into(), json!(m.seal_token));
+                obj.insert("machineShortSig".into(), json!(m.short_sig));
+            }
+            let resp = (StatusCode::FORBIDDEN, Json(payload)).into_response();
+            return attach_machine_seal_cookie(resp, &m.seal_token, st.tls_enabled);
+        }
+        return (StatusCode::FORBIDDEN, Json(payload)).into_response();
     }
 
     let session_doc = st
         .world
-        .create_or_resume_session(&user, body.client_id.as_deref())
+        .create_or_resume_session(&user, body.client_id.as_deref(), resolved_machine.as_ref())
         .await;
-    Json(session_doc).into_response()
+    let resp = Json(session_doc).into_response();
+    if let Some(ref m) = resolved_machine {
+        attach_machine_seal_cookie(resp, &m.seal_token, st.tls_enabled)
+    } else {
+        resp
+    }
 }
 
 #[derive(Deserialize)]
@@ -315,12 +485,9 @@ async fn logout_handler(
             st.world.remove_player_immediately(&self_id).await;
         }
     }
-    let mut resp = Json(json!({ "ok": true })).into_response();
-    resp.headers_mut().insert(
-        header::HeaderName::from_static("clear-site-data"),
-        HeaderValue::from_static("\"cookies\", \"storage\", \"cache\""),
-    );
-    resp
+    // Intentionally do NOT send Clear-Site-Data here so `__Host-ewld_machine_seal` /
+    // `ewld_machine_seal` and IndexedDB/localStorage machine seals persist across sign-outs!
+    Json(json!({ "ok": true })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -333,7 +500,9 @@ async fn rtc_offer_handler(
     State(st): State<AppState>,
     Json(body): Json<RtcOfferPayload>,
 ) -> Response {
-    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+    let Some((self_id, username, _, _, _, device_id)) =
+        st.world.verify_active_player_token(&body.token).await
+    else {
         return json_err(
             StatusCode::UNAUTHORIZED,
             "Invalid or expired session token for UDP WebRTC.",
@@ -345,7 +514,7 @@ async fn rtc_offer_handler(
 
     match st
         .sfu
-        .accept_browser_offer(self_id, username, body.sdp)
+        .accept_browser_offer(self_id, username, device_id, body.sdp)
         .await
     {
         Ok(answer_sdp) => Json(json!({
@@ -923,6 +1092,7 @@ struct AdminSettingsPayload {
     profanity_fine_base: Option<u64>,
     debt_prison_threshold: Option<i64>,
     prison_strike_threshold: Option<u32>,
+    enforce_machine_signatures: Option<bool>,
     new_admin_password: Option<String>,
     chat_filter_enabled: Option<bool>,
     blocked_words: Option<Vec<String>>,
@@ -939,6 +1109,7 @@ async fn admin_settings_handler(
 
     let mut admin_pw_changed = false;
     let mut should_evict_all = false;
+    let mut penalized_users_to_sweep = Vec::new();
     {
         let mut cfg = st.world.users_cfg.write().await;
         if let Some(name) = body
@@ -984,6 +1155,17 @@ async fn admin_settings_handler(
         if let Some(strike_thresh) = body.prison_strike_threshold {
             cfg.prison_strike_threshold = strike_thresh.clamp(1, 20);
         }
+        if let Some(ems) = body.enforce_machine_signatures {
+            cfg.enforce_machine_signatures = ems;
+            if ems {
+                penalized_users_to_sweep = cfg
+                    .users
+                    .iter()
+                    .filter(|u| !active_penalties_for_user(u).is_empty())
+                    .map(|u| u.username.clone())
+                    .collect();
+            }
+        }
         if let Some(new_pw) = body
             .new_admin_password
             .map(|s| s.trim().to_string())
@@ -1025,6 +1207,13 @@ async fn admin_settings_handler(
         st.sfu.cleanup_all_sessions().await;
         st.native_udp.evict_all_sessions().await;
     }
+    for pu in penalized_users_to_sweep {
+        let evicted_pids = st.world.evict_other_accounts_on_user_machines(&pu).await;
+        for pid in evicted_pids {
+            st.sfu.cleanup_session(&pid).await;
+            st.native_udp.evict_sessions_for_peer(&pid).await;
+        }
+    }
     st.world.enforce_live_world_access().await;
 
     let dashboard = build_admin_dashboard(&st.world).await;
@@ -1056,6 +1245,15 @@ async fn admin_moderate_handler(
         Err(msg) => return json_err(StatusCode::BAD_REQUEST, &msg),
     };
 
+    if let Some(arr) = res.get("evictedAltPeers").and_then(Value::as_array) {
+        for pid_val in arr {
+            if let Some(pid) = pid_val.as_str() {
+                st.sfu.cleanup_session(pid).await;
+                st.native_udp.evict_sessions_for_peer(pid).await;
+            }
+        }
+    }
+
     if res.get("suspended").and_then(Value::as_bool) == Some(true) {
         st.sfu.cleanup_sessions_for_username(&target_uname).await;
         st.native_udp
@@ -1075,6 +1273,34 @@ async fn admin_moderate_handler(
         obj.insert("dashboard".into(), dashboard);
     }
     Json(res).into_response()
+}
+
+async fn admin_devices_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AdminManageDeviceInput>,
+) -> Response {
+    if !verify_admin_bearer(&st.world, &headers).await {
+        return json_err(StatusCode::UNAUTHORIZED, "Unauthorized admin token.");
+    }
+
+    let (updated, kicked_peers) = match st.world.admin_manage_device(body).await {
+        Ok(res) => res,
+        Err(msg) => return json_err(StatusCode::BAD_REQUEST, &msg),
+    };
+    for pid in &kicked_peers {
+        st.sfu.cleanup_session(pid).await;
+        st.native_udp.evict_sessions_for_peer(pid).await;
+    }
+
+    let dashboard = build_admin_dashboard(&st.world).await;
+    Json(json!({
+        "ok": true,
+        "device": updated,
+        "kickedCount": kicked_peers.len(),
+        "dashboard": dashboard
+    }))
+    .into_response()
 }
 
 #[derive(Deserialize)]

@@ -1908,6 +1908,7 @@ async fn password_rollover_and_global_session_revocation_expire_tokens_and_kick_
             session_epoch: None,
             user_token_epoch: None,
             pwd_sig: None,
+            device_id: None,
         },
         &hmac_secret,
     );
@@ -2199,7 +2200,7 @@ async fn password_rollover_and_global_session_revocation_expire_tokens_and_kick_
     assert_eq!(new_adm_st, 200);
     assert_eq!(new_adm_state["dashboard"]["sessionEpoch"], 2);
 
-    // Verify /logout attaches Clear-Site-Data header
+    // Verify /logout succeeds and preserves machine seals (never emits Clear-Site-Data)
     let (logout_st, logout_headers, _) = http_json_request_with_headers(
         running.http_addr,
         "POST",
@@ -2210,8 +2211,8 @@ async fn password_rollover_and_global_session_revocation_expire_tokens_and_kick_
     .await;
     assert_eq!(logout_st, 200);
     assert!(
-        logout_headers.contains("clear-site-data: \"cookies\", \"storage\", \"cache\""),
-        "Logout endpoint must emit Clear-Site-Data header"
+        !logout_headers.contains("clear-site-data"),
+        "Logout endpoint must preserve cryptographic machine seals across sign-outs"
     );
 
     running.http_task.abort();
@@ -3167,6 +3168,611 @@ async fn legendary_ray_gun_ranged_dungeon_combat_and_plaza_light_show() {
     .await;
     assert_eq!(st_zap_ok, 200);
     assert_eq!(zap_ok["ok"], true);
+
+    running.http_task.abort();
+}
+
+async fn http_json_request_custom_headers(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    extra_headers: &[(&str, &str)],
+    body: Option<Value>,
+) -> (u16, String, Value) {
+    let mut stream = TcpStream::connect(addr).await.expect("connect HTTP");
+    let body_bytes = body
+        .map(|v| serde_json::to_vec(&v).unwrap())
+        .unwrap_or_default();
+    let mut header_block = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\nContent-Length: {}\r\n",
+        body_bytes.len()
+    );
+    for (k, v) in extra_headers {
+        header_block.push_str(&format!("{k}: {v}\r\n"));
+    }
+    header_block.push_str("\r\n");
+
+    stream.write_all(header_block.as_bytes()).await.unwrap();
+    if !body_bytes.is_empty() {
+        stream.write_all(&body_bytes).await.unwrap();
+    }
+    let mut raw_resp = Vec::new();
+    stream.read_to_end(&mut raw_resp).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&raw_resp);
+    let (head, body_part) = resp_str
+        .split_once("\r\n\r\n")
+        .expect("valid HTTP response headers");
+    let status: u16 = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
+    let parsed: Value = serde_json::from_str(body_part.trim()).unwrap_or_else(|_| json!({}));
+    (status, head.to_string(), parsed)
+}
+
+#[tokio::test]
+async fn machine_digital_signature_blocks_alt_account_evasion_and_evicts_live_tabs() {
+    let cfg = make_test_config("machine_sig_anti_evasion");
+    let running = start_all_servers(cfg).await.expect("start servers");
+
+    let mac_m2_chrome_tel = json!({
+        "gpuVendor": "Google Inc. (Apple)",
+        "gpuRenderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+        "glCaps": "16384|16384|16384|16|4096|1024|32|16384x16384",
+        "canvasHash": "c4f199a0b21177ee",
+        "audioHash": "a9810cc4512bb009",
+        "screenW": 1512,
+        "screenH": 982,
+        "colorDepth": 30,
+        "pixelRatioX100": 200,
+        "cpuCores": 8,
+        "deviceMemoryGb": 8,
+        "maxTouchPoints": 0,
+        "osFamily": "macOS",
+        "timezone": "America/Los_Angeles",
+        "language": "en-US"
+    });
+
+    // Sibling B registers an independent identical-model MacBook BEFORE any penalty exists
+    let (st_sib_reg, _, sib_reg) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        &[
+            ("X-Forwarded-For", "192.168.11.56"),
+            (
+                "User-Agent",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 Chrome/126.0",
+            ),
+        ],
+        Some(json!({
+            "username": "chloe",
+            "password": "changeme-rainbow",
+            "clientId": "sib_mac",
+            "deviceTelemetry": mac_m2_chrome_tel
+        })),
+    )
+    .await;
+    assert_eq!(st_sib_reg, 200);
+    let chloe_sibling_seal = sib_reg["machineSeal"]
+        .as_str()
+        .expect("chloe sibling machineSeal")
+        .to_string();
+    let chloe_sibling_sig = sib_reg["machineShortSig"].as_str().unwrap().to_string();
+
+    // 1. Ella signs in from Machine A (`192.168.11.55`) -> receives HttpOnly `ewld_machine_seal` cookie + JSON seal
+    let (st_ella, ella_headers, ella_login) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        &[
+            ("X-Forwarded-For", "192.168.11.55"),
+            (
+                "User-Agent",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 Chrome/126.0",
+            ),
+        ],
+        Some(json!({
+            "username": "ella",
+            "password": "changeme-starlight",
+            "clientId": "ella_tab",
+            "deviceTelemetry": {
+                "gpuVendor": "Google Inc. (Apple)",
+                "gpuRenderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+                "glCaps": "16384|16384|16384|16|4096|1024|32|16384x16384",
+                "canvasHash": "e11a88aa00112233",
+                "audioHash": "e11a77bb44556677",
+                "screenW": 1512,
+                "screenH": 982,
+                "colorDepth": 30,
+                "pixelRatioX100": 200,
+                "cpuCores": 8,
+                "deviceMemoryGb": 8,
+                "maxTouchPoints": 0,
+                "osFamily": "macOS",
+                "timezone": "America/Los_Angeles",
+                "language": "en-US"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(st_ella, 200);
+    assert!(
+        ella_headers
+            .to_ascii_lowercase()
+            .contains("set-cookie: ewld_machine_seal="),
+        "Login must set HttpOnly ewld_machine_seal cookie: {ella_headers}"
+    );
+    assert!(ella_headers.to_ascii_lowercase().contains("httponly"));
+    let ella_seal = ella_login["machineSeal"]
+        .as_str()
+        .expect("ella machineSeal")
+        .to_string();
+    let ella_short_sig = ella_login["machineShortSig"].as_str().unwrap().to_string();
+    assert_ne!(ella_short_sig, chloe_sibling_sig);
+    let ella_token = ella_login["token"].as_str().unwrap().to_string();
+
+    // Ella commits 3 profanity violations -> sentenced to Debtor's Prison!
+    for idx in 0..3 {
+        let (st_curse, _, curse_out) = http_json_request_custom_headers(
+            running.http_addr,
+            "POST",
+            "/api/ella-world/chat",
+            &[("X-Forwarded-For", "192.168.11.55")],
+            Some(json!({
+                "token": ella_token,
+                "text": format!("what the fuck #{idx}")
+            })),
+        )
+        .await;
+        assert_eq!(st_curse, 400);
+        if idx == 2 {
+            assert!(
+                curse_out["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("Debtor's Prison"),
+                "Expected Debtor's Prison sentence notice: {curse_out:?}"
+            );
+        }
+    }
+
+    // Ella clicks Sign Out -> `/logout` MUST NOT emit `Clear-Site-Data` (preserving seal cookie & storage)
+    let (st_logout, logout_headers, _) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/logout",
+        &[("Cookie", &format!("ewld_machine_seal={ella_seal}"))],
+        Some(json!({ "token": ella_token })),
+    )
+    .await;
+    assert_eq!(st_logout, 200);
+    assert!(
+        !logout_headers
+            .to_ascii_lowercase()
+            .contains("clear-site-data"),
+        "Logout must never send Clear-Site-Data or cheaters could wipe machine seals by signing out!"
+    );
+
+    // 2. Scenario A: Ella tries signing into friend `maya`'s account on the same browser (seal cookie present) -> 403!
+    let cookie_hdr = format!("ewld_machine_seal={ella_seal}");
+    let (st_swap_seal, _, swap_seal_err) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        &[
+            ("X-Forwarded-For", "192.168.11.55"),
+            ("Cookie", &cookie_hdr),
+            (
+                "User-Agent",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 Chrome/126.0",
+            ),
+        ],
+        Some(json!({
+            "username": "maya",
+            "password": "changeme-puppy",
+            "clientId": "evade_1"
+        })),
+    )
+    .await;
+    assert_eq!(st_swap_seal, 403);
+    assert!(
+        swap_seal_err["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("@ella"),
+        "403 lock message must name penalized owner @ella: {:?}",
+        swap_seal_err
+    );
+
+    // Verify Maya's account was NOT penalized or contaminated by Ella's evasion attempt!
+    {
+        let guard = running.world.users_cfg.read().await;
+        let maya_u = guard.users.iter().find(|u| u.username == "maya").unwrap();
+        assert!(!maya_u.in_debtors_prison);
+        assert_eq!(maya_u.violation_strikes, 0);
+        assert!(maya_u.coins >= 0);
+    }
+
+    // 3. Scenario B: Incognito Window (NO cookie, NO machineSeal in body, same exact hardware telemetry) -> 403!
+    let (st_incog, _, incog_err) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        &[
+            ("X-Forwarded-For", "192.168.11.55"),
+            (
+                "User-Agent",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 Chrome/126.0",
+            ),
+        ],
+        Some(json!({
+            "username": "maya",
+            "password": "changeme-puppy",
+            "clientId": "incog_tab",
+            "deviceTelemetry": {
+                "gpuVendor": "Google Inc. (Apple)",
+                "gpuRenderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+                "glCaps": "16384|16384|16384|16|4096|1024|32|16384x16384",
+                "canvasHash": "e11a88aa00112233",
+                "audioHash": "e11a77bb44556677",
+                "screenW": 1512,
+                "screenH": 982,
+                "colorDepth": 30,
+                "pixelRatioX100": 200,
+                "cpuCores": 8,
+                "deviceMemoryGb": 8,
+                "maxTouchPoints": 0,
+                "osFamily": "macOS",
+                "timezone": "America/Los_Angeles",
+                "language": "en-US"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(
+        st_incog, 403,
+        "Incognito alt-account attempt must be blocked: {incog_err:?}"
+    );
+
+    // 4. Scenario C: Alternate Browser on Same Machine (Chrome -> Safari: different canvas/audio/UA, same Apple M2 + screen + subnet) -> 403!
+    let (st_safari, _, safari_err) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        &[
+            ("X-Forwarded-For", "192.168.11.55"),
+            ("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 Version/17.5 Safari/605.1.15"),
+        ],
+        Some(json!({
+            "username": "maya",
+            "password": "changeme-puppy",
+            "clientId": "safari_tab",
+            "deviceTelemetry": {
+                "gpuVendor": "Apple Inc.",
+                "gpuRenderer": "Apple M2",
+                "glCaps": "16384|16384|16384|16|1024|1024|16|16384x16384",
+                "canvasHash": "safari_different_canvas_99",
+                "audioHash": "safari_different_audio_88",
+                "screenW": 1512,
+                "screenH": 982,
+                "colorDepth": 24,
+                "pixelRatioX100": 200,
+                "cpuCores": 8,
+                "deviceMemoryGb": 0,
+                "maxTouchPoints": 0,
+                "osFamily": "MacIntel",
+                "timezone": "America/Los_Angeles",
+                "language": "en-US"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(
+        st_safari, 403,
+        "Cross-browser Chrome->Safari evasion on same physical machine must be blocked: {safari_err:?}"
+    );
+
+    // Meanwhile, Ella CAN still log back into her own account (`@ella`) on Machine A to work off her prison chores!
+    let (st_ella_return, _, ella_return) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        &[
+            ("X-Forwarded-For", "192.168.11.55"),
+            ("Cookie", &cookie_hdr),
+        ],
+        Some(json!({
+            "username": "ella",
+            "password": "changeme-starlight",
+            "clientId": "ella_serve_sentence"
+        })),
+    )
+    .await;
+    assert_eq!(st_ella_return, 200);
+    assert_eq!(ella_return["self"]["zone"], 2);
+
+    // 5. Scenario D: Genuine Separate Sibling Devices on Same Home LAN Allowed (`200 OK`)!
+    // 5a: Distinct Windows laptop (`192.168.11.88`) for Maya -> 200 OK
+    let (st_maya_win, _, maya_win) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        &[
+            ("X-Forwarded-For", "192.168.11.88"),
+            (
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0",
+            ),
+        ],
+        Some(json!({
+            "username": "maya",
+            "password": "changeme-puppy",
+            "clientId": "maya_own_pc",
+            "deviceTelemetry": {
+                "gpuVendor": "Google Inc. (Intel)",
+                "gpuRenderer": "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics)",
+                "glCaps": "16384|16384|16384|16|4096|1024|32|16384x16384",
+                "canvasHash": "win_intel_canvas_01",
+                "audioHash": "win_intel_audio_01",
+                "screenW": 1920,
+                "screenH": 1080,
+                "colorDepth": 24,
+                "pixelRatioX100": 125,
+                "cpuCores": 12,
+                "deviceMemoryGb": 16,
+                "maxTouchPoints": 0,
+                "osFamily": "Windows",
+                "timezone": "America/Los_Angeles",
+                "language": "en-US"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(
+        st_maya_win, 200,
+        "Friend on distinct PC must log in cleanly: {maya_win:?}"
+    );
+
+    // 5b: Sibling Chloe on her own identical-model M2 MacBook holding her distinct `ewld_machine_seal` -> 200 OK!
+    let chloe_cookie = format!("ewld_machine_seal={chloe_sibling_seal}");
+    let (st_chloe_sib, _, _) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        &[
+            ("X-Forwarded-For", "192.168.11.56"),
+            ("Cookie", &chloe_cookie),
+            (
+                "User-Agent",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 Chrome/126.0",
+            ),
+        ],
+        Some(json!({
+            "username": "chloe",
+            "password": "changeme-rainbow",
+            "clientId": "chloe_sib_ok",
+            "deviceTelemetry": mac_m2_chrome_tel
+        })),
+    )
+    .await;
+    assert_eq!(
+        st_chloe_sib, 200,
+        "Sibling with distinct valid ewld_machine_seal must never false-collide with Ella's locked MacBook"
+    );
+
+    // 6. Authenticate Parent Admin -> verify evasion audit log & devices dashboard
+    let (st_adm, adm_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/login",
+        Some(json!({ "password": "changeme-parent-admin" })),
+    )
+    .await;
+    assert_eq!(st_adm, 200);
+    let admin_token = adm_login["adminToken"].as_str().unwrap().to_string();
+    let admin_auth = format!("Bearer {admin_token}");
+
+    let evasions = adm_login["dashboard"]["recentDeviceEvasions"]
+        .as_array()
+        .expect("recentDeviceEvasions array");
+    assert!(
+        evasions.len() >= 3,
+        "Expected >= 3 logged evasion attempts (seal, hw_exact, hw_xbrowser), got {}",
+        evasions.len()
+    );
+    let methods: Vec<&str> = evasions
+        .iter()
+        .filter_map(|e| e["matchMethod"].as_str())
+        .collect();
+    assert!(
+        methods.contains(&"machine_seal_cookie"),
+        "methods: {methods:?}"
+    );
+    assert!(
+        methods.contains(&"hardware_exact_sig"),
+        "methods: {methods:?}"
+    );
+    assert!(
+        methods.contains(&"hardware_cross_browser_sig"),
+        "methods: {methods:?}"
+    );
+
+    let ella_device_id = adm_login["dashboard"]["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["shortSig"] == ella_short_sig)
+        .and_then(|d| d["deviceId"].as_str())
+        .expect("Ella device record in admin dashboard")
+        .to_string();
+
+    // 7. Scenario E: Pardon Ella -> Machine A unlocks -> Maya logs in & opens WS tab on Machine A ->
+    // Ella gets paused by Parent -> Maya's live WS tab on Machine A is IMMEDIATELY evicted!
+    let (st_pardon, _, _) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/moderate",
+        &[("Authorization", &admin_auth)],
+        Some(json!({ "username": "ella", "action": "pardon_prison" })),
+    )
+    .await;
+    assert_eq!(st_pardon, 200);
+
+    let (st_maya_m1, _, maya_m1) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        &[
+            ("X-Forwarded-For", "192.168.11.55"),
+            ("Cookie", &cookie_hdr),
+        ],
+        Some(json!({
+            "username": "maya",
+            "password": "changeme-puppy",
+            "clientId": "maya_on_ella_mac"
+        })),
+    )
+    .await;
+    assert_eq!(
+        st_maya_m1, 200,
+        "After Ella is pardoned, Machine A is unlocked"
+    );
+    let maya_m1_token = maya_m1["token"].as_str().unwrap().to_string();
+
+    let (mut ws_maya_m1, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, maya_m1_token
+    ))
+    .await
+    .expect("connect Maya WS on Machine A");
+    // Drain initial welcome_snapshot
+    let _ = tokio::time::timeout(Duration::from_secs(2), ws_maya_m1.next()).await;
+
+    // Now Parent sentences Ella back to Debtor's Prison -> Maya's live WS session on Machine A MUST be revoked!
+    let (st_re_sentence, _, _) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/moderate",
+        &[("Authorization", &admin_auth)],
+        Some(json!({
+            "username": "ella",
+            "action": "sentence_prison",
+            "prisonTasks": 3,
+            "reason": "Habitual violation test"
+        })),
+    )
+    .await;
+    assert_eq!(st_re_sentence, 200);
+
+    let mut saw_revoked = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(400), ws_maya_m1.next()).await {
+            Ok(Some(Ok(TungsMessage::Text(txt)))) => {
+                if txt.contains("session_revoked") {
+                    saw_revoked = true;
+                    break;
+                }
+            }
+            Ok(Some(Ok(TungsMessage::Close(_)))) | Ok(None) => {
+                saw_revoked = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        saw_revoked,
+        "Maya's live WebSocket tab on Ella's penalized machine must be immediately evicted!"
+    );
+
+    // Maya's saved token also cannot `/resume` on Machine A (`403 Forbidden`)
+    let (st_maya_resume_blocked, _, _) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/resume",
+        &[
+            ("X-Forwarded-For", "192.168.11.55"),
+            ("Cookie", &cookie_hdr),
+        ],
+        Some(json!({
+            "token": maya_m1_token,
+            "clientId": "maya_on_ella_mac"
+        })),
+    )
+    .await;
+    assert_eq!(st_maya_resume_blocked, 403);
+
+    // 8. Scenario F: Parent toggles `trustedShared: true` on Machine A -> Maya CAN sign in on shared family PC!
+    let (st_trust, _, _) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/devices",
+        &[("Authorization", &admin_auth)],
+        Some(json!({
+            "deviceId": ella_device_id,
+            "action": "update",
+            "trustedShared": true
+        })),
+    )
+    .await;
+    assert_eq!(st_trust, 200);
+
+    let (st_maya_shared_ok, _, _) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        &[
+            ("X-Forwarded-For", "192.168.11.55"),
+            ("Cookie", &cookie_hdr),
+        ],
+        Some(json!({
+            "username": "maya",
+            "password": "changeme-puppy",
+            "clientId": "maya_shared_pc"
+        })),
+    )
+    .await;
+    assert_eq!(
+        st_maya_shared_ok, 200,
+        "Trusted Shared Family PC must allow sibling login even while Ella is in Debtor's Prison"
+    );
+
+    // 9. Hard Machine Ban (`banned: true`) blocks all logins & evicts sessions on Machine A
+    let (st_ban, _, ban_out) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/devices",
+        &[("Authorization", &admin_auth)],
+        Some(json!({
+            "deviceId": ella_device_id,
+            "action": "update",
+            "banned": true
+        })),
+    )
+    .await;
+    assert_eq!(st_ban, 200);
+    assert!(ban_out["kickedCount"].as_u64().unwrap_or(0) >= 1);
+
+    let (st_banned_login, _, _) = http_json_request_custom_headers(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        &[
+            ("X-Forwarded-For", "192.168.11.55"),
+            ("Cookie", &cookie_hdr),
+        ],
+        Some(json!({
+            "username": "ella",
+            "password": "changeme-starlight",
+            "clientId": "ella_banned_pc"
+        })),
+    )
+    .await;
+    assert_eq!(st_banned_login, 403);
 
     running.http_task.abort();
 }

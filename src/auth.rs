@@ -25,6 +25,8 @@ pub struct TokenClaims {
     pub user_token_epoch: Option<u64>,
     #[serde(default)]
     pub pwd_sig: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
 }
 
 /// Computes a 64-bit HMAC-SHA256 fingerprint binding a session token to `(subject, current_password)`

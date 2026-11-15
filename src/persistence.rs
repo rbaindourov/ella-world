@@ -2,7 +2,8 @@ use crate::models::{
     default_blocked_words, default_chat_mode, default_curfew_end, default_curfew_start,
     default_debt_prison_threshold, default_ice_servers, default_prison_strike_threshold,
     default_profanity_fine_base, default_session_epoch, default_starter_blocks, default_world_name,
-    AvatarAppearance, BlockedChatEntry, BlocksDataFile, ChatMessage, UserAccount, UsersConfigFile,
+    AvatarAppearance, BlockedChatEntry, BlocksDataFile, ChatMessage, DeviceEvasionEntry,
+    UserAccount, UsersConfigFile,
 };
 use anyhow::Context;
 use serde::de::DeserializeOwned;
@@ -18,6 +19,7 @@ pub struct PersistenceStore {
     seed_users_path: PathBuf,
     chat_log_path: PathBuf,
     blocked_chat_log_path: PathBuf,
+    device_evasion_log_path: PathBuf,
 }
 
 impl PersistenceStore {
@@ -44,6 +46,7 @@ impl PersistenceStore {
 
         let chat_log_path = data_dir.join("world_chat.jsonl");
         let blocked_chat_log_path = data_dir.join("world_chat_blocked.jsonl");
+        let device_evasion_log_path = data_dir.join("world_device_evasion.jsonl");
 
         Ok(Self {
             users_path,
@@ -51,6 +54,7 @@ impl PersistenceStore {
             seed_users_path: seed_users_path.to_path_buf(),
             chat_log_path,
             blocked_chat_log_path,
+            device_evasion_log_path,
         })
     }
 
@@ -87,6 +91,8 @@ impl PersistenceStore {
                 profanity_fine_base: default_profanity_fine_base(),
                 debt_prison_threshold: default_debt_prison_threshold(),
                 prison_strike_threshold: default_prison_strike_threshold(),
+                enforce_machine_signatures: true,
+                devices: Vec::new(),
                 users: vec![UserAccount {
                     username: "ella".into(),
                     display_name: "Ella".into(),
@@ -191,6 +197,23 @@ impl PersistenceStore {
 
     pub fn count_blocked_chats(&self) -> usize {
         read_jsonl_records::<serde_json::Value>(&self.blocked_chat_log_path).len()
+    }
+
+    pub fn append_device_evasion(&self, entry: &DeviceEvasionEntry) -> anyhow::Result<()> {
+        append_jsonl_line(&self.device_evasion_log_path, entry)
+    }
+
+    pub fn load_recent_device_evasions(&self, limit: usize) -> Vec<DeviceEvasionEntry> {
+        let mut all = read_jsonl_records::<DeviceEvasionEntry>(&self.device_evasion_log_path);
+        if all.len() > limit {
+            all.drain(0..(all.len() - limit));
+        }
+        all.reverse();
+        all
+    }
+
+    pub fn count_device_evasions(&self) -> usize {
+        read_jsonl_records::<serde_json::Value>(&self.device_evasion_log_path).len()
     }
 }
 

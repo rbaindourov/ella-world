@@ -1030,6 +1030,10 @@
                     <input type="checkbox" id="admin-chat-filter-enabled" name="chatFilterEnabled" checked />
                     <label for="admin-chat-filter-enabled">Enable Chat Safety Word Filter &amp; Escalating Fines</label>
                   </div>
+                  <div class="admin-check-row">
+                    <input type="checkbox" id="admin-enforce-machine-signatures" name="enforceMachineSignatures" checked />
+                    <label for="admin-enforce-machine-signatures">🖥️ Enforce Machine Digital Signatures (block alt-account penalty evasion on same device)</label>
+                  </div>
                   <div class="admin-inline-grid three-up">
                     <div class="field-group">
                       <label for="admin-profanity-fine-base">Base Fine (🪙)</label>
@@ -1104,6 +1108,49 @@
                   </div>
                 </div>
               </form>
+            </div>
+          </div>
+
+          <div class="admin-card admin-devices-card">
+            <div class="admin-chat-header">
+              <div>
+                <h3 id="admin-devices-heading">🖥️ Machine Digital Signatures &amp; Anti-Cheat Protection (<span id="admin-device-count">0</span> machines)</h3>
+                <p class="small-note admin-devices-note">
+                  Every login registers a server-signed machine seal &amp; hardware signature so a child in Debtor's Prison or paused by a parent cannot switch to a friend's account on the same machine. Mark a family computer as <strong>🏠 Shared PC</strong> so siblings can play independently.
+                </p>
+              </div>
+              <button type="button" id="admin-devices-refresh-btn" class="small-action-btn">↻ Refresh</button>
+            </div>
+
+            <div class="table-scroll admin-devices-scroll" tabindex="0" role="region" aria-labelledby="admin-devices-heading">
+              <table class="admin-table admin-devices-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Machine Signature</th>
+                    <th scope="col">Hardware &amp; Network</th>
+                    <th scope="col">Linked Friends</th>
+                    <th scope="col">Lock Status</th>
+                    <th scope="col">Parent Controls</th>
+                  </tr>
+                </thead>
+                <tbody id="admin-devices-tbody"></tbody>
+              </table>
+            </div>
+
+            <h4 id="admin-evasions-heading" class="admin-subtable-heading">🚨 Blocked Alt-Account Evasion Attempts (<span id="admin-evasion-count">0</span> total)</h4>
+            <div class="table-scroll admin-evasions-scroll" tabindex="0" role="region" aria-labelledby="admin-evasions-heading">
+              <table class="admin-table admin-evasions-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Time</th>
+                    <th scope="col">Attempted Account</th>
+                    <th scope="col">Penalized Owner</th>
+                    <th scope="col">Machine &amp; Match Layer</th>
+                    <th scope="col">Active Penalties</th>
+                  </tr>
+                </thead>
+                <tbody id="admin-evasions-tbody"></tbody>
+              </table>
             </div>
           </div>
 

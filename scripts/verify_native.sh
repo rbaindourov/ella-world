@@ -18,6 +18,7 @@ cargo clippy --all-targets -- -D warnings
 echo "==> [3/4] Checking browser ES module & CLI script syntax & zero-SSE invariant..."
 node --check public/js/voice.js
 node --check public/js/ws_spine.js
+node --check public/js/device_sig.js
 node --check public/js/app.js
 node --check public/js/world3d.js
 node --check scripts/ella_admin_user_cli.mjs

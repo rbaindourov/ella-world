@@ -27,6 +27,7 @@ use tracing::{info, warn};
 struct NativePeerSession {
     self_id: String,
     username: String,
+    device_id: Option<String>,
     addr: SocketAddr,
     last_seen_ms: u64,
 }
@@ -187,7 +188,7 @@ impl NativeUdpServer {
         tokio::spawn(async move {
             while let Ok(sig) = revoke_rx.recv().await {
                 let mut map = revoke_srv.sessions_by_addr.write().await;
-                map.retain(|_, s| !sig.matches(&s.self_id, &s.username));
+                map.retain(|_, s| !sig.matches(&s.self_id, &s.username, s.device_id.as_deref()));
                 revoke_srv.active_count.store(map.len(), Ordering::Relaxed);
             }
         });
@@ -246,7 +247,7 @@ impl NativeUdpServer {
             let Ok(token_str) = std::str::from_utf8(&body[2..2 + tok_len]) else {
                 return;
             };
-            let Some((self_id, username, _, _, _)) =
+            let Some((self_id, username, _, _, _, device_id)) =
                 world.verify_active_player_token(token_str).await
             else {
                 warn!(
@@ -263,6 +264,7 @@ impl NativeUdpServer {
                     NativePeerSession {
                         self_id: self_id.clone(),
                         username: username.clone(),
+                        device_id,
                         addr: peer_addr,
                         last_seen_ms: now_ms(),
                     },

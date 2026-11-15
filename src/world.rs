@@ -2,6 +2,12 @@ use crate::auth::{
     constant_time_str_eq, password_token_sig, sign_token, verify_token, TokenClaims,
 };
 use crate::config::ServerConfig;
+use crate::device_sig::{
+    active_penalties_for_user, compute_hw_exact_sig, compute_hw_xbrowser_sig,
+    compute_net_os_fallback_sig, match_existing_device, mint_deterministic_or_fresh_device_id,
+    short_sig_from_device_id, sign_machine_seal, verify_machine_seal, ClientDeviceTelemetry,
+    DeviceSealClaims,
+};
 use crate::economy::{
     add_inventory_item, calculate_escalating_fine, execute_atomic_trade_swap, find_item_def,
     player_owns_item, reconcile_equipped_cosmetics, remove_inventory_item, roll_crystal_loot,
@@ -14,9 +20,10 @@ use crate::economy::{
 use crate::models::{
     default_block_kind, default_starter_blocks, is_toggleable_block_kind, is_two_tall_block_kind,
     is_valid_block_kind, is_valid_hex_color, normalize_chat_mode, now_ms, BlockedChatEntry,
-    BlocksDataFile, ChatMessage, PlayerEconomySnapshot, PlayerModerationSnapshot,
-    PlayerRuntimeState, RunwayPublicSummary, RunwayState, SanitizedUser, SavedPosition,
-    UserAccount, UsersConfigFile, VoxelBlock, RUNWAY_THEMES, SAFE_QUICK_CHAT_PHRASES,
+    BlocksDataFile, ChatMessage, DeviceEvasionEntry, MachineDeviceRecord, PlayerEconomySnapshot,
+    PlayerModerationSnapshot, PlayerRuntimeState, RunwayPublicSummary, RunwayState, SanitizedUser,
+    SavedPosition, UserAccount, UsersConfigFile, VoxelBlock, RUNWAY_THEMES,
+    SAFE_QUICK_CHAT_PHRASES,
 };
 use crate::persistence::PersistenceStore;
 use crate::udp_wire::{
@@ -187,6 +194,22 @@ pub struct BridgedOpusFrame {
     pub payload: Bytes,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminManageDeviceInput {
+    pub device_id: String,
+    pub action: String, // "set_flags" | "unlink_users"
+    pub trusted_shared: Option<bool>,
+    pub banned: Option<bool>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedMachineSession {
+    pub device_id: String,
+    pub short_sig: String,
+    pub seal_token: String,
+}
+
 #[derive(Clone, Debug)]
 pub enum SessionRevokeSignal {
     All {
@@ -200,10 +223,15 @@ pub enum SessionRevokeSignal {
         self_id: String,
         reason: String,
     },
+    DeviceOtherUsers {
+        device_id: String,
+        allowed_username_lower: String,
+        reason: String,
+    },
 }
 
 impl SessionRevokeSignal {
-    pub fn matches(&self, self_id: &str, username: &str) -> bool {
+    pub fn matches(&self, self_id: &str, username: &str, device_id: Option<&str>) -> bool {
         match self {
             Self::All { .. } => true,
             Self::Username { username_lower, .. } => {
@@ -212,14 +240,23 @@ impl SessionRevokeSignal {
             Self::PeerId {
                 self_id: target_id, ..
             } => self_id == target_id,
+            Self::DeviceOtherUsers {
+                device_id: target_dev,
+                allowed_username_lower,
+                ..
+            } => {
+                device_id == Some(target_dev.as_str())
+                    && !username.trim().eq_ignore_ascii_case(allowed_username_lower)
+            }
         }
     }
 
     pub fn reason(&self) -> &str {
         match self {
-            Self::All { reason } | Self::Username { reason, .. } | Self::PeerId { reason, .. } => {
-                reason
-            }
+            Self::All { reason }
+            | Self::Username { reason, .. }
+            | Self::PeerId { reason, .. }
+            | Self::DeviceOtherUsers { reason, .. } => reason,
         }
     }
 }
@@ -254,6 +291,7 @@ pub struct WorldEngine {
     pub users_dirty: AtomicBool,
     pub cached_chat_count: AtomicUsize,
     pub cached_blocked_chat_count: AtomicUsize,
+    pub cached_device_evasion_count: AtomicUsize,
     pub pre_encoded_tick: RwLock<Arc<PreEncodedWorldTick>>,
     pub pre_encoded_tick_tx: watch::Sender<Arc<PreEncodedWorldTick>>,
     pub cached_digest: RwLock<(u64, Arc<String>)>,
@@ -273,6 +311,7 @@ impl WorldEngine {
         let blocks_data = store.load_or_init_blocks()?;
         let initial_chat_count = store.count_chats();
         let initial_blocked_count = store.count_blocked_chats();
+        let initial_evasion_count = store.count_device_evasions();
         let recent_chats = store.load_recent_chats(60);
         let mut chat_deque = VecDeque::with_capacity(64);
         for c in recent_chats {
@@ -306,6 +345,7 @@ impl WorldEngine {
             users_dirty: AtomicBool::new(false),
             cached_chat_count: AtomicUsize::new(initial_chat_count),
             cached_blocked_chat_count: AtomicUsize::new(initial_blocked_count),
+            cached_device_evasion_count: AtomicUsize::new(initial_evasion_count),
             pre_encoded_tick: RwLock::new(initial_tick_arc),
             pre_encoded_tick_tx,
             cached_digest: RwLock::new((0, Arc::new(String::new()))),
@@ -390,6 +430,7 @@ impl WorldEngine {
         self_id: &str,
         user: &UserAccount,
         session_epoch: u64,
+        device_id: Option<&str>,
     ) -> String {
         let now = now_ms();
         let exp = now.saturating_add(self.config.token_ttl_ms());
@@ -403,6 +444,7 @@ impl WorldEngine {
             session_epoch: Some(session_epoch),
             user_token_epoch: Some(user.token_epoch),
             pwd_sig: Some(pwd_sig),
+            device_id: device_id.map(str::to_string),
         })
     }
 
@@ -423,13 +465,14 @@ impl WorldEngine {
             session_epoch: Some(session_epoch),
             user_token_epoch: Some(0),
             pwd_sig: Some(pwd_sig),
+            device_id: None,
         })
     }
 
     pub async fn verify_player_token_claims_only(
         &self,
         token: &str,
-    ) -> Option<(String, String, UserAccount, u64, String)> {
+    ) -> Option<(String, String, UserAccount, u64, String, Option<String>)> {
         let claims = self.verify_session_token(token.trim())?;
         let exp = claims.exp?;
         if now_ms() > exp {
@@ -443,6 +486,7 @@ impl WorldEngine {
         let claim_sess_epoch = claims.session_epoch?;
         let claim_user_epoch = claims.user_token_epoch?;
         let claim_pwd_sig = claims.pwd_sig?;
+        let claim_device_id = claims.device_id.filter(|d| !d.trim().is_empty());
 
         let cfg = self.users_cfg.read().await;
         if claim_sess_epoch != cfg.session_epoch {
@@ -469,6 +513,7 @@ impl WorldEngine {
             found,
             claim_sess_epoch,
             expected_sig,
+            claim_device_id,
         ))
     }
 
@@ -479,14 +524,20 @@ impl WorldEngine {
     /// 4. Account existence + per-user `token_epoch`
     /// 5. Current password HMAC fingerprint (`pwd_sig`) — so rolling a password immediately expires old tokens!
     /// 6. Parental controls (`world_locked`, `curfew_enabled`, and per-child `suspended`)
+    /// 7. Machine digital signature lock (`device_id` must not be banned or locked by another penalized account)
     pub async fn verify_active_player_token(
         &self,
         token: &str,
-    ) -> Option<(String, String, UserAccount, u64, String)> {
+    ) -> Option<(String, String, UserAccount, u64, String, Option<String>)> {
         let verified = self.verify_player_token_claims_only(token).await?;
-        if self.check_world_access_for_user(&verified.2).await.is_err() {
+        let cfg = self.users_cfg.read().await;
+        if check_world_access_for_cfg(&cfg, &verified.2).is_err() {
             return None;
         }
+        if check_machine_access_for_cfg(&cfg, verified.5.as_deref(), &verified.1).is_err() {
+            return None;
+        }
+        drop(cfg);
         Some(verified)
     }
 
@@ -595,6 +646,7 @@ impl WorldEngine {
         session_epoch: u64,
         user_token_epoch: u64,
         pwd_sig: &str,
+        device_id: Option<&str>,
     ) -> bool {
         let cfg = self.users_cfg.read().await;
         if cfg.session_epoch != session_epoch {
@@ -613,8 +665,455 @@ impl WorldEngine {
         if check_world_access_for_cfg(&cfg, user).is_err() {
             return false;
         }
+        if check_machine_access_for_cfg(&cfg, device_id, username).is_err() {
+            return false;
+        }
         let expected_sig = self.player_password_sig(user);
         constant_time_str_eq(pwd_sig, &expected_sig)
+    }
+
+    /// Resolves a client's cryptographic machine digital signature on `/login` or `/resume`,
+    /// rejects banned machines or alt-account penalty evasion attempts with `403` error text
+    /// (while logging forensic evidence to `world_device_evasion.jsonl`), and returns the
+    /// resolved `(device_id, short_sig, seal_token)` when machine tracking applies.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn resolve_and_authorize_machine_login(
+        &self,
+        username: &str,
+        cookie_seal: Option<&str>,
+        body_seal: Option<&str>,
+        token_claim_device_id: Option<&str>,
+        telemetry: Option<&ClientDeviceTelemetry>,
+        user_agent: Option<&str>,
+        peer_ip: Option<std::net::IpAddr>,
+    ) -> Result<Option<ResolvedMachineSession>, String> {
+        let secret = &self.config.hmac_secret;
+        let verified_cookie = cookie_seal.and_then(|t| verify_machine_seal(t, secret));
+        let verified_body = body_seal.and_then(|t| verify_machine_seal(t, secret));
+        let from_cookie = verified_cookie.is_some();
+        let mut verified_seal = verified_cookie.or(verified_body);
+
+        // If resuming a token that already carried a signed `device_id`, synthesize seal lookup if needed
+        if verified_seal.is_none() {
+            if let Some(cid) = token_claim_device_id.filter(|s| s.starts_with("dev_")) {
+                verified_seal = Some(DeviceSealClaims {
+                    device_id: cid.to_string(),
+                    hw_core_hash: String::new(),
+                    iat: now_ms(),
+                });
+            }
+        }
+
+        let tel_ref = telemetry.filter(|t| t.has_hardware_signals());
+        let is_headless_loopback_test = verified_seal.is_none()
+            && tel_ref.is_none()
+            && user_agent.map(str::trim).unwrap_or("").is_empty()
+            && peer_ip.map(|ip| ip.is_loopback()).unwrap_or(true);
+
+        if is_headless_loopback_test {
+            return Ok(None);
+        }
+
+        let hw_exact = tel_ref.and_then(|t| compute_hw_exact_sig(t, user_agent, secret));
+        let hw_xb = tel_ref.and_then(|t| compute_hw_xbrowser_sig(t, user_agent, peer_ip, secret));
+        let net_os = compute_net_os_fallback_sig(peer_ip, user_agent, secret);
+
+        let now = now_ms();
+        let ip_str = peer_ip.map(|ip| ip.to_string()).unwrap_or_default();
+        let clean_uname = username.trim().to_lowercase();
+
+        let mut evasion_to_log: Option<DeviceEvasionEntry> = None;
+
+        let outcome = {
+            let mut cfg = self.users_cfg.write().await;
+            let matched = match_existing_device(
+                &cfg.devices,
+                &cfg.users,
+                verified_seal.as_ref(),
+                hw_exact.as_deref(),
+                hw_xb.as_deref(),
+                net_os.as_deref(),
+                from_cookie,
+            );
+
+            let default_tel = ClientDeviceTelemetry::default();
+            let (label, os_fam, gpu_sum, scr_sum) =
+                tel_ref.unwrap_or(&default_tel).summaries(user_agent);
+
+            let dev_idx = if let Some(idx) = matched.index {
+                idx
+            } else {
+                let device_id = if let Some(ref s) = verified_seal {
+                    s.device_id.clone()
+                } else {
+                    let seed = hw_exact
+                        .as_deref()
+                        .or(hw_xb.as_deref())
+                        .or(net_os.as_deref())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("ephem-{now}-{:08x}", rand::random::<u32>()));
+                    let candidate = mint_deterministic_or_fresh_device_id(&seed, secret);
+                    if cfg.devices.iter().any(|d| d.device_id == candidate) {
+                        mint_deterministic_or_fresh_device_id(
+                            &format!("{seed}-{now}-{:06x}", rand::random::<u32>() & 0xffffff),
+                            secret,
+                        )
+                    } else {
+                        candidate
+                    }
+                };
+                let short_sig = short_sig_from_device_id(&device_id);
+                cfg.devices.push(MachineDeviceRecord {
+                    device_id,
+                    short_sig,
+                    label: label.clone(),
+                    os_family: os_fam.clone(),
+                    gpu_summary: gpu_sum.clone(),
+                    screen_summary: scr_sum.clone(),
+                    hw_exact_sig: hw_exact.clone().unwrap_or_default(),
+                    hw_xbrowser_sig: hw_xb.clone().unwrap_or_default(),
+                    net_os_sig: net_os.clone().unwrap_or_default(),
+                    last_ip: ip_str.clone(),
+                    associated_users: Vec::new(),
+                    last_username: String::new(),
+                    first_seen_ms: now,
+                    last_seen_ms: now,
+                    trusted_shared: false,
+                    banned: false,
+                });
+                cfg.devices.len() - 1
+            };
+
+            if cfg.devices[dev_idx].banned {
+                Err(format!(
+                    "🚫 Machine #{} is locked by a parent. Ask a parent to unlock this device in the Parent Admin Panel!",
+                    cfg.devices[dev_idx].short_sig
+                ))
+            } else {
+                let enforce =
+                    cfg.enforce_machine_signatures && !cfg.devices[dev_idx].trusted_shared;
+                let mut blocking_hit: Option<(String, String, Vec<String>)> = None;
+                if enforce {
+                    for assoc_u in &cfg.devices[dev_idx].associated_users {
+                        if assoc_u.eq_ignore_ascii_case(&clean_uname) {
+                            continue;
+                        }
+                        if let Some(other_acc) = cfg
+                            .users
+                            .iter()
+                            .find(|u| u.username.eq_ignore_ascii_case(assoc_u))
+                        {
+                            let pens = active_penalties_for_user(other_acc);
+                            if !pens.is_empty() {
+                                let disp = if other_acc.display_name.is_empty() {
+                                    other_acc.username.clone()
+                                } else {
+                                    other_acc.display_name.clone()
+                                };
+                                blocking_hit = Some((other_acc.username.clone(), disp, pens));
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if let Some((blk_user, blk_disp, pens)) = blocking_hit {
+                    let d = &mut cfg.devices[dev_idx];
+                    d.last_seen_ms = now;
+                    if !ip_str.is_empty() {
+                        d.last_ip = ip_str.clone();
+                    }
+                    evasion_to_log = Some(DeviceEvasionEntry {
+                        id: format!("ev_{now}_{:06x}", rand::random::<u32>() & 0xffffff),
+                        device_id: d.device_id.clone(),
+                        short_sig: d.short_sig.clone(),
+                        device_label: d.label.clone(),
+                        attempted_username: clean_uname.clone(),
+                        blocking_username: blk_user.clone(),
+                        active_penalties: pens.clone(),
+                        match_method: matched.match_method.clone(),
+                        peer_ip: ip_str,
+                        ts: now,
+                    });
+                    Err(format!(
+                        "⚖️ Machine Signature Lock (#{}): {} (@{}) has an active penalty on this device ({}). Sign in as @{} to complete your chores, or ask a parent for a Pardon or Shared-PC Override!",
+                        d.short_sig,
+                        blk_disp,
+                        blk_user,
+                        pens.join(", "),
+                        blk_user
+                    ))
+                } else {
+                    let d = &mut cfg.devices[dev_idx];
+                    if tel_ref.is_some() {
+                        d.label = label;
+                        d.os_family = os_fam;
+                        d.gpu_summary = gpu_sum;
+                        d.screen_summary = scr_sum;
+                        if let Some(ex) = hw_exact {
+                            d.hw_exact_sig = ex;
+                        }
+                        if let Some(xb) = hw_xb.clone() {
+                            d.hw_xbrowser_sig = xb;
+                        }
+                    }
+                    if let Some(no) = net_os {
+                        d.net_os_sig = no;
+                    }
+                    if !ip_str.is_empty() {
+                        d.last_ip = ip_str;
+                    }
+                    if !d
+                        .associated_users
+                        .iter()
+                        .any(|u| u.eq_ignore_ascii_case(&clean_uname))
+                    {
+                        d.associated_users.push(clean_uname.clone());
+                    }
+                    d.last_username = clean_uname;
+                    d.last_seen_ms = now;
+
+                    let core_hash = if !d.hw_xbrowser_sig.is_empty() {
+                        d.hw_xbrowser_sig.chars().take(16).collect()
+                    } else {
+                        d.short_sig.clone()
+                    };
+                    let seal = sign_machine_seal(
+                        &DeviceSealClaims {
+                            device_id: d.device_id.clone(),
+                            hw_core_hash: core_hash,
+                            iat: now,
+                        },
+                        secret,
+                    );
+                    Ok(Some(ResolvedMachineSession {
+                        device_id: d.device_id.clone(),
+                        short_sig: d.short_sig.clone(),
+                        seal_token: seal,
+                    }))
+                }
+            }
+        };
+
+        self.persist_users_async().await;
+
+        if let Some(entry) = evasion_to_log {
+            self.cached_device_evasion_count
+                .fetch_add(1, Ordering::Relaxed);
+            let store = Arc::clone(&self.store);
+            tokio::task::spawn_blocking(move || {
+                let _ = store.append_device_evasion(&entry);
+            });
+        }
+
+        outcome
+    }
+
+    /// Immediately evicts any OTHER user accounts that are concurrently logged in on the same
+    /// non-exempt physical machine(s) as `penalized_username` when `penalized_username` incurs
+    /// an active penalty, closing the "pre-open a friend's account in Tab 2" loophole.
+    pub async fn evict_other_accounts_on_user_machines(
+        &self,
+        penalized_username: &str,
+    ) -> Vec<String> {
+        let clean_pen = penalized_username.trim().to_lowercase();
+        let live_dev_ids_for_pen: Vec<String> = {
+            let map = self.players.read().await;
+            map.values()
+                .filter(|p| p.user.username.eq_ignore_ascii_case(&clean_pen))
+                .filter_map(|p| p.device_id.clone())
+                .collect()
+        };
+
+        let (pen_summary, locked_devices) = {
+            let cfg = self.users_cfg.read().await;
+            if !cfg.enforce_machine_signatures {
+                return Vec::new();
+            }
+            let Some(pen_user) = cfg
+                .users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(&clean_pen))
+            else {
+                return Vec::new();
+            };
+            let pens = active_penalties_for_user(pen_user);
+            if pens.is_empty() {
+                return Vec::new();
+            }
+            let mut devs: Vec<MachineDeviceRecord> = cfg
+                .devices
+                .iter()
+                .filter(|d| {
+                    !d.trusted_shared
+                        && (d
+                            .associated_users
+                            .iter()
+                            .any(|u| u.eq_ignore_ascii_case(&clean_pen))
+                            || live_dev_ids_for_pen.contains(&d.device_id))
+                })
+                .cloned()
+                .collect();
+            for lid in &live_dev_ids_for_pen {
+                if !devs.iter().any(|d| &d.device_id == lid) {
+                    devs.push(MachineDeviceRecord {
+                        device_id: lid.clone(),
+                        short_sig: short_sig_from_device_id(lid),
+                        label: "Active Machine".into(),
+                        os_family: String::new(),
+                        gpu_summary: String::new(),
+                        screen_summary: String::new(),
+                        hw_exact_sig: String::new(),
+                        hw_xbrowser_sig: String::new(),
+                        net_os_sig: String::new(),
+                        last_ip: String::new(),
+                        associated_users: vec![clean_pen.clone()],
+                        last_username: clean_pen.clone(),
+                        first_seen_ms: now_ms(),
+                        last_seen_ms: now_ms(),
+                        trusted_shared: false,
+                        banned: false,
+                    });
+                }
+            }
+            (pens, devs)
+        };
+
+        if locked_devices.is_empty() {
+            return Vec::new();
+        }
+
+        let mut evicted_peer_ids = Vec::new();
+        let mut evasions = Vec::new();
+        let now = now_ms();
+
+        for dev in &locked_devices {
+            let reason = format!(
+                "⚖️ Machine Signature Lock (#{}): @{} received an active penalty ({}) on this device. Alternate accounts on the same machine were signed out!",
+                dev.short_sig,
+                clean_pen,
+                pen_summary.join(", ")
+            );
+            let _ = self
+                .session_revoke_tx
+                .send(SessionRevokeSignal::DeviceOtherUsers {
+                    device_id: dev.device_id.clone(),
+                    allowed_username_lower: clean_pen.clone(),
+                    reason,
+                });
+
+            let victims: Vec<(String, String)> = {
+                let map = self.players.read().await;
+                map.values()
+                    .filter(|p| {
+                        p.device_id.as_deref() == Some(dev.device_id.as_str())
+                            && !p.user.username.eq_ignore_ascii_case(&clean_pen)
+                    })
+                    .map(|p| (p.id.clone(), p.user.username.clone()))
+                    .collect()
+            };
+
+            for (pid, victim_uname) in victims {
+                evicted_peer_ids.push(pid.clone());
+                evasions.push(DeviceEvasionEntry {
+                    id: format!("ev_{now}_{:06x}", rand::random::<u32>() & 0xffffff),
+                    device_id: dev.device_id.clone(),
+                    short_sig: dev.short_sig.clone(),
+                    device_label: dev.label.clone(),
+                    attempted_username: victim_uname,
+                    blocking_username: clean_pen.clone(),
+                    active_penalties: pen_summary.clone(),
+                    match_method: "live_tab_eviction".into(),
+                    peer_ip: dev.last_ip.clone(),
+                    ts: now,
+                });
+            }
+        }
+
+        for pid in &evicted_peer_ids {
+            self.remove_player_immediately(pid).await;
+        }
+
+        if !evasions.is_empty() {
+            self.cached_device_evasion_count
+                .fetch_add(evasions.len(), Ordering::Relaxed);
+            let store = Arc::clone(&self.store);
+            tokio::task::spawn_blocking(move || {
+                for ev in evasions {
+                    let _ = store.append_device_evasion(&ev);
+                }
+            });
+        }
+
+        evicted_peer_ids
+    }
+
+    pub async fn admin_manage_device(
+        &self,
+        input: AdminManageDeviceInput,
+    ) -> Result<(MachineDeviceRecord, Vec<String>), String> {
+        let dev_id = input.device_id.trim();
+        if dev_id.is_empty() {
+            return Err("deviceId is required.".into());
+        }
+        let action = input.action.trim().to_lowercase();
+
+        let (updated_rec, kick_banned) = {
+            let mut cfg = self.users_cfg.write().await;
+            let Some(dev) = cfg.devices.iter_mut().find(|d| d.device_id == dev_id) else {
+                return Err(format!("Machine {dev_id} not found."));
+            };
+            match action.as_str() {
+                "set_flags" | "update" => {
+                    if let Some(ts) = input.trusted_shared {
+                        dev.trusted_shared = ts;
+                    }
+                    if let Some(b) = input.banned {
+                        dev.banned = b;
+                    }
+                }
+                "unlink_users" => {
+                    dev.associated_users.clear();
+                }
+                _ => return Err("Unknown device management action.".into()),
+            }
+            (dev.clone(), dev.banned)
+        };
+
+        self.persist_users_async().await;
+
+        let mut kicked_peers = Vec::new();
+        if kick_banned {
+            let _ = self
+                .session_revoke_tx
+                .send(SessionRevokeSignal::DeviceOtherUsers {
+                    device_id: updated_rec.device_id.clone(),
+                    allowed_username_lower: String::new(),
+                    reason: format!(
+                        "🚫 Machine #{} was locked by a parent.",
+                        updated_rec.short_sig
+                    ),
+                });
+            let banned_peers: Vec<String> = {
+                let map = self.players.read().await;
+                map.values()
+                    .filter(|p| p.device_id.as_deref() == Some(updated_rec.device_id.as_str()))
+                    .map(|p| p.id.clone())
+                    .collect()
+            };
+            for pid in banned_peers {
+                self.remove_player_immediately(&pid).await;
+                kicked_peers.push(pid);
+            }
+        } else if !updated_rec.trusted_shared {
+            // Re-enforcing anti-cheat on this machine: if any linked user is penalized, evict others
+            for uname in &updated_rec.associated_users {
+                let evicted = self.evict_other_accounts_on_user_machines(uname).await;
+                kicked_peers.extend(evicted);
+            }
+        }
+
+        Ok((updated_rec, kicked_peers))
     }
 
     pub async fn kick_and_remove_peer(&self, self_id: &str, reason: &str) {
@@ -807,6 +1306,7 @@ impl WorldEngine {
             speed_boost_until_ms: 0,
             jump_boost_until_ms: 0,
             server_voice_muted: found_user.voice_muted_by_parent,
+            device_id: None,
         };
         map.insert(self_id.to_string(), player_doc.clone());
         drop(map);
@@ -824,6 +1324,7 @@ impl WorldEngine {
         &self,
         self_id: &str,
         username: &str,
+        device_id: Option<&str>,
     ) -> Option<(u32, PlayerRuntimeState)> {
         let _ = self.ensure_player_online(self_id, username).await?;
         let mut map = self.players.write().await;
@@ -833,6 +1334,9 @@ impl WorldEngine {
         p.disconnected_at_ms = None;
         p.last_seen = now_ms();
         p.last_seq = 0;
+        if let Some(did) = device_id.filter(|s| !s.is_empty()) {
+            p.device_id = Some(did.to_string());
+        }
         Some((p.conn_epoch, p.clone()))
     }
 
@@ -873,6 +1377,7 @@ impl WorldEngine {
         &self,
         found_user: &UserAccount,
         raw_client_id: Option<&str>,
+        machine: Option<&ResolvedMachineSession>,
     ) -> serde_json::Value {
         let clean_user = found_user.username.trim().to_lowercase();
         let clean_cid: String = raw_client_id
@@ -888,8 +1393,9 @@ impl WorldEngine {
             format!("peer_{clean_user}_{clean_cid}")
         };
 
+        let dev_id_opt = machine.map(|m| m.device_id.as_str());
         let session_epoch = self.users_cfg.read().await.session_epoch;
-        let token = self.mint_player_token(&self_id, found_user, session_epoch);
+        let token = self.mint_player_token(&self_id, found_user, session_epoch, dev_id_opt);
 
         let sanitized = found_user.sanitized();
         let avatar_hash = sanitized.avatar.short_hash();
@@ -901,6 +1407,9 @@ impl WorldEngine {
                 existing.user = sanitized.clone();
                 existing.avatar_hash = avatar_hash;
                 existing.server_voice_muted = found_user.voice_muted_by_parent;
+                if let Some(did) = dev_id_opt {
+                    existing.device_id = Some(did.to_string());
+                }
                 if found_user.in_debtors_prison && existing.zone != ZONE_PRISON {
                     existing.zone = ZONE_PRISON;
                     existing.x = PRISON_SPAWN_POS.0;
@@ -949,6 +1458,7 @@ impl WorldEngine {
                     speed_boost_until_ms: 0,
                     jump_boost_until_ms: 0,
                     server_voice_muted: found_user.voice_muted_by_parent,
+                    device_id: dev_id_opt.map(str::to_string),
                 };
                 map.insert(self_id.clone(), doc.clone());
                 (doc, true)
@@ -990,7 +1500,7 @@ impl WorldEngine {
         let moderation_snapshot = found_user.moderation_snapshot();
         let cfg = self.users_cfg.read().await;
 
-        serde_json::json!({
+        let mut resp_json = serde_json::json!({
             "token": token,
             "selfId": self_id,
             "self": player_doc,
@@ -1014,6 +1524,7 @@ impl WorldEngine {
                 "profanityFineBase": cfg.profanity_fine_base,
                 "debtPrisonThreshold": cfg.debt_prison_threshold,
                 "prisonStrikeThreshold": cfg.prison_strike_threshold,
+                "enforceMachineSignatures": cfg.enforce_machine_signatures,
             },
             "worldMeta": {
                 "worldName": cfg.world_name,
@@ -1025,7 +1536,14 @@ impl WorldEngine {
                 "wsUrl": "/api/ella-world/ws",
                 "rtcOfferUrl": "/api/ella-world/rtc/offer"
             }
-        })
+        });
+        if let Some(m) = machine {
+            if let Some(obj) = resp_json.as_object_mut() {
+                obj.insert("machineSeal".into(), serde_json::json!(m.seal_token));
+                obj.insert("machineShortSig".into(), serde_json::json!(m.short_sig));
+            }
+        }
+        resp_json
     }
 
     pub async fn build_welcome_snapshot(
@@ -2031,6 +2549,9 @@ impl WorldEngine {
                             "Sentenced to Debtor's Prison!",
                         )
                         .await;
+                    }
+                    if now_in_prison || balance_after < 0 {
+                        let _ = self.evict_other_accounts_on_user_machines(username).await;
                     }
 
                     let blocked = BlockedChatEntry {
@@ -4107,15 +4628,63 @@ impl WorldEngine {
             let _ = self.broadcast_system_chat_notice(notice).await;
         }
 
+        let evicted_alts = self.evict_other_accounts_on_user_machines(&uname).await;
+
         Ok(serde_json::json!({
             "ok": true,
             "action": action,
             "username": uname,
             "suspended": now_suspended,
+            "evictedAltSessions": evicted_alts.len(),
+            "evictedAltPeers": evicted_alts,
             "economy": econ,
             "moderation": mod_snap,
         }))
     }
+}
+
+pub fn check_machine_access_for_cfg(
+    cfg: &UsersConfigFile,
+    device_id: Option<&str>,
+    username: &str,
+) -> Result<(), String> {
+    let Some(did) = device_id.filter(|s| !s.trim().is_empty()) else {
+        return Ok(());
+    };
+    let Some(dev) = cfg.devices.iter().find(|d| d.device_id == did) else {
+        return Ok(());
+    };
+    if dev.banned {
+        return Err(format!(
+            "🚫 Machine #{} is locked by a parent.",
+            dev.short_sig
+        ));
+    }
+    if !cfg.enforce_machine_signatures || dev.trusted_shared {
+        return Ok(());
+    }
+    let clean_u = username.trim().to_lowercase();
+    for assoc_u in &dev.associated_users {
+        if assoc_u.eq_ignore_ascii_case(&clean_u) {
+            continue;
+        }
+        if let Some(other_acc) = cfg
+            .users
+            .iter()
+            .find(|u| u.username.eq_ignore_ascii_case(assoc_u))
+        {
+            let pens = active_penalties_for_user(other_acc);
+            if !pens.is_empty() {
+                return Err(format!(
+                    "⚖️ Machine Signature Lock (#{}): @{} has an active penalty on this device ({}).",
+                    dev.short_sig,
+                    other_acc.username,
+                    pens.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn check_world_access_for_cfg(cfg: &UsersConfigFile, user: &UserAccount) -> Result<(), String> {
