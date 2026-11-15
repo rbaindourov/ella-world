@@ -91,15 +91,18 @@ Raw UDP datagrams on `44445/udp` prefix a 6-byte magic header `[b"EWLD"][version
   - **8 Patrolling Mobs**: 5 Shadow Slimes (`2 HP`) and 3 Crystal Bats (`3 HP`) defeated via **Jump-Stomp** (`2 dmg` + bounce) or **Sparkle Blast** (`E`, `1 dmg`).
   - **4 Hz Active-Only Tick (`tick_dungeon_if_occupied`)**: Runs every 250ms (`tick_seq % 5 == 0`) **only** when `>= 1` player occupies `ZONE_DUNGEON`, broadcasting compact `DungeonMobs` / `DungeonSync` updates exclusively to dungeon occupants.
 
-### 4.2 12-Item Catalog & Exclusive Glam Ownership Reconciliation
-- **Materials & Keys**: `star_shard`, `slime_gel`, `moon_opal`, `dungeon_key`, `crown_relic`.
+### 4.2 18-Item Catalog, Legendary Ray Gun, Home Interiors & Exclusive Glam Ownership Reconciliation
+- **Materials, Keys & 3D Home Trophy Relics**: `star_shard`, `slime_gel`, `moon_opal`, `dungeon_key`, `crown_relic`, `geode_lamp`, `slime_lava_lamp`, `bat_plushie`, `royal_chalice`, and `dragon_egg_relic`.
 - **Consumables (`POST /api/ella-world/economy/use`)**: `speed_potion` (`+35%` sprint for 45s), `jump_potion` (`+30%` jump boost for 45s), and `prism_block` (places a glowing `#67e8f9` voxel block at the player's Plaza feet).
-- **Dungeon-Exclusive 3D Glam Relics**:
+- **Dungeon-Exclusive 3D Glam Relics & First Legendary Weapon**:
   - `cosmetic_hat_shadow_hood` → `hat = "ninja"`
   - `cosmetic_acc_star_lantern` → `accessory = "star_lantern"`
   - `cosmetic_hat_obsidian_crown` → `hat = "obsidian_crown"`
   - `cosmetic_acc_crystal_wings` → `accessory = "crystal_wings"`
-- **Server-Side Ownership Enforcement (`reconcile_equipped_cosmetics`)**: Verified on both `POST /api/ella-world/avatar` and P2P trade completion. Trading away the last copy of an equipped dungeon relic automatically unequips it back to `"crown"` / `"none"` and broadcasts `avatar_updated`.
+  - `legendary_ray_gun` (*legendary*, `10%` Golden Vault Chest jackpot) → `accessory = "ray_gun"`, granting a `14.5m` `3 HP` ranged plasma beam in Crystal Cavern (`POST /api/ella-world/dungeon/attack` with `mode: "raygun"`) plus harmless Starlight Plaza laser light-show beams (`POST /api/ella-world/raygun` / `"raygun_zap"`).
+- **2-Story House Collisions, Hinged Doors/Windows & Anti-Duplication Loot Decorating (`POST /api/ella-world/block`)**:
+  - `VoxelBlock` supports backward-compatible `kind`, `rot` (`0..3`), `open` (`action: "toggle"` for `door` & `window`), and `lootItemId` (`kind: "loot_decor"` with atomic `-1` placement deduction, owner-only removal, and `+1` refund on pickup or `POST /api/ella-world/admin/world/reset`). See [`docs/housing_interiors_and_legendary_loot.md`](housing_interiors_and_legendary_loot.md).
+- **Server-Side Ownership Enforcement (`reconcile_equipped_cosmetics`)**: Verified on `POST /api/ella-world/avatar`, `loot_decor` pedestal placement, and P2P trade completion. Trading away or displaying the last copy of an equipped dungeon relic or Legendary Ray Gun automatically unequips it back to `"crown"` / `"none"` and broadcasts `avatar_updated`.
 
 ### 4.3 Scam-Proof Two-Sided Atomic Live P2P Trading
 - **No NPC Shop / Pure Player Economy**: Friends exchange farmed Coins, Keys, Potions, Relics, and Exclusive Cosmetics directly via live P2P trade invites (`/api/ella-world/trade/invite`, `/respond`, `/offer`, `/lock`, `/confirm`, `/cancel`).

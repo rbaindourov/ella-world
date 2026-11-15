@@ -37,11 +37,12 @@ function requestUrl(targetUrl, { method = 'GET', headers = {}, body = null } = {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
         res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8');
+          const rawBuf = Buffer.concat(chunks);
           resolve({
             status: res.statusCode,
             headers: res.headers,
-            body: text,
+            rawBytes: rawBuf.length,
+            body: rawBuf.toString('utf8'),
           });
         });
       }
@@ -60,6 +61,8 @@ function extractAssetPaths(html) {
     'js/ws_spine.js',
     'js/voice.js',
     'js/world3d.js',
+    'models/ella_dti_wardrobe.glb',
+    'models/ella_world_props_loot.glb',
   ]);
   const linkRe = /<link[^>]+href=["']([^"']+\.css[^"']*)["']/gi;
   const scriptRe = /<script[^>]+src=["']([^"']+\.js[^"']*)["']/gi;
@@ -110,7 +113,7 @@ async function main() {
     report.assets.push({
       url: resolved,
       status: assetRes.status,
-      bytes: Buffer.byteLength(assetRes.body, 'utf8'),
+      bytes: assetRes.rawBytes,
     });
     if (assetRes.status !== 200) {
       throw new Error(`Static asset ${resolved} returned HTTP ${assetRes.status}`);

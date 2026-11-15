@@ -17,9 +17,148 @@ export const BLOCK_COLORS = [
   { name: 'Obsidian Slate', hex: '#334155' }
 ];
 
+export const BUILD_CATEGORIES = [
+  { id: 'structure', icon: '🧱', label: 'Structure' },
+  { id: 'kitchen', icon: '🍳', label: 'Kitchen' },
+  { id: 'bathroom', icon: '🛁', label: 'Bathroom' },
+  { id: 'bedroom', icon: '🛏️', label: 'Bedroom' },
+  { id: 'loot', icon: '🏆', label: 'My Loot' }
+];
+
+export const BUILD_CATALOG = [
+  // Structure
+  { kind: 'block', category: 'structure', icon: '🧱', label: 'Wall / Floor', height: 1 },
+  { kind: 'stairs', category: 'structure', icon: '🪜', label: 'Stairs', height: 1 },
+  { kind: 'door', category: 'structure', icon: '🚪', label: 'Hinged Door', height: 2 },
+  { kind: 'window', category: 'structure', icon: '🪟', label: 'Window', height: 1 },
+  // Kitchen
+  { kind: 'kitchen_counter', category: 'kitchen', icon: '🔪', label: 'Counter', height: 1 },
+  { kind: 'kitchen_sink', category: 'kitchen', icon: '🚰', label: 'Sink', height: 1 },
+  { kind: 'kitchen_stove', category: 'kitchen', icon: '🍳', label: 'Stove & Oven', height: 1 },
+  { kind: 'kitchen_fridge', category: 'kitchen', icon: '🧊', label: 'Retro Fridge', height: 2 },
+  { kind: 'dining_table', category: 'kitchen', icon: '🍽️', label: 'Dining Table', height: 1 },
+  { kind: 'chair', category: 'kitchen', icon: '🪑', label: 'Cozy Chair', height: 1 },
+  // Bathroom
+  { kind: 'bath_tub', category: 'bathroom', icon: '🛁', label: 'Bubble Tub', height: 1 },
+  { kind: 'bath_vanity', category: 'bathroom', icon: '🪞', label: 'Mirror Vanity', height: 1 },
+  { kind: 'bath_toilet', category: 'bathroom', icon: '🚽', label: 'Toilet', height: 1 },
+  // Bedroom
+  { kind: 'bed', category: 'bedroom', icon: '🛏️', label: 'Cozy Bed', height: 1 },
+  { kind: 'nightstand_lamp', category: 'bedroom', icon: '🛋️', label: 'Nightstand', height: 1 },
+  { kind: 'wardrobe', category: 'bedroom', icon: '🚪', label: 'Wardrobe', height: 2 },
+  { kind: 'rug', category: 'bedroom', icon: '🧶', label: 'Starlight Rug', height: 1 }
+];
+
+const PROP_TEMPLATE_BY_KIND = {
+  stairs: 'Prop_Stairs',
+  kitchen_counter: 'Prop_Kitchen_Counter',
+  kitchen_sink: 'Prop_Kitchen_Sink',
+  kitchen_stove: 'Prop_Kitchen_Stove',
+  kitchen_fridge: 'Prop_Kitchen_Fridge',
+  dining_table: 'Prop_Dining_Table',
+  chair: 'Prop_Chair',
+  bath_tub: 'Prop_Bath_Tub',
+  bath_vanity: 'Prop_Bath_Vanity',
+  bath_toilet: 'Prop_Bath_Toilet',
+  bed: 'Prop_Bed',
+  nightstand_lamp: 'Prop_Nightstand_Lamp',
+  wardrobe: 'Prop_Wardrobe',
+  rug: 'Prop_Rug'
+};
+
+const LOOT_TEMPLATE_BY_ITEM_ID = {
+  legendary_ray_gun: 'Loot_Ray_Gun',
+  geode_lamp: 'Loot_Geode_Lamp',
+  slime_lava_lamp: 'Loot_Slime_Lamp',
+  bat_plushie: 'Loot_Bat_Plush',
+  royal_chalice: 'Loot_Royal_Chalice',
+  dragon_egg_relic: 'Loot_Dragon_Egg'
+};
+
 // Shared singleton loader for the Blender 5.2 Ella Forensics + Dress-to-Impress Wardrobe Pack
 let dtiPackPromise = null;
 let dtiPackAsset = null;
+
+// Shared singleton loader for the Blender 5.2 Home Interiors, Doors/Windows & Legendary Loot Pack
+let propsPackPromise = null;
+let propsPackAsset = null;
+const propsTemplates = new Map();
+
+export function loadPropsAndLootPack() {
+  if (propsPackAsset) return Promise.resolve(propsPackAsset);
+  if (!propsPackPromise) {
+    const loader = new GLTFLoader();
+    propsPackPromise = new Promise((resolve, reject) => {
+      loader.load(
+        '/ella-world/models/ella_world_props_loot.glb',
+        (gltf) => {
+          propsPackAsset = gltf;
+          propsTemplates.clear();
+          for (const child of gltf.scene.children) {
+            if (child.name) {
+              propsTemplates.set(child.name, child);
+            }
+          }
+          gltf.scene.traverse((node) => {
+            if (node.name && !propsTemplates.has(node.name)) {
+              propsTemplates.set(node.name, node);
+            }
+          });
+          resolve(gltf);
+        },
+        undefined,
+        (err) => {
+          console.warn('[EllaWorld] Could not load ella_world_props_loot.glb, using procedural props:', err);
+          reject(err);
+        }
+      );
+    });
+  }
+  return propsPackPromise;
+}
+
+function clonePropTemplate(templateName, tintHex = null, extraUserData = null) {
+  const tpl = propsTemplates.get(templateName);
+  if (!tpl) return null;
+  const clone = tpl.clone(true);
+  clone.position.set(0, 0, 0);
+  clone.rotation.set(0, 0, 0);
+  clone.traverse((sub) => {
+    if (extraUserData) {
+      Object.assign(sub.userData, extraUserData);
+    }
+    if (sub.isMesh) {
+      sub.castShadow = true;
+      sub.receiveShadow = true;
+      const cloneMat = (m) => {
+        if (!m) return m;
+        const mc = m.clone();
+        const mName = mc.name || '';
+        if (tintHex && mName.startsWith('Mat_Prop_Tint')) {
+          mc.color.set(tintHex);
+        }
+        if (mName.startsWith('Mat_Prop_Glass')) {
+          mc.transparent = true;
+          mc.opacity = 0.38;
+          mc.depthWrite = false;
+        } else if (mName.startsWith('Mat_Prop_Water')) {
+          mc.transparent = true;
+          mc.opacity = 0.78;
+        }
+        return mc;
+      };
+      if (Array.isArray(sub.material)) {
+        sub.material = sub.material.map(cloneMat);
+      } else if (sub.material) {
+        sub.material = cloneMat(sub.material);
+      }
+    }
+  });
+  if (extraUserData) {
+    Object.assign(clone.userData, extraUserData);
+  }
+  return clone;
+}
 
 export function loadDtiWardrobePack() {
   if (dtiPackAsset) return Promise.resolve(dtiPackAsset);
@@ -466,6 +605,128 @@ function buildStarLanternAttachment(accentHex = '#fbbf24') {
   return group;
 }
 
+function buildRayGunAttachment(accentHex = '#ec4899') {
+  const group = new THREE.Group();
+  const glbGun = clonePropTemplate('Loot_Ray_Gun', accentHex);
+  if (glbGun) {
+    glbGun.position.set(0, -0.14, 0.04);
+    group.add(glbGun);
+    group.userData.isBlenderMesh = true;
+    return group;
+  }
+
+  // Instant procedural fallback while `ella_world_props_loot.glb` streams in
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: accentHex || '#ec4899',
+    metalness: 0.72,
+    roughness: 0.2,
+    emissive: '#831843',
+    emissiveIntensity: 0.25
+  });
+  const plasmaMat = new THREE.MeshStandardMaterial({
+    color: '#22d3ee',
+    emissive: '#06b6d4',
+    emissiveIntensity: 1.4,
+    roughness: 0.1
+  });
+  const goldMat = new THREE.MeshStandardMaterial({ color: '#fbbf24', metalness: 0.88, roughness: 0.18 });
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.22, 0.1), new THREE.MeshStandardMaterial({ color: '#1e293b' }));
+  grip.position.set(0, -0.04, -0.04);
+  grip.rotation.x = 0.25;
+  const receiver = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.095, 0.34, 14), bodyMat);
+  receiver.rotation.x = Math.PI / 2;
+  receiver.position.set(0, 0.11, 0.06);
+  const plasmaCore = new THREE.Mesh(new THREE.CylinderGeometry(0.098, 0.098, 0.1, 14), plasmaMat);
+  plasmaCore.rotation.x = Math.PI / 2;
+  plasmaCore.position.set(0, 0.11, 0.05);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.04, 0.28, 12), goldMat);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.11, 0.32);
+  const muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 10), plasmaMat);
+  muzzle.position.set(0, 0.11, 0.47);
+  group.add(grip, receiver, plasmaCore, barrel, muzzle);
+  return group;
+}
+
+function buildLootDecorVisual(lootItemId, tintHex, extraUserData) {
+  const root = new THREE.Group();
+  const stand = clonePropTemplate('Loot_Display_Pedestal', tintHex, extraUserData);
+  let topY = 0.35;
+  if (stand) {
+    root.add(stand);
+  } else {
+    const ped = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.28, 0.34, 0.34, 8),
+      new THREE.MeshStandardMaterial({ color: '#f1f5f9', roughness: 0.25, metalness: 0.1 })
+    );
+    ped.position.y = 0.17;
+    ped.castShadow = true;
+    ped.receiveShadow = true;
+    if (extraUserData) Object.assign(ped.userData, extraUserData);
+    root.add(ped);
+  }
+
+  const tplName = LOOT_TEMPLATE_BY_ITEM_ID[lootItemId];
+  const relic = tplName ? clonePropTemplate(tplName, tintHex, extraUserData) : null;
+  const trophyHolder = new THREE.Group();
+  trophyHolder.position.y = topY;
+
+  if (relic) {
+    if (lootItemId === 'legendary_ray_gun') {
+      relic.position.set(0, 0.08, -0.04);
+      relic.rotation.x = -0.18;
+      relic.scale.setScalar(1.12);
+    }
+    trophyHolder.add(relic);
+  } else {
+    // Stylized 3D display sculpture for classic dungeon materials/potions/cosmetics
+    const palette = {
+      star_shard: '#38bdf8',
+      slime_gel: '#34d399',
+      moon_opal: '#c084fc',
+      dungeon_key: '#fbbf24',
+      crown_relic: '#f59e0b',
+      speed_potion: '#38bdf8',
+      jump_potion: '#f472b6',
+      prism_block: '#e879f9',
+      cosmetic_hat_shadow_hood: '#334155',
+      cosmetic_acc_star_lantern: '#fbbf24',
+      cosmetic_hat_obsidian_crown: '#a855f7',
+      cosmetic_acc_crystal_wings: '#38bdf8',
+      legendary_ray_gun: '#22d3ee'
+    };
+    const col = palette[lootItemId] || tintHex || '#f472b6';
+    if (lootItemId === 'legendary_ray_gun') {
+      const rg = buildRayGunAttachment('#ec4899');
+      rg.position.set(0, 0.14, 0);
+      trophyHolder.add(rg);
+    } else {
+      const gem = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.24, 0),
+        new THREE.MeshStandardMaterial({
+          color: col,
+          emissive: col,
+          emissiveIntensity: 0.65,
+          metalness: 0.45,
+          roughness: 0.15
+        })
+      );
+      gem.position.y = 0.28;
+      gem.castShadow = true;
+      if (extraUserData) Object.assign(gem.userData, extraUserData);
+      trophyHolder.add(gem);
+    }
+  }
+
+  if (extraUserData) {
+    Object.assign(trophyHolder.userData, extraUserData);
+    Object.assign(root.userData, extraUserData);
+  }
+  root.add(trophyHolder);
+  root.userData.trophyHolder = trophyHolder;
+  return root;
+}
+
 function createOverheadLabelSprite({ displayName, role, speaking, muted, speechText }) {
   const canvas = document.createElement('canvas');
   canvas.width = 512;
@@ -553,11 +814,13 @@ class StylizedCharacterRig {
     // Pass 1: clone per-character materials on every mesh primitive so colors never bleed across players
     this.chestBone = null;
     this.leftHandBone = null;
+    this.rightHandBone = null;
     this.model.traverse((node) => {
       if (node.isBone) {
         if (node.name === 'head') this.headBone = node;
         else if (node.name === 'chest') this.chestBone = node;
         else if (node.name === 'hand.L') this.leftHandBone = node;
+        else if (node.name === 'hand.R') this.rightHandBone = node;
       }
       if (node.isMesh) {
         node.castShadow = true;
@@ -601,8 +864,20 @@ class StylizedCharacterRig {
       this.model.add(this.dungeonHandMount);
     }
 
+    this.dungeonRightHandMount = new THREE.Group();
+    this.dungeonRightHandMount.scale.setScalar(0.52);
+    if (this.rightHandBone) {
+      this.dungeonRightHandMount.position.set(0, 0.08, 0.04);
+      this.dungeonRightHandMount.rotation.set(Math.PI * 0.42, 0, 0);
+      this.rightHandBone.add(this.dungeonRightHandMount);
+    } else {
+      this.dungeonRightHandMount.position.set(0.28, 0.96, 0.18);
+      this.model.add(this.dungeonRightHandMount);
+    }
+
     this.customCrystalWings = null;
     this.customStarLantern = null;
+    this.customRayGun = null;
 
     // Pass 2: index top-level wardrobe slots (handles BOTH 1-primitive SkinnedMesh AND multi-primitive Group!)
     this.model.traverse((node) => {
@@ -808,6 +1083,15 @@ class StylizedCharacterRig {
       this.customStarLantern = buildStarLanternAttachment(accessoryColor);
       this.dungeonHandMount.add(this.customStarLantern);
     }
+
+    while (this.dungeonRightHandMount.children.length > 0) {
+      this.dungeonRightHandMount.remove(this.dungeonRightHandMount.children[0]);
+    }
+    this.customRayGun = null;
+    if (accessory === 'ray_gun') {
+      this.customRayGun = buildRayGunAttachment(accessoryColor);
+      this.dungeonRightHandMount.add(this.customRayGun);
+    }
   }
 
   _applyFabricFinish(mat, hexColor, finish) {
@@ -994,6 +1278,14 @@ class ClassicBlockyRig {
     rightArm.position.y = -0.44;
     rightArm.castShadow = true;
     this.rightArmPivot.add(rightArm);
+    this.rayGunGroup = null;
+    if (av.accessory === 'ray_gun') {
+      this.rayGunGroup = buildRayGunAttachment(av.accessoryColor || '#ec4899');
+      this.rayGunGroup.scale.setScalar(0.92);
+      this.rayGunGroup.position.set(0.02, -0.88, 0.22);
+      this.rayGunGroup.rotation.x = 0.55;
+      this.rightArmPivot.add(this.rayGunGroup);
+    }
     this.bodyGroup.add(this.leftArmPivot, this.rightArmPivot);
 
     this.leftLegPivot = new THREE.Group();
@@ -1094,6 +1386,9 @@ class ClassicBlockyRig {
     } else {
       this.leftArmPivot.rotation.z = 0.05 + Math.sin(t * 2.2) * 0.03;
       this.rightArmPivot.rotation.z = -0.05 - Math.sin(t * 2.2) * 0.03;
+      if (this.rayGunGroup) {
+        this.rightArmPivot.rotation.x = -0.52 + Math.sin(t * 2.6) * 0.04;
+      }
       this.headMesh.rotation.y = Math.sin(t * 1.3) * 0.06;
     }
   }
@@ -1330,6 +1625,9 @@ export class BlockyWorld3D {
     onMove,
     onPlaceBlock,
     onRemoveBlock,
+    onToggleBlock,
+    onFireRayGun,
+    onRotateBuild,
     onObbyCheckpoint,
     onTrophyWin,
     onRunwayProximity,
@@ -1344,6 +1642,9 @@ export class BlockyWorld3D {
     this.onMove = onMove || (() => {});
     this.onPlaceBlock = onPlaceBlock || (() => {});
     this.onRemoveBlock = onRemoveBlock || (() => {});
+    this.onToggleBlock = onToggleBlock || (() => {});
+    this.onFireRayGun = onFireRayGun || (() => {});
+    this.onRotateBuild = onRotateBuild || (() => {});
     this.onObbyCheckpoint = onObbyCheckpoint || (() => {});
     this.onTrophyWin = onTrophyWin || (() => {});
     this.onRunwayProximity = onRunwayProximity || (() => {});
@@ -1355,6 +1656,11 @@ export class BlockyWorld3D {
     this.onInteractionHint = onInteractionHint || (() => {});
 
     loadDtiWardrobePack().catch(() => {});
+    loadPropsAndLootPack()
+      .then(() => {
+        this._upgradeLoadedPropsAndAvatars();
+      })
+      .catch(() => {});
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color('#7dd3fc');
@@ -1390,6 +1696,7 @@ export class BlockyWorld3D {
     this.dungeonColliders = [];
     this.prisonColliders = [];
     this.colliders = [];
+    this.cameraOccluders = [];
     this.movingPlatforms = [];
     this.discoTiles = [];
     this.runwayStripLights = [];
@@ -1398,6 +1705,8 @@ export class BlockyWorld3D {
     this.runwayStarCrest = null;
     this.confettiParticles = [];
     this.sparkleRings = [];
+    this.laserBeams = [];
+    this.lastLocalBeamAt = 0;
     this.portalVortices = [];
 
     this.plazaPortalPos = { x: 18, y: 0, z: 16 };
@@ -1417,18 +1726,21 @@ export class BlockyWorld3D {
     this.jumpBoostUntilMs = 0;
 
     this.voxelMap = new Map();
+    this.savedBlocksByKey = new Map();
+    this.animatedHinges = new Map();
     this.voxelGroup = new THREE.Group();
     this.scene.add(this.voxelGroup);
 
     this.buildMode = false;
     this.buildTool = 'place';
     this.selectedBlockColor = BLOCK_COLORS[0].hex;
+    this.selectedBuildKind = 'block';
+    this.selectedBuildRot = 0;
+    this.selectedLootItemId = null;
     this.raycaster = new THREE.Raycaster();
+    this.cameraRaycaster = new THREE.Raycaster();
     this.pointerNdc = new THREE.Vector2();
-    this.ghostMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(1.02, 1.02, 1.02),
-      new THREE.MeshBasicMaterial({ color: '#38bdf8', wireframe: true })
-    );
+    this.ghostMesh = this._createBuildGhostGroup();
     this.ghostMesh.visible = false;
     this.scene.add(this.ghostMesh);
 
@@ -1446,6 +1758,7 @@ export class BlockyWorld3D {
     this.cameraYaw = 0;
     this.cameraPitch = 0.34;
     this.cameraDist = 9.2;
+    this.effectiveCameraDist = 9.2;
     this.salonMirrorMode = false;
     this.savedCameraBeforeSalon = null;
     this.isDraggingCamera = false;
@@ -1466,6 +1779,47 @@ export class BlockyWorld3D {
     requestAnimationFrame(this._animate);
   }
 
+  _createBuildGhostGroup() {
+    const grp = new THREE.Group();
+    const boxMat = new THREE.MeshBasicMaterial({ color: '#38bdf8', wireframe: true });
+    const box = new THREE.Mesh(new THREE.BoxGeometry(1.02, 1.02, 1.02), boxMat);
+    box.position.y = 0.5;
+    // Direction arrow on top/front (+Z at rot=0) so furniture & door facing is obvious before placing!
+    const arrowMat = new THREE.MeshBasicMaterial({ color: '#fbbf24', transparent: true, opacity: 0.9 });
+    const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.34, 4), arrowMat);
+    arrow.rotation.x = Math.PI / 2;
+    arrow.position.set(0, 0.16, 0.42);
+    grp.add(box, arrow);
+    grp.userData.wireBox = box;
+    grp.userData.dirArrow = arrow;
+    return grp;
+  }
+
+  rotateBuildSelection(step = 1) {
+    this.selectedBuildRot = ((this.selectedBuildRot + step) % 4 + 4) % 4;
+    if (this.buildMode && !this.salonMirrorMode) {
+      this._updateBuildGhost();
+    }
+    this.onRotateBuild(this.selectedBuildRot);
+    return this.selectedBuildRot;
+  }
+
+  _upgradeLoadedPropsAndAvatars() {
+    for (const b of Array.from(this.savedBlocksByKey.values())) {
+      if ((b.kind && b.kind !== 'block') || b.lootItemId) {
+        this.addBlockMesh(b);
+      }
+    }
+    if (this.selfAvatar && this.selfAvatar.user?.avatar?.accessory === 'ray_gun') {
+      this.selfAvatar.updateAvatarAppearance(this.selfAvatar.user.avatar);
+    }
+    for (const av of this.remoteAvatars.values()) {
+      if (av.user?.avatar?.accessory === 'ray_gun') {
+        av.updateAvatarAppearance(av.user.avatar);
+      }
+    }
+  }
+
   _rebuildActiveColliders() {
     if (this.currentZone === 1) {
       this.colliders = this.dungeonColliders;
@@ -1473,6 +1827,18 @@ export class BlockyWorld3D {
       this.colliders = this.prisonColliders;
     } else {
       this.colliders = [...this.plazaColliders, ...this.voxelColliders];
+    }
+
+    const seenMeshes = new Set();
+    this.cameraOccluders = [];
+    for (const c of this.colliders) {
+      if (!c.mesh || seenMeshes.has(c.mesh)) continue;
+      if (c.type === 'ground' || c.type === 'jumppad' || c.passable) continue;
+      if (c.cameraOccluder === false) continue;
+      if (c.cameraOccluder === true || (c.type !== 'voxel' && (c.h || 0) >= 0.75)) {
+        seenMeshes.add(c.mesh);
+        this.cameraOccluders.push(c.mesh);
+      }
     }
   }
 
@@ -2309,58 +2675,354 @@ export class BlockyWorld3D {
   }
 
   loadBlocks(blocksArray) {
+    // Preserve current visual hinge angles across state updates so doors/windows swing smoothly!
+    const prevAngles = new Map();
+    for (const [k, hObj] of this.animatedHinges.entries()) {
+      prevAngles.set(k, hObj.currentAngle);
+    }
+
     for (const mesh of this.voxelMap.values()) {
       this.voxelGroup.remove(mesh);
     }
     this.voxelMap.clear();
+    this.savedBlocksByKey.clear();
+    this.animatedHinges.clear();
     this.voxelColliders = [];
 
     for (const b of blocksArray || []) {
-      this.addBlockMesh(b);
+      this.addBlockMesh(b, false, prevAngles.get(`${b.x},${b.y},${b.z}`));
     }
     this._rebuildActiveColliders();
   }
 
-  addBlockMesh({ x, y, z, color }) {
+  addBlockMesh(block, rebuildImmediately = true, preservedHingeAngle = undefined) {
+    const x = Number(block.x) || 0;
+    const y = Number(block.y) || 1;
+    const z = Number(block.z) || 0;
+    const color = block.color || '#38bdf8';
+    const kind = block.kind || 'block';
+    const rot = ((Number(block.rot) || 0) % 4 + 4) % 4;
+    const isOpen = Boolean(block.open);
+    const lootItemId = block.lootItemId || null;
+
     const key = `${x},${y},${z}`;
     if (this.voxelMap.has(key)) {
-      this.removeBlockMesh({ x, y, z });
+      this.removeBlockMesh({ x, y, z }, false);
     }
-    const mat = new THREE.MeshStandardMaterial({ color: color || '#38bdf8', roughness: 0.45 });
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
-    mesh.position.set(x, y - 0.5, z);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mesh.userData.voxelCoords = { x, y, z };
-    this.voxelGroup.add(mesh);
-    this.voxelMap.set(key, mesh);
-
-    this.voxelColliders.push({
-      mesh,
-      voxelKey: key,
-      w: 1,
-      h: 1,
-      d: 1,
-      minX: x - 0.5,
-      maxX: x + 0.5,
-      minZ: z - 0.5,
-      maxZ: z + 0.5,
-      topY: y,
-      bottomY: y - 1,
-      type: 'voxel'
+    this.savedBlocksByKey.set(key, {
+      x,
+      y,
+      z,
+      color,
+      kind,
+      rot,
+      open: isOpen,
+      lootItemId,
+      author: block.author || ''
     });
-    this._rebuildActiveColliders();
+
+    const baseBottomY = y - 1;
+    const rotRad = rot * (Math.PI / 2);
+    const meta = {
+      voxelCoords: { x, y, z },
+      voxelKind: kind,
+      voxelAuthor: block.author || '',
+      lootItemId
+    };
+
+    // Classic 1x1x1 wall / floor block
+    if (kind === 'block') {
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.45 });
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
+      mesh.position.set(x, y - 0.5, z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      Object.assign(mesh.userData, meta);
+      this.voxelGroup.add(mesh);
+      this.voxelMap.set(key, mesh);
+
+      this.voxelColliders.push({
+        mesh,
+        voxelKey: key,
+        w: 1,
+        h: 1,
+        d: 1,
+        minX: x - 0.5,
+        maxX: x + 0.5,
+        minZ: z - 0.5,
+        maxZ: z + 0.5,
+        topY: y,
+        bottomY: baseBottomY,
+        type: 'voxel',
+        cameraOccluder: true
+      });
+      if (rebuildImmediately) this._rebuildActiveColliders();
+      return;
+    }
+
+    const root = new THREE.Group();
+    root.position.set(x, baseBottomY, z);
+    root.rotation.y = rotRad;
+    Object.assign(root.userData, meta);
+
+    if (kind === 'door') {
+      const frame = clonePropTemplate('Prop_Door_Frame', color, meta);
+      const leaf = clonePropTemplate('Prop_Door_Leaf', color, meta);
+      const leafPivot = new THREE.Group();
+      leafPivot.position.set(-0.41, 0, 0);
+      Object.assign(leafPivot.userData, meta);
+
+      if (frame && leaf) {
+        root.add(frame);
+        leafPivot.add(leaf);
+        root.add(leafPivot);
+      } else {
+        const jambMat = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.4 });
+        const jL = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.0, 0.18), jambMat);
+        jL.position.set(-0.45, 1.0, 0);
+        const jR = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.0, 0.18), jambMat);
+        jR.position.set(0.45, 1.0, 0);
+        const hdr = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.12, 0.2), jambMat);
+        hdr.position.set(0, 1.94, 0);
+        const slab = new THREE.Mesh(
+          new THREE.BoxGeometry(0.82, 1.88, 0.08),
+          new THREE.MeshStandardMaterial({ color, roughness: 0.38 })
+        );
+        slab.position.set(0.41, 0.96, 0);
+        for (const p of [jL, jR, hdr, slab]) {
+          p.castShadow = true;
+          Object.assign(p.userData, meta);
+        }
+        leafPivot.add(slab);
+        root.add(jL, jR, hdr, leafPivot);
+      }
+
+      const targetAngle = isOpen ? Math.PI * 0.48 : 0;
+      const startAngle = preservedHingeAngle !== undefined ? preservedHingeAngle : targetAngle;
+      leafPivot.rotation.y = startAngle;
+      this.animatedHinges.set(key, { pivot: leafPivot, currentAngle: startAngle, targetAngle });
+
+      // Thin oriented door threshold/frame collider (only blocks when closed!)
+      const isEW = rot % 2 === 1;
+      const halfW = isEW ? 0.18 : 0.48;
+      const halfD = isEW ? 0.48 : 0.18;
+      this.voxelColliders.push({
+        mesh: root,
+        voxelKey: key,
+        w: halfW * 2,
+        h: 2,
+        d: halfD * 2,
+        minX: x - halfW,
+        maxX: x + halfW,
+        minZ: z - halfD,
+        maxZ: z + halfD,
+        topY: baseBottomY + 2.0,
+        bottomY: baseBottomY,
+        type: 'voxel',
+        passable: isOpen,
+        noStand: isOpen,
+        cameraOccluder: !isOpen
+      });
+    } else if (kind === 'window') {
+      const frame = clonePropTemplate('Prop_Window_Frame', color, meta);
+      const sash = clonePropTemplate('Prop_Window_Sash', color, meta);
+      const sashPivot = new THREE.Group();
+      sashPivot.position.set(-0.42, 0, 0);
+      Object.assign(sashPivot.userData, meta);
+
+      if (frame && sash) {
+        root.add(frame);
+        sashPivot.add(sash);
+        root.add(sashPivot);
+      } else {
+        const sill = new THREE.Mesh(
+          new THREE.BoxGeometry(1.0, 0.1, 0.2),
+          new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.4 })
+        );
+        sill.position.set(0, 0.05, 0);
+        const pane = new THREE.Mesh(
+          new THREE.BoxGeometry(0.84, 0.82, 0.05),
+          new THREE.MeshStandardMaterial({ color: '#7dd3fc', transparent: true, opacity: 0.42 })
+        );
+        pane.position.set(0.42, 0.5, 0);
+        Object.assign(sill.userData, meta);
+        Object.assign(pane.userData, meta);
+        sashPivot.add(pane);
+        root.add(sill, sashPivot);
+      }
+
+      const targetAngle = isOpen ? 1.12 : 0;
+      const startAngle = preservedHingeAngle !== undefined ? preservedHingeAngle : targetAngle;
+      sashPivot.rotation.y = startAngle;
+      this.animatedHinges.set(key, { pivot: sashPivot, currentAngle: startAngle, targetAngle });
+
+      const isEW = rot % 2 === 1;
+      const halfW = isEW ? 0.18 : 0.48;
+      const halfD = isEW ? 0.48 : 0.18;
+      this.voxelColliders.push({
+        mesh: root,
+        voxelKey: key,
+        w: halfW * 2,
+        h: 1,
+        d: halfD * 2,
+        minX: x - halfW,
+        maxX: x + halfW,
+        minZ: z - halfD,
+        maxZ: z + halfD,
+        topY: y,
+        bottomY: baseBottomY,
+        type: 'voxel',
+        passable: isOpen,
+        noStand: isOpen,
+        cameraOccluder: false
+      });
+    } else if (kind === 'stairs') {
+      const stairsObj = clonePropTemplate('Prop_Stairs', color, meta);
+      if (stairsObj) {
+        root.add(stairsObj);
+      } else {
+        const sMat = new THREE.MeshStandardMaterial({ color, roughness: 0.45 });
+        const s1 = new THREE.Mesh(new THREE.BoxGeometry(0.98, 0.5, 0.5), sMat);
+        s1.position.set(0, 0.25, 0.25);
+        const s2 = new THREE.Mesh(new THREE.BoxGeometry(0.98, 1.0, 0.5), sMat);
+        s2.position.set(0, 0.5, -0.25);
+        Object.assign(s1.userData, meta);
+        Object.assign(s2.userData, meta);
+        root.add(s1, s2);
+      }
+
+      // Two stepped AABB colliders rotated cleanly by `rot` so players walk up 2-story stairs smoothly!
+      let lowBounds;
+      let highBounds;
+      if (rot === 0) {
+        lowBounds = { minX: x - 0.49, maxX: x + 0.49, minZ: z, maxZ: z + 0.5 };
+        highBounds = { minX: x - 0.49, maxX: x + 0.49, minZ: z - 0.5, maxZ: z };
+      } else if (rot === 1) {
+        lowBounds = { minX: x, maxX: x + 0.5, minZ: z - 0.49, maxZ: z + 0.49 };
+        highBounds = { minX: x - 0.5, maxX: x, minZ: z - 0.49, maxZ: z + 0.49 };
+      } else if (rot === 2) {
+        lowBounds = { minX: x - 0.49, maxX: x + 0.49, minZ: z - 0.5, maxZ: z };
+        highBounds = { minX: x - 0.49, maxX: x + 0.49, minZ: z, maxZ: z + 0.5 };
+      } else {
+        lowBounds = { minX: x - 0.5, maxX: x, minZ: z - 0.49, maxZ: z + 0.49 };
+        highBounds = { minX: x, maxX: x + 0.5, minZ: z - 0.49, maxZ: z + 0.49 };
+      }
+      this.voxelColliders.push(
+        {
+          mesh: root,
+          voxelKey: key,
+          w: lowBounds.maxX - lowBounds.minX,
+          h: 0.5,
+          d: lowBounds.maxZ - lowBounds.minZ,
+          ...lowBounds,
+          topY: baseBottomY + 0.5,
+          bottomY: baseBottomY,
+          type: 'voxel',
+          cameraOccluder: false
+        },
+        {
+          mesh: root,
+          voxelKey: key,
+          w: highBounds.maxX - highBounds.minX,
+          h: 1.0,
+          d: highBounds.maxZ - highBounds.minZ,
+          ...highBounds,
+          topY: y,
+          bottomY: baseBottomY,
+          type: 'voxel',
+          cameraOccluder: false
+        }
+      );
+    } else if (kind === 'loot_decor') {
+      const decorVis = buildLootDecorVisual(lootItemId || 'star_shard', color, meta);
+      root.add(decorVis);
+      root.userData.trophyHolder = decorVis.userData.trophyHolder;
+
+      this.voxelColliders.push({
+        mesh: root,
+        voxelKey: key,
+        w: 0.72,
+        h: 0.85,
+        d: 0.72,
+        minX: x - 0.36,
+        maxX: x + 0.36,
+        minZ: z - 0.36,
+        maxZ: z + 0.36,
+        topY: baseBottomY + 0.85,
+        bottomY: baseBottomY,
+        type: 'voxel',
+        cameraOccluder: false
+      });
+    } else {
+      // Kitchen, Bathroom & Bedroom 3D Interior Props
+      const tplName = PROP_TEMPLATE_BY_KIND[kind];
+      const propObj = tplName ? clonePropTemplate(tplName, color, meta) : null;
+      const isTwoTall = kind === 'kitchen_fridge' || kind === 'wardrobe';
+      const isRug = kind === 'rug';
+      const isLowSeat = kind === 'chair' || kind === 'bed';
+
+      if (propObj) {
+        root.add(propObj);
+      } else {
+        const fbH = isRug ? 0.05 : isTwoTall ? 1.95 : isLowSeat ? 0.5 : 0.92;
+        const fb = new THREE.Mesh(
+          new THREE.BoxGeometry(0.92, fbH, 0.92),
+          new THREE.MeshStandardMaterial({ color, roughness: 0.42 })
+        );
+        fb.position.y = fbH / 2;
+        fb.castShadow = !isRug;
+        fb.receiveShadow = true;
+        Object.assign(fb.userData, meta);
+        root.add(fb);
+      }
+
+      const colH = isRug
+        ? 0.04
+        : isTwoTall
+          ? 1.96
+          : isLowSeat
+            ? 0.5
+            : kind === 'bath_tub'
+              ? 0.62
+              : kind === 'dining_table'
+                ? 0.85
+                : 0.94;
+      const pad = kind === 'chair' ? 0.32 : 0.45;
+      this.voxelColliders.push({
+        mesh: root,
+        voxelKey: key,
+        w: pad * 2,
+        h: colH,
+        d: pad * 2,
+        minX: x - pad,
+        maxX: x + pad,
+        minZ: z - pad,
+        maxZ: z + pad,
+        topY: baseBottomY + colH,
+        bottomY: baseBottomY,
+        type: 'voxel',
+        passable: isRug,
+        noStand: isRug,
+        cameraOccluder: false
+      });
+    }
+
+    this.voxelGroup.add(root);
+    this.voxelMap.set(key, root);
+    if (rebuildImmediately) this._rebuildActiveColliders();
   }
 
-  removeBlockMesh({ x, y, z }) {
+  removeBlockMesh({ x, y, z }, rebuildImmediately = true) {
     const key = `${x},${y},${z}`;
     const mesh = this.voxelMap.get(key);
     if (mesh) {
       this.voxelGroup.remove(mesh);
       this.voxelMap.delete(key);
     }
+    this.savedBlocksByKey.delete(key);
+    this.animatedHinges.delete(key);
     this.voxelColliders = this.voxelColliders.filter((c) => c.voxelKey !== key);
-    this._rebuildActiveColliders();
+    if (rebuildImmediately) this._rebuildActiveColliders();
   }
 
   initSelfPlayer(playerState) {
@@ -2693,19 +3355,21 @@ export class BlockyWorld3D {
       common: '#38bdf8',
       uncommon: '#34d399',
       rare: '#f472b6',
-      epic: '#fbbf24'
+      epic: '#fbbf24',
+      legendary: '#22d3ee'
     };
+    const isLegendary = drop.rarity === 'legendary';
     const hex = drop.itemId ? rarityPalette[drop.rarity] || '#38bdf8' : '#fbbf24';
     const orbMat = new THREE.MeshStandardMaterial({
       color: hex,
-      emissive: hex,
-      emissiveIntensity: 0.78,
+      emissive: isLegendary ? '#f472b6' : hex,
+      emissiveIntensity: isLegendary ? 1.15 : 0.78,
       metalness: 0.45,
       roughness: 0.15
     });
 
     const mesh = drop.itemId
-      ? new THREE.Mesh(new THREE.OctahedronGeometry(0.36, 0), orbMat)
+      ? new THREE.Mesh(new THREE.OctahedronGeometry(isLegendary ? 0.46 : 0.36, isLegendary ? 1 : 0), orbMat)
       : new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.12, 18), orbMat);
     if (!drop.itemId) {
       mesh.rotation.z = Math.PI / 2;
@@ -2714,13 +3378,43 @@ export class BlockyWorld3D {
 
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(0.38, 0.52, 20),
-      new THREE.MeshBasicMaterial({ color: hex, side: THREE.DoubleSide, transparent: true, opacity: 0.62 })
+      new THREE.MeshBasicMaterial({ color: hex, side: THREE.DoubleSide, transparent: true, opacity: 0.68 })
     );
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.06;
 
-    const label = createWorldBannerSprite(drop.label, '', hex);
-    label.position.set(0, 1.38, 0);
+    if (isLegendary) {
+      const goldHalo = new THREE.Mesh(
+        new THREE.RingGeometry(0.58, 0.74, 28),
+        new THREE.MeshBasicMaterial({
+          color: '#fbbf24',
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.85
+        })
+      );
+      goldHalo.rotation.x = -Math.PI / 2;
+      goldHalo.position.y = 0.07;
+      const beacon = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.12, 0.24, 2.35, 14, 1, true),
+        new THREE.MeshBasicMaterial({
+          color: '#22d3ee',
+          transparent: true,
+          opacity: 0.24,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        })
+      );
+      beacon.position.y = 1.18;
+      group.add(goldHalo, beacon);
+    }
+
+    const label = createWorldBannerSprite(
+      drop.label,
+      isLegendary ? '✦ LEGENDARY DROP!' : '',
+      isLegendary ? '#fbbf24' : hex
+    );
+    label.position.set(0, isLegendary ? 1.62 : 1.38, 0);
     group.add(mesh, ring, label);
     this.dungeonEntitiesGroup.add(group);
 
@@ -2812,6 +3506,69 @@ export class BlockyWorld3D {
     this.sparkleRings.push({ mesh: ring, bornAt: performance.now() });
   }
 
+  spawnRayGunBeam(fromArr, toArr, isDungeonHit = false) {
+    if (!Array.isArray(fromArr) || !Array.isArray(toArr)) return;
+    const fromVec = new THREE.Vector3(Number(fromArr[0]) || 0, Number(fromArr[1]) || 0, Number(fromArr[2]) || 0);
+    const toVec = new THREE.Vector3(Number(toArr[0]) || 0, Number(toArr[1]) || 0, Number(toArr[2]) || 0);
+    const delta = toVec.clone().sub(fromVec);
+    const dist = delta.length();
+    if (dist < 0.1) return;
+
+    const dir = delta.clone().divideScalar(dist);
+    const mid = fromVec.clone().addScaledVector(dir, dist * 0.5);
+    const beamGroup = new THREE.Group();
+    beamGroup.position.copy(mid);
+    beamGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+
+    const coreMat = new THREE.MeshBasicMaterial({
+      color: '#ffffff',
+      transparent: true,
+      opacity: 0.96
+    });
+    const outerColor = isDungeonHit ? '#22d3ee' : '#f472b6';
+    const outerMat = new THREE.MeshBasicMaterial({
+      color: outerColor,
+      transparent: true,
+      opacity: 0.62,
+      depthWrite: false
+    });
+
+    const core = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.042, dist, 8), coreMat);
+    const sheath = new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.115, dist, 10), outerMat);
+    const muzzleFlash = new THREE.Mesh(new THREE.SphereGeometry(0.15, 10, 10), outerMat);
+    muzzleFlash.position.y = -dist * 0.5;
+    const impactFlash = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 10), coreMat);
+    impactFlash.position.y = dist * 0.5;
+
+    beamGroup.add(core, sheath, muzzleFlash, impactFlash);
+    this.scene.add(beamGroup);
+    this.laserBeams.push({
+      group: beamGroup,
+      coreMat,
+      outerMat,
+      bornAt: performance.now()
+    });
+    this.spawnSparkleBurst(new THREE.Vector3(toVec.x, toVec.y - 0.35, toVec.z), outerColor);
+  }
+
+  _findNearestToggleableBlock(maxDist = 3.8) {
+    if (!this.selfAvatar || this.currentZone !== 0) return null;
+    const pos = this.selfAvatar.group.position;
+    const eyeY = pos.y + 0.95;
+    let best = null;
+    let bestDist = maxDist;
+    for (const b of this.savedBlocksByKey.values()) {
+      if (b.kind !== 'door' && b.kind !== 'window') continue;
+      const centerY = b.kind === 'door' ? b.y : b.y - 0.5;
+      const d = Math.hypot(pos.x - b.x, eyeY - centerY, pos.z - b.z);
+      if (d < bestDist) {
+        bestDist = d;
+        best = b;
+      }
+    }
+    return best;
+  }
+
   triggerAction() {
     if (!this.selfAvatar || this.salonMirrorMode) return;
     const pos = this.selfAvatar.group.position;
@@ -2821,10 +3578,30 @@ export class BlockyWorld3D {
     );
 
     if (this.currentZone === 0) {
+      if (!this.buildMode) {
+        const toggleTarget = this._findNearestToggleableBlock(3.8);
+        if (toggleTarget) {
+          this.onToggleBlock({ x: toggleTarget.x, y: toggleTarget.y, z: toggleTarget.z });
+          return;
+        }
+      }
       const dPortal = Math.hypot(pos.x - this.plazaPortalPos.x, pos.z - this.plazaPortalPos.z);
       if (dPortal < 4.2) {
         this.lastPortalTriggerAt = performance.now();
         this.onRequestZonePortal(1);
+        return;
+      }
+      if (
+        !this.buildMode &&
+        this.selfAvatar.user?.avatar?.accessory === 'ray_gun' &&
+        performance.now() - this.lastLocalBeamAt > 210
+      ) {
+        const ry = this.selfAvatar.group.rotation.y;
+        const fromArr = [pos.x + Math.sin(ry) * 0.55, pos.y + 1.05, pos.z + Math.cos(ry) * 0.55];
+        const toArr = [pos.x + Math.sin(ry) * 11.0, pos.y + 1.12, pos.z + Math.cos(ry) * 11.0];
+        this.lastLocalBeamAt = performance.now();
+        this.spawnRayGunBeam(fromArr, toArr, false);
+        this.onFireRayGun(toArr);
       }
       return;
     }
@@ -2862,8 +3639,9 @@ export class BlockyWorld3D {
       return;
     }
 
+    const hasRayGun = this.selfAvatar.user?.avatar?.accessory === 'ray_gun';
     let nearestMob = null;
-    let nearestMobDist = 5.4;
+    let nearestMobDist = hasRayGun ? 14.2 : 5.4;
     for (const entry of this.dungeonMobsMap.values()) {
       if (!entry.data.alive) continue;
       const d = pos.distanceTo(entry.group.position);
@@ -2873,7 +3651,17 @@ export class BlockyWorld3D {
       }
     }
     if (nearestMob) {
-      this.onAttackMob(nearestMob.id, 'blast');
+      if (hasRayGun) {
+        const ry = Math.atan2(nearestMob.x - pos.x, nearestMob.z - pos.z);
+        this.selfAvatar.group.rotation.y = ry;
+        const fromArr = [pos.x + Math.sin(ry) * 0.55, pos.y + 1.05, pos.z + Math.cos(ry) * 0.55];
+        const toArr = [nearestMob.x, nearestMob.y + 0.65, nearestMob.z];
+        this.lastLocalBeamAt = performance.now();
+        this.spawnRayGunBeam(fromArr, toArr, true);
+        this.onAttackMob(nearestMob.id, 'raygun');
+      } else {
+        this.onAttackMob(nearestMob.id, 'blast');
+      }
       return;
     }
 
@@ -3005,6 +3793,9 @@ export class BlockyWorld3D {
         } else if (code === 'KeyE') {
           e.preventDefault();
           this.triggerAction();
+        } else if (this.buildMode && code === 'KeyQ') {
+          e.preventDefault();
+          this.rotateBuildSelection(1);
         }
       }
     });
@@ -3058,6 +3849,45 @@ export class BlockyWorld3D {
           } else {
             this._handleVoxelPlaceClick();
           }
+        } else if (this.currentZone === 0 && this.selfAvatar) {
+          this.raycaster.setFromCamera(this.pointerNdc, this.camera);
+          const voxelHits = this.raycaster.intersectObjects(this.voxelGroup.children, true);
+          if (voxelHits.length > 0 && voxelHits[0].distance <= 9.5) {
+            const ud = voxelHits[0].object.userData || {};
+            if ((ud.voxelKind === 'door' || ud.voxelKind === 'window') && ud.voxelCoords) {
+              const p = this.selfAvatar.group.position;
+              const d = Math.hypot(p.x - ud.voxelCoords.x, p.y + 0.9 - ud.voxelCoords.y, p.z - ud.voxelCoords.z);
+              if (d <= 5.5) {
+                this.onToggleBlock(ud.voxelCoords);
+                return;
+              }
+            }
+          }
+
+          if (
+            e.button === 0 &&
+            this.selfAvatar.user?.avatar?.accessory === 'ray_gun' &&
+            performance.now() - this.lastLocalBeamAt > 210
+          ) {
+            const aimTargets = [...this.plazaGroup.children, ...this.voxelGroup.children];
+            const hits = this.raycaster.intersectObjects(aimTargets, true);
+            const pos = this.selfAvatar.group.position;
+            let aimVec;
+            if (hits.length > 0 && hits[0].distance <= 16.0) {
+              aimVec = hits[0].point.clone();
+            } else {
+              aimVec = new THREE.Vector3();
+              this.raycaster.ray.at(12.0, aimVec);
+              aimVec.y = Math.max(0.25, aimVec.y);
+            }
+            const ry = Math.atan2(aimVec.x - pos.x, aimVec.z - pos.z);
+            this.selfAvatar.group.rotation.y = ry;
+            const fromArr = [pos.x + Math.sin(ry) * 0.55, pos.y + 1.05, pos.z + Math.cos(ry) * 0.55];
+            const toArr = [aimVec.x, aimVec.y, aimVec.z];
+            this.lastLocalBeamAt = performance.now();
+            this.spawnRayGunBeam(fromArr, toArr, false);
+            this.onFireRayGun(toArr);
+          }
         }
       }
     });
@@ -3079,31 +3909,68 @@ export class BlockyWorld3D {
       this.ghostMesh.visible = false;
       return;
     }
+    if (this.buildTool === 'place' && this.selectedBuildKind === 'loot_decor' && !this.selectedLootItemId) {
+      this.ghostMesh.visible = false;
+      return;
+    }
     this.raycaster.setFromCamera(this.pointerNdc, this.camera);
     const staticSurfaces = this.colliders
       .filter((c) => c.mesh && c.type !== 'voxel' && c.type !== 'jumppad')
       .map((c) => c.mesh);
     const targets = [...staticSurfaces, ...this.voxelGroup.children];
-    const hits = this.raycaster.intersectObjects(targets, false);
+    const hits = this.raycaster.intersectObjects(targets, true);
     if (hits.length === 0 || hits[0].distance > 36) {
       this.ghostMesh.visible = false;
       return;
     }
     const hit = hits[0];
-    if (this.buildTool === 'remove' && hit.object.userData.voxelCoords) {
+    const wireBox = this.ghostMesh.userData.wireBox;
+    const dirArrow = this.ghostMesh.userData.dirArrow;
+
+    if (this.buildTool === 'remove') {
+      if (!hit.object.userData?.voxelCoords) {
+        this.ghostMesh.visible = false;
+        return;
+      }
       const { x, y, z } = hit.object.userData.voxelCoords;
-      this.ghostMesh.position.set(x, y - 0.5, z);
-      this.ghostMesh.material.color.set('#ef4444');
+      const hitKind = hit.object.userData.voxelKind || 'block';
+      const hitTwoTall = hitKind === 'door' || hitKind === 'kitchen_fridge' || hitKind === 'wardrobe';
+      if (wireBox) {
+        wireBox.scale.set(1, hitTwoTall ? 2 : 1, 1);
+        wireBox.position.y = hitTwoTall ? 1.0 : 0.5;
+        wireBox.material.color.set('#ef4444');
+      }
+      if (dirArrow) dirArrow.visible = false;
+      this.ghostMesh.position.set(x, y - 1, z);
+      this.ghostMesh.rotation.y = 0;
       this.ghostMesh.visible = true;
       return;
     }
 
-    const p = hit.point.clone().addScaledVector(hit.face.normal, 0.48);
+    const worldNormal = hit.face
+      ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld)
+      : new THREE.Vector3(0, 1, 0);
+    const p = hit.point.clone().addScaledVector(worldNormal, 0.48);
     const gx = Math.round(p.x);
     const gy = Math.max(1, Math.round(p.y + 0.5));
     const gz = Math.round(p.z);
-    this.ghostMesh.position.set(gx, gy - 0.5, gz);
-    this.ghostMesh.material.color.set(this.selectedBlockColor);
+    const isTwoTall =
+      this.selectedBuildKind === 'door' ||
+      this.selectedBuildKind === 'kitchen_fridge' ||
+      this.selectedBuildKind === 'wardrobe';
+
+    if (wireBox) {
+      wireBox.scale.set(1, isTwoTall ? 2 : 1, 1);
+      wireBox.position.y = isTwoTall ? 1.0 : 0.5;
+      wireBox.material.color.set(
+        this.selectedBuildKind === 'loot_decor' ? '#22d3ee' : this.selectedBlockColor
+      );
+    }
+    if (dirArrow) {
+      dirArrow.visible = this.selectedBuildKind !== 'block';
+    }
+    this.ghostMesh.position.set(gx, gy - 1, gz);
+    this.ghostMesh.rotation.y = this.selectedBuildRot * (Math.PI / 2);
     this.ghostMesh.visible = true;
   }
 
@@ -3111,17 +3978,43 @@ export class BlockyWorld3D {
     this._updateBuildGhost();
     if (!this.ghostMesh.visible) return;
     const x = Math.round(this.ghostMesh.position.x);
-    const y = Math.round(this.ghostMesh.position.y + 0.5);
+    const y = Math.round(this.ghostMesh.position.y + 1);
     const z = Math.round(this.ghostMesh.position.z);
-    this.onPlaceBlock({ x, y, z, color: this.selectedBlockColor });
+    this.onPlaceBlock({
+      x,
+      y,
+      z,
+      color: this.selectedBlockColor,
+      kind: this.selectedBuildKind,
+      rot: this.selectedBuildRot,
+      lootItemId: this.selectedBuildKind === 'loot_decor' ? this.selectedLootItemId : null
+    });
   }
 
   _handleVoxelRemoveClick() {
     this.raycaster.setFromCamera(this.pointerNdc, this.camera);
-    const hits = this.raycaster.intersectObjects(this.voxelGroup.children, false);
-    if (hits.length > 0 && hits[0].object.userData.voxelCoords) {
+    const hits = this.raycaster.intersectObjects(this.voxelGroup.children, true);
+    if (hits.length > 0 && hits[0].object.userData?.voxelCoords) {
       this.onRemoveBlock(hits[0].object.userData.voxelCoords);
     }
+  }
+
+  _hasHeadroomAt(x, z, footY, playerRadius = 0.36, playerHeight = 1.75) {
+    const rSq = (playerRadius * 0.92) * (playerRadius * 0.92);
+    const minBodyY = footY + 0.08;
+    const maxBodyY = footY + playerHeight;
+    for (const col of this.colliders) {
+      if (col.type === 'ground' || col.type === 'jumppad' || col.passable) continue;
+      if (col.topY <= minBodyY || col.bottomY >= maxBodyY) continue;
+      const cx = Math.max(col.minX, Math.min(col.maxX, x));
+      const cz = Math.max(col.minZ, Math.min(col.maxZ, z));
+      const dx = x - cx;
+      const dz = z - cz;
+      if (dx * dx + dz * dz < rSq) {
+        return false;
+      }
+    }
+    return true;
   }
 
   jump() {
@@ -3182,7 +4075,40 @@ export class BlockyWorld3D {
       sr.mesh.material.opacity = (1 - age) * 0.9;
     }
 
+    for (let i = this.laserBeams.length - 1; i >= 0; i--) {
+      const bm = this.laserBeams[i];
+      const age = (now - bm.bornAt) / 320;
+      if (age >= 1) {
+        this.scene.remove(bm.group);
+        this.laserBeams.splice(i, 1);
+        continue;
+      }
+      const fade = 1 - age;
+      bm.coreMat.opacity = fade * 0.96;
+      bm.outerMat.opacity = fade * 0.62;
+      const pulse = 1 + age * 0.65;
+      bm.group.scale.set(pulse, 1, pulse);
+    }
+
     if (this.currentZone === 0) {
+      for (const hObj of this.animatedHinges.values()) {
+        const diff = hObj.targetAngle - hObj.currentAngle;
+        if (Math.abs(diff) > 0.002) {
+          hObj.currentAngle += diff * Math.min(1, dt * 11.5);
+          hObj.pivot.rotation.y = hObj.currentAngle;
+        } else if (hObj.currentAngle !== hObj.targetAngle) {
+          hObj.currentAngle = hObj.targetAngle;
+          hObj.pivot.rotation.y = hObj.targetAngle;
+        }
+      }
+
+      for (const vObj of this.voxelMap.values()) {
+        if (vObj.userData?.trophyHolder) {
+          vObj.userData.trophyHolder.rotation.y = tSec * 0.95;
+          vObj.userData.trophyHolder.position.y = 0.35 + Math.sin(tSec * 2.6) * 0.025;
+        }
+      }
+
       for (const mp of this.movingPlatforms) {
         const prevX = mp.mesh.position.x;
         const prevZ = mp.mesh.position.z;
@@ -3258,6 +4184,9 @@ export class BlockyWorld3D {
 
     if (this.selfAvatar) {
       const pos = this.selfAvatar.group.position;
+      const playerRadius = 0.36;
+      const playerHeight = 1.75;
+      const stepHeight = 0.55;
       let moveForward = 0;
       let moveRight = 0;
 
@@ -3278,14 +4207,12 @@ export class BlockyWorld3D {
       moveDir.addScaledVector(forwardVec, moveForward);
       moveDir.addScaledVector(rightVec, moveRight);
 
+      let totalDx = 0;
+      let totalDz = 0;
       if (moveDir.lengthSq() > 0.001) {
         moveDir.normalize();
-        pos.x += moveDir.x * speed * dt;
-        pos.z += moveDir.z * speed * dt;
-        if (this.currentZone === 2) {
-          pos.x = Math.max(-13.1, Math.min(13.1, pos.x));
-          pos.z = Math.max(-13.1, Math.min(13.1, pos.z));
-        }
+        totalDx = moveDir.x * speed * dt;
+        totalDz = moveDir.z * speed * dt;
         this.selfAvatar.group.rotation.y = Math.atan2(moveDir.x, moveDir.z);
         this.selfAvatar.emote = null;
         this.selfAvatar.anim = this.isGrounded ? (isSprinting ? 'run' : 'walk') : 'jump';
@@ -3293,58 +4220,150 @@ export class BlockyWorld3D {
         this.selfAvatar.anim = this.isGrounded ? 'idle' : 'jump';
       }
 
+      // Substepped horizontal movement + solid wall push-out + 2-story stair auto-stepping + unstuck guard
+      const horizDist = Math.hypot(totalDx, totalDz);
+      const substeps = Math.max(1, Math.ceil(horizDist / 0.22));
+      const stepDx = totalDx / substeps;
+      const stepDz = totalDz / substeps;
+      const rSq = playerRadius * playerRadius;
+
+      for (let s = 0; s < substeps; s++) {
+        pos.x += stepDx;
+        pos.z += stepDz;
+        if (this.currentZone === 2) {
+          pos.x = Math.max(-13.1, Math.min(13.1, pos.x));
+          pos.z = Math.max(-13.1, Math.min(13.1, pos.z));
+        }
+
+        for (let pass = 0; pass < 2; pass++) {
+          for (const col of this.colliders) {
+            if (col.type === 'ground' || col.type === 'jumppad' || col.passable) continue;
+            if (col.topY <= pos.y + 0.02 || col.bottomY >= pos.y + playerHeight) continue;
+
+            const cx = Math.max(col.minX, Math.min(col.maxX, pos.x));
+            const cz = Math.max(col.minZ, Math.min(col.maxZ, pos.z));
+            const dx = pos.x - cx;
+            const dz = pos.z - cz;
+            const dSq = dx * dx + dz * dz;
+            if (dSq >= rSq) continue;
+
+            // Smooth stair / low-curb auto-step when headroom is clear
+            if (
+              horizDist > 0.0005 &&
+              this.isGrounded &&
+              !col.noStand &&
+              col.topY > pos.y + 0.01 &&
+              col.topY <= pos.y + stepHeight &&
+              this._hasHeadroomAt(pos.x, pos.z, col.topY, playerRadius, playerHeight)
+            ) {
+              pos.y = col.topY;
+              if (this.velocity.y < 0) this.velocity.y = 0;
+              continue;
+            }
+
+            if (dSq > 1e-6) {
+              const d = Math.sqrt(dSq);
+              const pen = playerRadius - d;
+              pos.x += (dx / d) * pen;
+              pos.z += (dz / d) * pen;
+            } else {
+              // Center is inside collider (e.g. friend placed a wall on top of avatar): push out cleanly
+              const pushLeft = pos.x - col.minX + playerRadius;
+              const pushRight = col.maxX - pos.x + playerRadius;
+              const pushBack = pos.z - col.minZ + playerRadius;
+              const pushFront = col.maxZ - pos.z + playerRadius;
+              const minPush = Math.min(pushLeft, pushRight, pushBack, pushFront);
+              if (minPush === pushLeft) pos.x = col.minX - playerRadius;
+              else if (minPush === pushRight) pos.x = col.maxX + playerRadius;
+              else if (minPush === pushBack) pos.z = col.minZ - playerRadius;
+              else pos.z = col.maxZ + playerRadius;
+            }
+          }
+        }
+      }
+
       this.velocity.y -= 28.0 * dt;
       const prevFootY = pos.y;
+      const prevHeadY = prevFootY + playerHeight;
       pos.y += this.velocity.y * dt;
 
-      this.isGrounded = false;
-      const playerRadius = 0.42;
+      // Upward ceiling head-bonk prevention (blocks jumping up through 2nd-story floors/roofs)
+      if (this.velocity.y > 0) {
+        const ceilR2 = (playerRadius * 0.92) * (playerRadius * 0.92);
+        for (const col of this.colliders) {
+          if (col.type === 'ground' || col.type === 'jumppad' || col.passable) continue;
+          const cx = Math.max(col.minX, Math.min(col.maxX, pos.x));
+          const cz = Math.max(col.minZ, Math.min(col.maxZ, pos.z));
+          const dx = pos.x - cx;
+          const dz = pos.z - cz;
+          if (dx * dx + dz * dz >= ceilR2) continue;
 
-      for (const col of this.colliders) {
-        if (
-          pos.x + playerRadius > col.minX &&
-          pos.x - playerRadius < col.maxX &&
-          pos.z + playerRadius > col.minZ &&
-          pos.z - playerRadius < col.maxZ
-        ) {
-          if (this.velocity.y <= 0 && prevFootY >= col.topY - 0.35 && pos.y <= col.topY + 0.08) {
-            pos.y = col.topY;
+          if (prevHeadY <= col.bottomY + 0.24 && pos.y + playerHeight >= col.bottomY) {
+            pos.y = col.bottomY - playerHeight - 0.01;
             this.velocity.y = 0;
-            this.isGrounded = true;
+          }
+        }
+      }
 
-            if (col.type === 'moving') {
-              pos.x += col.dx || 0;
-              pos.z += col.dz || 0;
-            }
+      // Downward landing: select the highest valid overlapping surface so 2nd-story floors & stairs take priority
+      this.isGrounded = false;
+      if (this.velocity.y <= 0) {
+        let bestFloorCol = null;
+        let bestTopY = -Infinity;
+        for (const col of this.colliders) {
+          if (col.passable || col.noStand) continue;
+          const cx = Math.max(col.minX, Math.min(col.maxX, pos.x));
+          const cz = Math.max(col.minZ, Math.min(col.maxZ, pos.z));
+          const dx = pos.x - cx;
+          const dz = pos.z - cz;
+          if (dx * dx + dz * dz >= rSq) continue;
 
-            if (col.type === 'jumppad') {
-              this.velocity.y = col.bounceVel || 20;
-              this.isGrounded = false;
-              this.selfAvatar.anim = 'jump';
+          if (prevFootY >= col.topY - 0.38 && pos.y <= col.topY + 0.08) {
+            if (col.topY > bestTopY || (col.topY === bestTopY && col.type === 'jumppad')) {
+              bestTopY = col.topY;
+              bestFloorCol = col;
             }
+          }
+        }
 
-            if (col.type === 'checkpoint' && col.checkpointIndex > this.currentCheckpoint.index) {
-              this.currentCheckpoint = {
-                x: col.mesh.position.x,
-                y: col.topY,
-                z: col.mesh.position.z,
-                index: col.checkpointIndex
-              };
-              col.mesh.material.color.set('#22c55e');
-              this.onObbyCheckpoint(col.checkpointIndex);
-            }
+        if (bestFloorCol) {
+          const col = bestFloorCol;
+          pos.y = col.topY;
+          this.velocity.y = 0;
+          this.isGrounded = true;
 
-            if (col.type === 'trophy-pad' && now - this.lastTrophyWinAt > 12000) {
-              this.lastTrophyWinAt = now;
-              this.currentCheckpoint = {
-                x: col.mesh.position.x,
-                y: col.topY,
-                z: col.mesh.position.z,
-                index: 3
-              };
-              this.spawnCelebrationConfetti(pos);
-              this.onTrophyWin();
-            }
+          if (col.type === 'moving') {
+            pos.x += col.dx || 0;
+            pos.z += col.dz || 0;
+          }
+
+          if (col.type === 'jumppad') {
+            this.velocity.y = col.bounceVel || 20;
+            this.isGrounded = false;
+            this.selfAvatar.anim = 'jump';
+          }
+
+          if (col.type === 'checkpoint' && col.checkpointIndex > this.currentCheckpoint.index) {
+            this.currentCheckpoint = {
+              x: col.mesh.position.x,
+              y: col.topY,
+              z: col.mesh.position.z,
+              index: col.checkpointIndex
+            };
+            col.mesh.material.color.set('#22c55e');
+            this.onObbyCheckpoint(col.checkpointIndex);
+          }
+
+          if (col.type === 'trophy-pad' && now - this.lastTrophyWinAt > 12000) {
+            this.lastTrophyWinAt = now;
+            this.currentCheckpoint = {
+              x: col.mesh.position.x,
+              y: col.topY,
+              z: col.mesh.position.z,
+              index: 3
+            };
+            this.spawnCelebrationConfetti(pos);
+            this.onTrophyWin();
           }
         }
       }
@@ -3363,8 +4382,9 @@ export class BlockyWorld3D {
         }
       }
 
-      // Zone-specific proximity, portal walk-in, jump-stomp, auto-pickup & contextual HUD prompt
+      // Zone-specific proximity, portal walk-in, doors/windows, jump-stomp, auto-pickup & contextual HUD prompt
       let nextHint = '';
+      const hasRayGun = this.selfAvatar.user?.avatar?.accessory === 'ray_gun';
       if (this.currentZone === 0) {
         const isNowNearRunway = pos.x < -14.5 && pos.x > -33.5 && pos.z > -15.5 && pos.z < 16.5;
         if (isNowNearRunway !== this.nearRunway) {
@@ -3377,6 +4397,16 @@ export class BlockyWorld3D {
           this.onRequestZonePortal(1);
         } else if (dPortal < 5.2) {
           nextHint = '🌀 Step In or Press E — Enter Crystal Cavern Dungeon!';
+        } else if (!this.buildMode) {
+          const nearToggle = this._findNearestToggleableBlock(3.8);
+          if (nearToggle) {
+            const noun = nearToggle.kind === 'door' ? 'Door' : 'Window';
+            const verb = nearToggle.open ? 'Close' : 'Open';
+            const icon = nearToggle.kind === 'door' ? '🚪' : '🪟';
+            nextHint = `${icon} Press E or Click — ${verb} ${noun}`;
+          } else if (hasRayGun) {
+            nextHint = '🔫 Ray Gun Equipped — Press E or Click to Zap Starlight Beam!';
+          }
         }
       } else if (this.currentZone === 2) {
         const dGate = Math.hypot(
@@ -3410,6 +4440,7 @@ export class BlockyWorld3D {
         }
 
         // Mario-style Jump-Stomp on live mobs + nearest mob hint
+        const mobHintRange = hasRayGun ? 14.0 : 5.0;
         for (const entry of this.dungeonMobsMap.values()) {
           if (!entry.data.alive) continue;
           const mPos = entry.group.position;
@@ -3427,8 +4458,10 @@ export class BlockyWorld3D {
             this.selfAvatar.anim = 'jump';
             this.spawnSparkleBurst(mPos, '#fbbf24');
             this.onAttackMob(entry.data.id, 'stomp');
-          } else if (!nextHint && hDist < 5.0) {
-            nextHint = `⚔️ Press E (Sparkle Blast) or Jump-Stomp ${entry.data.name}!`;
+          } else if (!nextHint && hDist < mobHintRange) {
+            nextHint = hasRayGun
+              ? `🔫 Press E or Click — Zap ${entry.data.name} with Ray Gun (3 DMG)!`
+              : `⚔️ Press E (Sparkle Blast) or Jump-Stomp ${entry.data.name}!`;
           }
         }
 
@@ -3466,7 +4499,8 @@ export class BlockyWorld3D {
 
       this.selfAvatar.update(dt, true);
 
-      const lookHeight = this.salonMirrorMode ? 1.58 : 2.15;
+      // Keep lookAt at 1.62m (below 2.0m 2-story ceilings!) and raycast-pull the camera inside rooms
+      const lookHeight = this.salonMirrorMode ? 1.58 : 1.62;
       const targetLookAt = new THREE.Vector3(pos.x, pos.y + lookHeight, pos.z);
       if (this.salonMirrorMode && window.innerWidth > 860) {
         const camRightX = Math.cos(this.cameraYaw);
@@ -3475,10 +4509,30 @@ export class BlockyWorld3D {
         targetLookAt.z += camRightZ * 0.92;
       }
 
-      const camX = targetLookAt.x + Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch) * this.cameraDist;
-      const camY = targetLookAt.y + Math.sin(this.cameraPitch) * this.cameraDist;
-      const camZ = targetLookAt.z + Math.cos(this.cameraYaw) * Math.cos(this.cameraPitch) * this.cameraDist;
-      this.camera.position.set(camX, Math.max(0.55, camY), camZ);
+      const camDir = new THREE.Vector3(
+        Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch),
+        Math.sin(this.cameraPitch),
+        Math.cos(this.cameraYaw) * Math.cos(this.cameraPitch)
+      ).normalize();
+
+      let targetCamDist = this.cameraDist;
+      if (!this.salonMirrorMode && this.cameraOccluders.length > 0) {
+        this.cameraRaycaster.set(targetLookAt, camDir);
+        this.cameraRaycaster.near = 0.18;
+        this.cameraRaycaster.far = this.cameraDist + 0.35;
+        const camHits = this.cameraRaycaster.intersectObjects(this.cameraOccluders, true);
+        if (camHits.length > 0) {
+          targetCamDist = Math.max(1.05, Math.min(this.cameraDist, camHits[0].distance - 0.28));
+        }
+      }
+
+      const distLerp = targetCamDist < this.effectiveCameraDist ? Math.min(1, dt * 18) : Math.min(1, dt * 7.5);
+      this.effectiveCameraDist += (targetCamDist - this.effectiveCameraDist) * distLerp;
+
+      const camX = targetLookAt.x + camDir.x * this.effectiveCameraDist;
+      const camY = targetLookAt.y + camDir.y * this.effectiveCameraDist;
+      const camZ = targetLookAt.z + camDir.z * this.effectiveCameraDist;
+      this.camera.position.set(camX, Math.max(0.45, camY), camZ);
       this.camera.lookAt(targetLookAt);
 
       if (now - this.lastMoveSentAt > 55) {

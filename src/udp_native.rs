@@ -119,6 +119,10 @@ impl NativeUdpServer {
                         | crate::world::UdpWorldEvent::DungeonSync { .. }
                 );
                 let prison_only = matches!(ev, crate::world::UdpWorldEvent::PrisonSync { .. });
+                let raygun_zone = match &ev {
+                    crate::world::UdpWorldEvent::RayGunBeam { zone, .. } => Some(*zone),
+                    _ => None,
+                };
                 let Ok(json_bytes) = serde_json::to_vec(&ev) else {
                     continue;
                 };
@@ -138,6 +142,11 @@ impl NativeUdpServer {
                     }
                     if prison_only && ev_world.get_peer_zone(&sess.self_id).await != ZONE_PRISON {
                         continue;
+                    }
+                    if let Some(rz) = raygun_zone {
+                        if ev_world.get_peer_zone(&sess.self_id).await != rz {
+                            continue;
+                        }
                     }
                     let _ = ev_srv.socket.send_to(&pkt, sess.addr).await;
                 }
@@ -377,11 +386,41 @@ pub async fn handle_client_event_command(
             let y = cmd.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let z = cmd.get("z").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let color = cmd.get("color").and_then(|v| v.as_str());
+            let kind = cmd.get("kind").and_then(|v| v.as_str());
+            let rot = cmd.get("rot").and_then(|v| v.as_u64()).map(|r| r as u8);
+            let loot_item_id = cmd
+                .get("lootItemId")
+                .or_else(|| cmd.get("loot_item_id"))
+                .and_then(|v| v.as_str());
             if let Err(err) = world
-                .mutate_block(self_id, username, action, (x, y, z), color)
+                .mutate_block_ext(
+                    self_id,
+                    username,
+                    crate::world::BlockMutationInput {
+                        action,
+                        coords: (x, y, z),
+                        color,
+                        kind,
+                        rot,
+                        loot_item_id,
+                    },
+                )
                 .await
             {
-                emit_action_error(world, self_id, cmd_type, err).await;
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "raygun_zap" => {
+            let tx = cmd.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let ty = cmd.get("y").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+            let tz = cmd.get("z").and_then(|v| v.as_f64()).unwrap_or(8.0) as f32;
+            if let Err(err) = world
+                .fire_plaza_raygun(self_id, username, [tx, ty, tz])
+                .await
+            {
+                if !err.contains("recharging") {
+                    emit_action_error(world, self_id, cmd_type, &err).await;
+                }
             }
         }
         "chat" => {

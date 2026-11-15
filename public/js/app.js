@@ -1,6 +1,10 @@
 import { VoiceChatManager } from '/ella-world/js/voice.js';
 import { WorldSpineClient } from '/ella-world/js/ws_spine.js';
-import { BlockyWorld3D, BLOCK_COLORS } from '/ella-world/js/world3d.js';
+import {
+  BlockyWorld3D,
+  BLOCK_COLORS,
+  BUILD_CATALOG
+} from '/ella-world/js/world3d.js';
 
 // Signature Ella Forensics Cast & Dress-to-Impress Runway Presets
 const SIGNATURE_GLAM_PRESETS = {
@@ -377,11 +381,22 @@ const friendsOnlineCount = document.getElementById('friends-online-count');
 const friendsListEl = document.getElementById('friends-list');
 
 const buildToolbar = document.getElementById('build-toolbar');
+const buildActionToolbar = document.getElementById('build-action-toolbar');
 const toggleBuildBtn = document.getElementById('toggle-build-btn');
 const buildActionPlaceBtn = document.getElementById('build-action-place');
 const buildActionRemoveBtn = document.getElementById('build-action-remove');
+const buildRotateBtn = document.getElementById('build-rotate-btn');
+const buildFacingStatusEl = document.getElementById('build-facing-status');
+const buildTablist = document.getElementById('build-tablist');
+const buildPanelsStack = document.getElementById('build-panels-stack');
+const buildHintTextEl = document.getElementById('build-hint-text');
 const buildSaveStatusEl = document.getElementById('build-save-status');
 const colorSwatchBar = document.getElementById('color-swatch-bar');
+
+function formatFacingLabel(rot) {
+  const labels = ['🧭 Facing S (0°)', '🧭 Facing E (90°)', '🧭 Facing N (180°)', '🧭 Facing W (270°)'];
+  return labels[((Number(rot) || 0) % 4 + 4) % 4];
+}
 
 function updateBuildSaveStatus(blockCount, saving = false) {
   if (!buildSaveStatusEl) return;
@@ -552,6 +567,14 @@ const world3d = new BlockyWorld3D({
     }
   },
   onPlaceBlock: async (block) => {
+    if (block.kind === 'loot_decor') {
+      const iid = block.lootItemId;
+      if (!iid || Number((playerEconomy.inventory || {})[iid] || 0) < 1) {
+        showToast('⚠️ Pick an owned treasure in 🏆 My Loot (or farm more in Crystal Cavern)!');
+        return;
+      }
+    }
+    const prevBlock = world3d.savedBlocksByKey.get(`${block.x},${block.y},${block.z}`) || null;
     world3d.addBlockMesh(block);
     updateBuildSaveStatus(world3d.voxelMap.size, true);
     const res = await fetch('/api/ella-world/block', {
@@ -563,9 +586,16 @@ const world3d = new BlockyWorld3D({
     if (res && res.ok) {
       const data = await res.json();
       currentBlocksVersion = data.blocksVersion;
+      if (Array.isArray(data.blocks)) {
+        world3d.loadBlocks(data.blocks);
+      }
+      if (data.economy) {
+        applyEconomySnapshot(data.economy);
+      }
       updateBuildSaveStatus(Array.isArray(data.blocks) ? data.blocks.length : world3d.voxelMap.size, false);
     } else {
       world3d.removeBlockMesh({ x: block.x, y: block.y, z: block.z });
+      if (prevBlock) world3d.addBlockMesh(prevBlock);
       updateBuildSaveStatus(world3d.voxelMap.size, false);
       if (res) {
         const err = await res.json().catch(() => ({}));
@@ -574,8 +604,7 @@ const world3d = new BlockyWorld3D({
     }
   },
   onRemoveBlock: async (coords) => {
-    const prevEntry = world3d.voxelMap.get(`${coords.x},${coords.y},${coords.z}`);
-    const prevBlock = prevEntry ? { ...prevEntry.data } : null;
+    const prevBlock = world3d.savedBlocksByKey.get(`${coords.x},${coords.y},${coords.z}`) || null;
     world3d.removeBlockMesh(coords);
     updateBuildSaveStatus(world3d.voxelMap.size, true);
     const res = await fetch('/api/ella-world/block', {
@@ -587,6 +616,12 @@ const world3d = new BlockyWorld3D({
     if (res && res.ok) {
       const data = await res.json();
       currentBlocksVersion = data.blocksVersion;
+      if (Array.isArray(data.blocks)) {
+        world3d.loadBlocks(data.blocks);
+      }
+      if (data.economy) {
+        applyEconomySnapshot(data.economy);
+      }
       updateBuildSaveStatus(Array.isArray(data.blocks) ? data.blocks.length : world3d.voxelMap.size, false);
     } else {
       if (prevBlock) world3d.addBlockMesh(prevBlock);
@@ -595,6 +630,44 @@ const world3d = new BlockyWorld3D({
         const err = await res.json().catch(() => ({}));
         if (err && err.error) showToast(`⚠️ ${err.error}`);
       }
+    }
+  },
+  onToggleBlock: async (coords) => {
+    const res = await fetch('/api/ella-world/block', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, action: 'toggle', ...coords })
+    }).catch(() => null);
+    if (await handleHttpAuthCheck(res)) return;
+    if (res && res.ok) {
+      const data = await res.json();
+      currentBlocksVersion = data.blocksVersion;
+      if (Array.isArray(data.blocks)) {
+        world3d.loadBlocks(data.blocks);
+        updateBuildSaveStatus(data.blocks.length, false);
+      }
+    } else if (res) {
+      const err = await res.json().catch(() => ({}));
+      if (err && err.error) showToast(`⚠️ ${err.error}`);
+    }
+  },
+  onFireRayGun: async (targetArr) => {
+    if (!sessionToken || !Array.isArray(targetArr)) return;
+    const res = await fetch('/api/ella-world/raygun', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        token: sessionToken,
+        x: targetArr[0],
+        y: targetArr[1],
+        z: targetArr[2]
+      })
+    }).catch(() => null);
+    await handleHttpAuthCheck(res);
+  },
+  onRotateBuild: (rot) => {
+    if (buildFacingStatusEl) {
+      buildFacingStatusEl.textContent = formatFacingLabel(rot);
     }
   },
   onObbyCheckpoint: (cpIndex) => {
@@ -1567,6 +1640,19 @@ function handleIncomingUdpWorldEvent(ev) {
       }
       break;
     }
+    case 'ray_gun_beam': {
+      if (ev.zone === currentZone && Array.isArray(ev.from) && Array.isArray(ev.to)) {
+        if (ev.actorId === selfId && performance.now() - world3d.lastLocalBeamAt < 280) {
+          break;
+        }
+        world3d.spawnRayGunBeam(
+          ev.from,
+          ev.to,
+          Boolean(ev.hitMobId || ev.zone === ZONE_DUNGEON)
+        );
+      }
+      break;
+    }
     case 'runway': {
       if (ev.runway) {
         applyRunwaySummary(ev.runway);
@@ -1769,6 +1855,7 @@ function renderEconomyHud() {
   if (tradeDialog && tradeDialog.open && activeTrade) {
     renderTradeModal();
   }
+  renderBuildLootItems();
 }
 
 function renderZoneHud(zone) {
@@ -1851,6 +1938,10 @@ function applyLocalZoneTransition(payload) {
   if (nextZone === ZONE_PLAZA && pendingPostPortalWarp) {
     const target = pendingPostPortalWarp;
     pendingPostPortalWarp = null;
+    if (target && typeof target === 'object' && target.type === 'decorate_loot') {
+      openBuildModeForLootItem(target.itemId);
+      return;
+    }
     if (target === 'runway') {
       world3d.warpToRunway();
       showToast('💃 Returned to Starlight Plaza & teleported to the Fashion Runway!');
@@ -2091,31 +2182,89 @@ function renderBackpackGrid() {
     valHint.textContent = `~${item.suggestedCoins || 10} 🪙 value`;
     actions.appendChild(valHint);
 
-    if (qty > 0 && item.category === 'consumable') {
-      const useBtn = document.createElement('button');
-      useBtn.type = 'button';
-      useBtn.className = 'small-action-btn';
-      useBtn.textContent = item.id === 'prism_block' ? '🌈 Place Block' : '🧪 Drink Potion';
-      useBtn.addEventListener('click', () => useInventoryItem(item.id));
-      actions.appendChild(useBtn);
-    } else if (qty > 0 && item.category === 'cosmetic') {
-      const wearBtn = document.createElement('button');
-      wearBtn.type = 'button';
-      wearBtn.className = 'small-action-btn';
-      wearBtn.textContent = '👗 Equip in Glam';
-      wearBtn.addEventListener('click', () => {
+    if (qty > 0) {
+      const btnRow = document.createElement('div');
+      btnRow.className = 'backpack-action-btns';
+
+      if (item.id === 'legendary_ray_gun') {
+        const isEquipped = selfUser?.avatar?.accessory === 'ray_gun';
+        const equipBtn = document.createElement('button');
+        equipBtn.type = 'button';
+        equipBtn.className = 'small-action-btn';
+        equipBtn.textContent = isEquipped ? '✅ Ray Gun Equipped' : '🔫 Equip Ray Gun';
+        equipBtn.addEventListener('click', async () => {
+          if (!sessionToken || !selfUser) return;
+          const nextAccessory = selfUser.avatar?.accessory === 'ray_gun' ? 'none' : 'ray_gun';
+          const nextAvatar = {
+            ...SIGNATURE_GLAM_PRESETS.ella_idol,
+            ...(selfUser.avatar || {}),
+            accessory: nextAccessory,
+            characterPreset: 'custom'
+          };
+          try {
+            const res = await fetch('/api/ella-world/avatar', {
+              method: 'POST',
+              headers: JSON_HEADERS,
+              body: JSON.stringify({ token: sessionToken, avatar: nextAvatar })
+            });
+            if (await handleHttpAuthCheck(res)) return;
+            if (!res.ok) return;
+            const data = await res.json();
+            selfUser = data.user;
+            if (selfId && playersMap.has(selfId)) {
+              playersMap.get(selfId).user = selfUser;
+            }
+            if (world3d.selfAvatar) {
+              world3d.selfAvatar.updateAvatarAppearance(selfUser.avatar);
+            }
+            renderBackpackGrid();
+            showToast(
+              nextAccessory === 'ray_gun'
+                ? '🔫 Starlight Plasma Ray Gun equipped! Click or press E in Crystal Cavern (14.5m beam) or zap laser shows in Plaza!'
+                : '🎒 Holstered your Starlight Plasma Ray Gun.'
+            );
+          } catch {
+            showToast('⚠️ Could not update Ray Gun equip state right now.');
+          }
+        });
+        btnRow.appendChild(equipBtn);
+      } else if (item.category === 'consumable') {
+        const useBtn = document.createElement('button');
+        useBtn.type = 'button';
+        useBtn.className = 'small-action-btn';
+        useBtn.textContent = item.id === 'prism_block' ? '🌈 Place Block' : '🧪 Drink Potion';
+        useBtn.addEventListener('click', () => useInventoryItem(item.id));
+        btnRow.appendChild(useBtn);
+      } else if (item.category === 'cosmetic') {
+        const wearBtn = document.createElement('button');
+        wearBtn.type = 'button';
+        wearBtn.className = 'small-action-btn';
+        wearBtn.textContent = '👗 Equip in Glam';
+        wearBtn.addEventListener('click', () => {
+          if (backpackDialog && backpackDialog.open) backpackDialog.close();
+          openGlamSalon();
+          const accTab = document.getElementById('glam-tab-acc');
+          if (accTab) activateGlamTab(accTab, false);
+          if (draftAvatar && item.cosmeticSlot && item.cosmeticValue) {
+            draftAvatar[item.cosmeticSlot] = item.cosmeticValue;
+            draftAvatar.characterPreset = 'custom';
+            previewDraftInMirror();
+            scheduleAutoSaveAvatar(120);
+          }
+        });
+        btnRow.appendChild(wearBtn);
+      }
+
+      const decorBtn = document.createElement('button');
+      decorBtn.type = 'button';
+      decorBtn.className = 'small-action-btn';
+      decorBtn.textContent = '🏠 Decorate Home';
+      decorBtn.addEventListener('click', () => {
         if (backpackDialog && backpackDialog.open) backpackDialog.close();
-        openGlamSalon();
-        const accTab = document.getElementById('glam-tab-acc');
-        if (accTab) activateGlamTab(accTab, false);
-        if (draftAvatar && item.cosmeticSlot && item.cosmeticValue) {
-          draftAvatar[item.cosmeticSlot] = item.cosmeticValue;
-          draftAvatar.characterPreset = 'custom';
-          previewDraftInMirror();
-          scheduleAutoSaveAvatar(120);
-        }
+        openBuildModeForLootItem(item.id);
       });
-      actions.appendChild(wearBtn);
+      btnRow.appendChild(decorBtn);
+      actions.appendChild(btnRow);
     }
 
     card.append(top, mid, actions);
@@ -2949,7 +3098,296 @@ for (const starBtn of document.querySelectorAll('.star-vote-btn')) {
   });
 }
 
-// Build Toolbar Swatches
+// Build Toolbar: Action Toolbar, Single-Row Category Tabs, Furniture Catalog, Loot Pedestals & Swatches
+const SUPPORTS_SCROLL_TIMELINE =
+  typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('animation-timeline', 'scroll()');
+const scrollFadeObservers = new WeakMap();
+
+function refreshScrollFadeFallback(scroller) {
+  if (!scroller || SUPPORTS_SCROLL_TIMELINE || typeof IntersectionObserver === 'undefined') return;
+  const prev = scrollFadeObservers.get(scroller);
+  if (prev) {
+    prev.disconnect();
+    scrollFadeObservers.delete(scroller);
+  }
+  scroller.classList.remove('more-start', 'more-end');
+  const first = scroller.firstElementChild;
+  const last = scroller.lastElementChild;
+  if (!first || !last) return;
+  const io = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.target === first) {
+          scroller.classList.toggle('more-start', !entry.isIntersecting);
+        }
+        if (entry.target === last) {
+          scroller.classList.toggle('more-end', !entry.isIntersecting);
+        }
+      }
+    },
+    { root: scroller, threshold: 1, rootMargin: '1px' }
+  );
+  io.observe(first);
+  io.observe(last);
+  scrollFadeObservers.set(scroller, io);
+}
+
+function setBuildTool(tool) {
+  const nextTool = tool === 'remove' ? 'remove' : 'place';
+  world3d.buildTool = nextTool;
+  if (buildActionPlaceBtn) {
+    buildActionPlaceBtn.setAttribute('aria-pressed', String(nextTool === 'place'));
+  }
+  if (buildActionRemoveBtn) {
+    buildActionRemoveBtn.setAttribute('aria-pressed', String(nextTool === 'remove'));
+  }
+  if (world3d.buildMode) {
+    world3d._updateBuildGhost();
+  }
+}
+
+function syncBuildItemSelectionUi() {
+  if (!buildPanelsStack) return;
+  const isLoot = world3d.selectedBuildKind === 'loot_decor';
+  for (const btn of buildPanelsStack.querySelectorAll('.build-item-btn')) {
+    const btnKind = btn.getAttribute('data-build-kind');
+    const btnLoot = btn.getAttribute('data-loot-id');
+    const pressed = isLoot
+      ? btnKind === 'loot_decor' && btnLoot === world3d.selectedLootItemId
+      : btnKind === world3d.selectedBuildKind && !btnLoot;
+    btn.setAttribute('aria-pressed', String(pressed));
+  }
+  if (buildHintTextEl) {
+    if (isLoot) {
+      buildHintTextEl.textContent = 'Pedestal tint:';
+    } else if (world3d.selectedBuildKind === 'door' || world3d.selectedBuildKind === 'window') {
+      buildHintTextEl.textContent = 'Frame tint (press E to open/close):';
+    } else {
+      buildHintTextEl.textContent = 'Paint tint:';
+    }
+  }
+}
+
+function selectBuildCatalogKind(kind) {
+  world3d.selectedBuildKind = kind;
+  world3d.selectedLootItemId = null;
+  setBuildTool('place');
+  syncBuildItemSelectionUi();
+}
+
+function selectBuildLootItem(itemId) {
+  world3d.selectedBuildKind = 'loot_decor';
+  world3d.selectedLootItemId = itemId;
+  setBuildTool('place');
+  syncBuildItemSelectionUi();
+}
+
+for (const entry of BUILD_CATALOG) {
+  const rowEl = document.getElementById(`build-items-${entry.category}`);
+  if (!rowEl) continue;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'build-item-btn';
+  btn.setAttribute('data-build-kind', entry.kind);
+  btn.setAttribute('aria-pressed', String(entry.kind === 'block'));
+  btn.title =
+    entry.kind === 'door' || entry.kind === 'window'
+      ? `${entry.label} — Click or press E after placing to swing open/shut!`
+      : entry.height === 2
+        ? `${entry.label} (2 blocks tall • Press Q to rotate)`
+        : `${entry.label} (Press Q to rotate)`;
+  btn.textContent = `${entry.icon} ${entry.label}`;
+  btn.addEventListener('click', () => {
+    selectBuildCatalogKind(entry.kind);
+  });
+  rowEl.appendChild(btn);
+}
+
+function renderBuildLootItems() {
+  const lootRow = document.getElementById('build-items-loot');
+  if (!lootRow) return;
+  lootRow.innerHTML = '';
+
+  const inv = playerEconomy.inventory || {};
+  const ownedItems = [];
+  if (itemCatalog.length > 0) {
+    for (const item of itemCatalog) {
+      const qty = Number(inv[item.id] || 0);
+      if (qty > 0) {
+        ownedItems.push({ item, qty });
+      }
+    }
+  } else {
+    for (const [id, rawQty] of Object.entries(inv)) {
+      const qty = Number(rawQty || 0);
+      if (qty > 0) {
+        const fallback = catalogById.get(id) || { id, name: id, icon: '🏆', rarity: 'common' };
+        ownedItems.push({ item: fallback, qty });
+      }
+    }
+  }
+
+  // Sort Legendary / Epic treasures first so star prizes stand out immediately
+  const rarityWeight = { legendary: 5, epic: 4, rare: 3, uncommon: 2, common: 1 };
+  ownedItems.sort(
+    (a, b) => (rarityWeight[b.item.rarity] || 0) - (rarityWeight[a.item.rarity] || 0)
+  );
+
+  if (ownedItems.length === 0) {
+    if (world3d.selectedBuildKind === 'loot_decor') {
+      world3d.selectedLootItemId = null;
+    }
+    const emptySpan = document.createElement('span');
+    emptySpan.className = 'build-empty-loot';
+    emptySpan.textContent =
+      '🗝️ Farm monsters & treasure chests in Crystal Cavern (G) to display 3D trophies in your house!';
+    lootRow.appendChild(emptySpan);
+    refreshScrollFadeFallback(lootRow);
+    return;
+  }
+
+  if (
+    world3d.selectedBuildKind === 'loot_decor' &&
+    (!world3d.selectedLootItemId || Number(inv[world3d.selectedLootItemId] || 0) < 1)
+  ) {
+    world3d.selectedLootItemId = ownedItems[0].item.id;
+  }
+
+  for (const { item, qty } of ownedItems) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `build-item-btn${item.rarity === 'legendary' ? ' is-legendary-loot' : ''}`;
+    btn.setAttribute('data-build-kind', 'loot_decor');
+    btn.setAttribute('data-loot-id', item.id);
+    const isPressed =
+      world3d.selectedBuildKind === 'loot_decor' && world3d.selectedLootItemId === item.id;
+    btn.setAttribute('aria-pressed', String(isPressed));
+    btn.title = `Display ${item.name} on a house pedestal (uses 1 from Backpack; pick up anytime to refund!)`;
+
+    const labelSpan = document.createElement('span');
+    labelSpan.textContent = `${item.icon || '🏆'} ${item.name}`;
+    const qtyBadge = document.createElement('span');
+    qtyBadge.className = 'build-loot-qty';
+    qtyBadge.textContent = `${qty}x`;
+    btn.append(labelSpan, qtyBadge);
+    btn.addEventListener('click', () => {
+      selectBuildLootItem(item.id);
+    });
+    lootRow.appendChild(btn);
+  }
+  refreshScrollFadeFallback(lootRow);
+}
+
+function activateBuildTab(nextTab, moveFocus = true) {
+  if (!buildTablist || !buildPanelsStack || !nextTab) return;
+  const tabs = [...buildTablist.querySelectorAll('[role="tab"]')];
+  const panels = [...buildPanelsStack.querySelectorAll('[role="tabpanel"]')];
+
+  for (const tab of tabs) {
+    const active = tab === nextTab;
+    tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
+    tab.toggleAttribute('focusgroupstart', active);
+  }
+
+  for (const panel of panels) {
+    const active = panel.getAttribute('aria-labelledby') === nextTab.id;
+    if (active) {
+      panel.removeAttribute('hidden');
+      const scroller = panel.querySelector('.build-items-row');
+      if (scroller) refreshScrollFadeFallback(scroller);
+    } else {
+      panel.setAttribute('hidden', 'until-found');
+    }
+  }
+
+  try {
+    nextTab.scrollIntoView({ block: 'nearest', inline: 'nearest', container: 'nearest' });
+  } catch {
+    nextTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+  if (moveFocus) {
+    nextTab.focus();
+  }
+
+  if (nextTab.id === 'build-tab-loot') {
+    renderBuildLootItems();
+    const inv = playerEconomy.inventory || {};
+    const firstOwned = Object.keys(inv).find((k) => Number(inv[k] || 0) > 0) || null;
+    if (world3d.selectedBuildKind !== 'loot_decor' && firstOwned) {
+      selectBuildLootItem(firstOwned);
+    }
+  }
+}
+
+if (buildTablist && buildPanelsStack) {
+  const buildTabs = [...buildTablist.querySelectorAll('[role="tab"]')];
+  const buildPanels = [...buildPanelsStack.querySelectorAll('[role="tabpanel"]')];
+
+  buildTablist.addEventListener('click', (e) => {
+    const tab = e.target instanceof Element ? e.target.closest('[role="tab"]') : null;
+    if (tab && buildTablist.contains(tab)) {
+      activateBuildTab(tab, false);
+    }
+  });
+
+  // Reveal tab automatically when browser find-in-page matches inside a hidden="until-found" panel
+  for (const panel of buildPanels) {
+    panel.addEventListener('beforematch', () => {
+      const tabId = panel.getAttribute('aria-labelledby');
+      const tab = tabId ? document.getElementById(tabId) : null;
+      if (tab) activateBuildTab(tab, false);
+    });
+  }
+
+  // Fallback roving tabindex for engines without declarative HTML `focusgroup`
+  if (!('focusGroup' in HTMLElement.prototype)) {
+    buildTablist.addEventListener('keydown', (e) => {
+      const current = e.target instanceof Element ? e.target.closest('[role="tab"]') : null;
+      const idx = current ? buildTabs.indexOf(current) : -1;
+      if (idx < 0) return;
+      const dir = getComputedStyle(buildTablist).direction === 'rtl' ? -1 : 1;
+      const move = {
+        ArrowRight: dir,
+        ArrowLeft: -dir,
+        Home: -idx,
+        End: buildTabs.length - 1 - idx
+      }[e.key];
+      if (move === undefined) return;
+      e.preventDefault();
+      const nextIdx = (idx + move + buildTabs.length) % buildTabs.length;
+      activateBuildTab(buildTabs[nextIdx], true);
+    });
+  }
+}
+
+if (buildActionToolbar && !('focusGroup' in HTMLElement.prototype)) {
+  const getToolbarBtns = () => [
+    ...buildActionToolbar.querySelectorAll('button:not([disabled])')
+  ];
+  const initBtns = getToolbarBtns();
+  initBtns.forEach((b, idx) => {
+    b.tabIndex = idx === 0 ? 0 : -1;
+  });
+  buildActionToolbar.addEventListener('keydown', (e) => {
+    const btns = getToolbarBtns();
+    const idx = btns.indexOf(e.target);
+    if (idx < 0) return;
+    const dir = getComputedStyle(buildActionToolbar).direction === 'rtl' ? -1 : 1;
+    let nextIdx = -1;
+    if (e.key === 'ArrowRight') nextIdx = (idx + dir + btns.length) % btns.length;
+    else if (e.key === 'ArrowLeft') nextIdx = (idx - dir + btns.length) % btns.length;
+    else if (e.key === 'Home') nextIdx = 0;
+    else if (e.key === 'End') nextIdx = btns.length - 1;
+    if (nextIdx < 0) return;
+    e.preventDefault();
+    btns.forEach((b, bi) => {
+      b.tabIndex = bi === nextIdx ? 0 : -1;
+    });
+    btns[nextIdx].focus();
+  });
+}
+
 BLOCK_COLORS.forEach((c, idx) => {
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -2963,9 +3401,41 @@ BLOCK_COLORS.forEach((c, idx) => {
       s.classList.remove('selected');
     }
     btn.classList.add('selected');
+    setBuildTool('place');
   });
   colorSwatchBar.appendChild(btn);
 });
+
+function openBuildModeForLootItem(itemId) {
+  if (currentZone === ZONE_PRISON) {
+    showToast("⚖️ Block building is locked while serving a Debtor's Prison sentence!");
+    return;
+  }
+  if (!playerModeration.canBuild) {
+    showToast('🔒 Block building is currently locked for your account by a parent.');
+    return;
+  }
+  if (currentZone !== ZONE_PLAZA) {
+    pendingPostPortalWarp = { type: 'decorate_loot', itemId };
+    requestZoneTransition(ZONE_PLAZA);
+    return;
+  }
+
+  world3d.buildMode = true;
+  if (buildToolbar) buildToolbar.hidden = false;
+  if (toggleBuildBtn) toggleBuildBtn.classList.add('active');
+  renderBuildLootItems();
+  const lootTab = document.getElementById('build-tab-loot');
+  if (lootTab) {
+    activateBuildTab(lootTab, false);
+  }
+  selectBuildLootItem(itemId);
+  if (buildTablist) refreshScrollFadeFallback(buildTablist);
+  const itemDef = catalogById.get(itemId);
+  showToast(
+    `🏆 Ready to display ${itemDef?.name || 'your treasure'}! Click in your house to place on a pedestal (Q rotates).`
+  );
+}
 
 function toggleBuildMode() {
   if (currentZone === ZONE_PRISON) {
@@ -2986,23 +3456,38 @@ function toggleBuildMode() {
   if (!world3d.buildMode) {
     world3d.ghostMesh.visible = false;
   } else {
-    showToast('🔨 Build Mode ON! Click in the 3D world to place blocks, Right-Click to remove.');
+    renderBuildLootItems();
+    if (buildTablist) refreshScrollFadeFallback(buildTablist);
+    for (const row of buildPanelsStack ? buildPanelsStack.querySelectorAll('.build-items-row') : []) {
+      refreshScrollFadeFallback(row);
+    }
+    showToast(
+      '🔨 Home Builder ON! Pick Structure, Kitchen, Bath, Bedroom, or My Loot • Press Q to rotate 90°!'
+    );
   }
 }
 
 toggleBuildBtn.addEventListener('click', toggleBuildMode);
 
-buildActionPlaceBtn.addEventListener('click', () => {
-  world3d.buildTool = 'place';
-  buildActionPlaceBtn.classList.add('active');
-  buildActionRemoveBtn.classList.remove('active');
-});
+if (buildActionPlaceBtn) {
+  buildActionPlaceBtn.addEventListener('click', () => {
+    setBuildTool('place');
+  });
+}
 
-buildActionRemoveBtn.addEventListener('click', () => {
-  world3d.buildTool = 'remove';
-  buildActionRemoveBtn.classList.add('active');
-  buildActionPlaceBtn.classList.remove('active');
-});
+if (buildActionRemoveBtn) {
+  buildActionRemoveBtn.addEventListener('click', () => {
+    setBuildTool('remove');
+  });
+}
+
+if (buildRotateBtn) {
+  buildRotateBtn.addEventListener('click', () => {
+    world3d.rotateBuildSelection(1);
+  });
+}
+
+renderBuildLootItems();
 
 // Keyboard shortcuts
 window.addEventListener('keydown', (e) => {

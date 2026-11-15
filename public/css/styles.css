@@ -686,53 +686,316 @@ input[type="range"]:focus-visible {
 }
 
 .build-toolbar {
-  padding: 0.65rem 0.9rem;
+  padding: 0.62rem 0.85rem;
   border-radius: 16px;
   background: var(--panel-bg);
   border: 1.5px solid var(--accent-cyan);
   backdrop-filter: blur(10px);
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.45rem;
+  max-width: min(680px, calc(100vw - 360px));
+}
+
+@media (max-width: 980px) {
+  .build-toolbar {
+    max-width: calc(100vw - 1.5rem);
+  }
 }
 
 .build-toolbar[hidden] {
   display: none;
 }
 
-.build-toolbar-top {
+.build-toolbar-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.5rem;
   font-size: 0.8rem;
 }
 
+.build-action-toolbar {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.38rem;
+}
+
 .build-mode-buttons {
-  display: flex;
-  gap: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+}
+
+.toolbar-sep {
+  display: inline-block;
+  min-block-size: 1.35rem;
+  border-inline-start: 1px solid rgba(148, 163, 184, 0.42);
 }
 
 .tool-mode-btn {
-  padding: 0.3rem 0.65rem;
+  min-inline-size: 2.25rem;
+  min-block-size: 1.95rem;
+  padding: 0.28rem 0.62rem;
   border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  background: rgba(30, 41, 59, 0.88);
   color: var(--text-main);
-  font-size: 0.76rem;
+  font-family: inherit;
+  font-size: 0.75rem;
   font-weight: 700;
   cursor: pointer;
 }
 
-.tool-mode-btn.active {
+@media (pointer: coarse) {
+  .tool-mode-btn {
+    min-inline-size: 2.75rem;
+    min-block-size: 2.5rem;
+  }
+}
+
+.tool-mode-btn:focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 2px;
+}
+
+@media (hover: hover) {
+  .tool-mode-btn:hover {
+    border-color: var(--accent-cyan);
+  }
+}
+
+/* Style toggled state directly from ARIA [aria-pressed="true"] with >=3:1 contrast cue */
+.tool-mode-btn[aria-pressed="true"] {
   background: var(--accent-cyan);
   color: #0f172a;
-  border-color: var(--accent-cyan);
+  border-color: #e0f2fe;
+  box-shadow: 0 0 0 1.5px rgba(224, 242, 254, 0.85);
+}
+
+@media (forced-colors: active) {
+  .tool-mode-btn {
+    color: ButtonText;
+    background: ButtonFace;
+    border-color: ButtonText;
+  }
+  .tool-mode-btn[aria-pressed="true"] {
+    background: Highlight;
+    color: HighlightText;
+    border-color: Highlight;
+  }
+}
+
+.build-facing-pill {
+  padding: 0.18rem 0.52rem;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  color: #bae6fd;
+  font-size: 0.71rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+/* Single-Row Scrolling Category Tablist + Horizontal Prop Scroller with Subtract Edge Fades */
+.build-tablist,
+.build-items-row {
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: inline proximity;
+  --fade-size: 2.2rem;
+  scroll-padding-inline: var(--fade-size);
+  --fade-dir: right;
+  --fade-start-pos: 0;
+  --fade-end-pos: 100%;
+  mask:
+    linear-gradient(black, black) no-clip subtract,
+    linear-gradient(to var(--fade-dir), black, transparent) var(--fade-start-pos) 0 / var(--fade-start) 100% no-repeat no-clip,
+    linear-gradient(to var(--fade-dir), transparent, black) var(--fade-end-pos) 0 / var(--fade-end) 100% no-repeat no-clip;
+  animation: reveal-fade-start linear both, hide-fade-end linear both;
+  animation-timeline: scroll(self inline);
+  animation-range: 0 var(--fade-size), calc(100% - var(--fade-size)) 100%;
+}
+
+.build-tablist:dir(rtl),
+.build-items-row:dir(rtl) {
+  --fade-dir: left;
+  --fade-start-pos: 100%;
+  --fade-end-pos: 0;
+}
+
+.build-tablist::-webkit-scrollbar,
+.build-items-row::-webkit-scrollbar {
+  display: none;
+}
+
+.build-tablist.more-start,
+.build-items-row.more-start {
+  --fade-start: var(--fade-size);
+}
+
+.build-tablist.more-end,
+.build-items-row.more-end {
+  --fade-end: var(--fade-size);
+}
+
+@keyframes reveal-fade-start {
+  to {
+    --fade-start: var(--fade-size);
+  }
+}
+
+@keyframes hide-fade-end {
+  from {
+    --fade-end: var(--fade-size);
+  }
+}
+
+.build-tablist {
+  border-block-end: 1px solid rgba(148, 163, 184, 0.28);
+  gap: 0.18rem;
+}
+
+.build-tablist > [role="tab"] {
+  position: relative;
+  flex: none;
+  scroll-snap-align: start;
+  padding: 0.38rem 0.68rem;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+@media (hover: hover) {
+  .build-tablist > [role="tab"]:hover {
+    color: #ffffff;
+  }
+}
+
+.build-tablist > [role="tab"]:focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+
+.build-tablist > [role="tab"][aria-selected="true"] {
+  color: #e0f2fe;
+}
+
+.build-tablist > [role="tab"][aria-selected="true"]::after {
+  content: '';
+  position: absolute;
+  inset: auto 0.25rem 0;
+  border-block-end: 3px solid var(--accent-cyan);
+}
+
+/* Stacked Tab Panels — zero padding/border/margin/background on [role="tabpanel"] itself */
+.build-panels-stack {
+  display: grid;
+  min-height: 0;
+}
+
+.build-panels-stack > [role="tabpanel"] {
+  grid-area: 1 / 1;
+}
+
+.build-panels-stack > [role="tabpanel"][hidden] {
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
+}
+
+.build-panels-stack > [role="tabpanel"]:not([hidden]) {
+  position: relative;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.build-panel-inner {
+  padding-block: 0.12rem;
+}
+
+.build-items-row {
+  gap: 0.38rem;
+  align-items: center;
+  padding-block: 0.1rem;
+}
+
+.build-item-btn {
+  flex: none;
+  scroll-snap-align: start;
+  min-inline-size: 2.5rem;
+  min-block-size: 2.15rem;
+  padding: 0.28rem 0.62rem;
+  border-radius: 10px;
+  border: 1.5px solid rgba(148, 163, 184, 0.34);
+  background: rgba(30, 41, 59, 0.88);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  white-space: nowrap;
+}
+
+.build-item-btn:focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 2px;
+}
+
+@media (hover: hover) {
+  .build-item-btn:hover {
+    border-color: var(--accent-cyan);
+  }
+}
+
+.build-item-btn[aria-pressed="true"] {
+  background: rgba(56, 189, 248, 0.26);
+  border-color: #38bdf8;
+  color: #f0f9ff;
+  box-shadow: inset 0 0 0 1px #7dd3fc;
+}
+
+.build-item-btn.is-legendary-loot {
+  border-color: rgba(34, 211, 238, 0.78);
+}
+
+.build-loot-qty {
+  padding: 0.06rem 0.34rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.9);
+  color: #fde047;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.build-empty-loot {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding: 0.2rem 0.1rem;
+}
+
+.build-swatch-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .build-hint {
   color: var(--text-muted);
-  font-size: 0.74rem;
+  font-size: 0.73rem;
+  font-weight: 700;
 }
 
 .build-save-pill {
@@ -756,20 +1019,27 @@ input[type="range"]:focus-visible {
 .color-swatch-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: 0.36rem;
 }
 
 .color-swatch {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border-radius: 8px;
   border: 2px solid rgba(255, 255, 255, 0.35);
   cursor: pointer;
-  transition: transform 0.1s ease;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .color-swatch,
+  .tool-mode-btn,
+  .build-item-btn {
+    transition: transform 0.1s ease, border-color 0.12s ease, background 0.12s ease;
+  }
 }
 
 .color-swatch.selected {
-  transform: scale(1.18);
+  transform: scale(1.16);
   border-color: #ffffff;
   box-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
 }
@@ -2180,6 +2450,17 @@ kbd {
   box-shadow: inset 0 0 18px rgba(251, 191, 36, 0.08);
 }
 
+.backpack-card.rarity-legendary,
+.glam-item-card.is-legendary-card {
+  border-color: #22d3ee;
+  background: linear-gradient(145deg, rgba(15, 23, 42, 0.94), rgba(88, 28, 135, 0.48), rgba(8, 145, 178, 0.36));
+  box-shadow: 0 0 22px rgba(34, 211, 238, 0.25), inset 0 0 20px rgba(244, 114, 182, 0.16);
+}
+
+.backpack-card.rarity-legendary .backpack-rarity-tag {
+  color: #67e8f9;
+}
+
 .backpack-card-top {
   display: flex;
   align-items: center;
@@ -2224,9 +2505,16 @@ kbd {
 
 .backpack-card-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 0.4rem;
+  gap: 0.38rem;
+}
+
+.backpack-action-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.32rem;
 }
 
 /* Scam-Proof Two-Sided Live Trade Dialog */

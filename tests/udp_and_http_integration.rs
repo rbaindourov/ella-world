@@ -1370,7 +1370,7 @@ async fn dungeon_portal_farming_and_live_p2p_trade_end_to_end() {
     let seed_file = cfg.seed_users_file.clone();
     let running = start_all_servers(cfg).await.expect("start servers");
 
-    // 1. Verify item catalog endpoint exposes all 12 items
+    // 1. Verify item catalog endpoint exposes all 18 items (12 original + 5 3D home relics + Legendary Ray Gun)
     let (st_cat, cat_res) = http_json_request(
         running.http_addr,
         "GET",
@@ -1379,7 +1379,7 @@ async fn dungeon_portal_farming_and_live_p2p_trade_end_to_end() {
     )
     .await;
     assert_eq!(st_cat, 200);
-    assert_eq!(cat_res["itemCatalog"].as_array().unwrap().len(), 12);
+    assert_eq!(cat_res["itemCatalog"].as_array().unwrap().len(), 18);
 
     // 2. Login Ella & Maya and connect WebSocket spines
     let (st_e, ella_login) = http_json_request(
@@ -2622,6 +2622,551 @@ async fn parental_controls_escalating_fines_and_debtors_prison_end_to_end() {
         st_ella_wlocked, 403,
         "World lock must block logins with 403 Forbidden"
     );
+
+    running.http_task.abort();
+}
+
+#[tokio::test]
+async fn legacy_world_blocks_compatibility_and_doors_windows_interiors_persist() {
+    let cfg = make_test_config("doors_interiors");
+    let data_dir = cfg.data_dir.clone();
+    let seed_file = cfg.seed_users_file.clone();
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    // Seed a legacy pre-v0.4 `world_blocks.json` without `kind`, `rot`, `open`, or `lootItemId`
+    std::fs::write(
+        data_dir.join("world_blocks.json"),
+        serde_json::to_vec_pretty(&json!({
+            "version": 4,
+            "blocks": [
+                {
+                    "x": 5,
+                    "y": 1,
+                    "z": 5,
+                    "color": "#f472b6",
+                    "author": "ella"
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (st_login, login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "house1" })),
+    )
+    .await;
+    assert_eq!(st_login, 200);
+    let ella_token = login["token"].as_str().unwrap().to_string();
+
+    // Verify legacy block hydrated with backward-compatible serde defaults
+    let initial_blocks = login["blocks"].as_array().unwrap();
+    assert_eq!(initial_blocks.len(), 1);
+    assert_eq!(initial_blocks[0]["x"], 5);
+    assert_eq!(initial_blocks[0]["kind"], "block");
+    assert_eq!(initial_blocks[0]["rot"], 0);
+    assert_eq!(initial_blocks[0]["open"], false);
+
+    // Place 2-block-tall hinged Door at (6, 1, 5), rot=2, Window at (8, 2, 5), Stairs at (4, 1, 5), and Kitchen/Bath/Bedroom furniture
+    let (st_door, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": ella_token,
+            "action": "place",
+            "x": 6,
+            "y": 1,
+            "z": 5,
+            "kind": "door",
+            "rot": 2,
+            "color": "#b45309"
+        })),
+    )
+    .await;
+    assert_eq!(st_door, 200);
+
+    let (st_win, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": ella_token,
+            "action": "place",
+            "x": 8,
+            "y": 2,
+            "z": 5,
+            "kind": "window",
+            "rot": 1,
+            "color": "#f8fafc"
+        })),
+    )
+    .await;
+    assert_eq!(st_win, 200);
+
+    for (x, kind, rot) in [
+        (4, "stairs", 1),
+        (7, "kitchen_stove", 3),
+        (9, "bath_tub", 0),
+        (10, "bed", 2),
+    ] {
+        let (st_prop, _) = http_json_request(
+            running.http_addr,
+            "POST",
+            "/api/ella-world/block",
+            Some(json!({
+                "token": ella_token,
+                "action": "place",
+                "x": x,
+                "y": 1,
+                "z": 7,
+                "kind": kind,
+                "rot": rot,
+                "color": "#38bdf8"
+            })),
+        )
+        .await;
+        assert_eq!(st_prop, 200, "Failed placing furniture prop {kind}");
+    }
+
+    // Toggle the 2-tall door by targeting its UPPER cell (6, 2, 5) — must resolve to (6, 1, 5) and flip `open: true`!
+    let (st_tog_door, tog_door_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": ella_token,
+            "action": "toggle",
+            "x": 6,
+            "y": 2,
+            "z": 5
+        })),
+    )
+    .await;
+    assert_eq!(st_tog_door, 200);
+    let door_entry = tog_door_res["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["x"] == 6 && b["y"] == 1 && b["z"] == 5)
+        .expect("door at (6,1,5)");
+    assert_eq!(door_entry["open"], true);
+
+    // Toggle the window at (8, 2, 5) -> `open: true`
+    let (st_tog_win, tog_win_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": ella_token,
+            "action": "toggle",
+            "x": 8,
+            "y": 2,
+            "z": 5
+        })),
+    )
+    .await;
+    assert_eq!(st_tog_win, 200);
+    let win_entry = tog_win_res["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["x"] == 8 && b["y"] == 2 && b["z"] == 5)
+        .expect("window at (8,2,5)");
+    assert_eq!(win_entry["open"], true);
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    running.http_task.abort();
+
+    // Reload WorldEngine from disk and verify doors, windows, rotation, and furniture kinds persisted
+    let reload_cfg = ServerConfig {
+        http_addr: "127.0.0.1:0".parse().unwrap(),
+        webrtc_udp_bind_ip: "127.0.0.1".into(),
+        webrtc_udp_port: 0,
+        native_udp_addr: "127.0.0.1:0".parse().unwrap(),
+        public_ip: None,
+        data_dir,
+        public_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("public"),
+        seed_users_file: seed_file,
+        hmac_secret: "integration-test-hmac-secret-2026".into(),
+        tls_cert_path: None,
+        tls_key_path: None,
+    };
+    let reloaded = WorldEngine::new(reload_cfg).expect("reload world");
+    let bd = reloaded.blocks_data.read().await;
+    assert_eq!(bd.blocks.len(), 7);
+    let saved_door = bd
+        .blocks
+        .iter()
+        .find(|b| b.x == 6 && b.y == 1 && b.z == 5)
+        .unwrap();
+    assert_eq!(saved_door.kind, "door");
+    assert_eq!(saved_door.rot, 2);
+    assert!(saved_door.open);
+    let saved_win = bd
+        .blocks
+        .iter()
+        .find(|b| b.x == 8 && b.y == 2 && b.z == 5)
+        .unwrap();
+    assert_eq!(saved_win.kind, "window");
+    assert!(saved_win.open);
+}
+
+#[tokio::test]
+async fn backpack_loot_house_decorating_anti_duplication_ownership_and_reset_refund() {
+    let cfg = make_test_config("loot_decor_house");
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (_, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "ld1" })),
+    )
+    .await;
+    let (_, maya_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "ld2" })),
+    )
+    .await;
+    let ella_token = ella_login["token"].as_str().unwrap().to_string();
+    let maya_token = maya_login["token"].as_str().unwrap().to_string();
+
+    // Grant Ella 1x legendary_ray_gun and 1x geode_lamp
+    {
+        let mut guard = running.world.users_cfg.write().await;
+        let ella_u = guard
+            .users
+            .iter_mut()
+            .find(|u| u.username == "ella")
+            .unwrap();
+        ella_u.inventory.insert("legendary_ray_gun".into(), 1);
+        ella_u.inventory.insert("geode_lamp".into(), 1);
+    }
+
+    // Equip the Legendary Ray Gun on Ella's avatar
+    let (st_eq, eq_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/avatar",
+        Some(json!({
+            "token": ella_token,
+            "avatar": { "accessory": "ray_gun" }
+        })),
+    )
+    .await;
+    assert_eq!(st_eq, 200);
+    assert_eq!(eq_res["user"]["avatar"]["accessory"], "ray_gun");
+
+    // Ella places her 1x legendary_ray_gun on a house display pedestal at (10, 1, 10)
+    let (st_place, place_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": ella_token,
+            "action": "place",
+            "x": 10,
+            "y": 1,
+            "z": 10,
+            "kind": "loot_decor",
+            "rot": 1,
+            "color": "#38bdf8",
+            "lootItemId": "legendary_ray_gun"
+        })),
+    )
+    .await;
+    assert_eq!(st_place, 200);
+    assert_eq!(
+        place_res["economy"]["inventory"]
+            .get("legendary_ray_gun")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        0,
+        "Placing a loot trophy must atomically deduct 1 from Backpack inventory"
+    );
+
+    // Because her last Ray Gun is now displayed on a pedestal, avatar accessory must auto-reconcile to "none"
+    {
+        let guard = running.world.users_cfg.read().await;
+        let ella_u = guard.users.iter().find(|u| u.username == "ella").unwrap();
+        assert_eq!(ella_u.avatar.accessory, "none");
+    }
+
+    // Attempting to place a second Ray Gun without owning another copy MUST fail with 400
+    let (st_dup, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": ella_token,
+            "action": "place",
+            "x": 11,
+            "y": 1,
+            "z": 10,
+            "kind": "loot_decor",
+            "lootItemId": "legendary_ray_gun"
+        })),
+    )
+    .await;
+    assert_eq!(st_dup, 400);
+
+    // Maya cannot overwrite or remove Ella's displayed trophy!
+    let (st_maya_overwrite, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": maya_token,
+            "action": "place",
+            "x": 10,
+            "y": 1,
+            "z": 10,
+            "kind": "block",
+            "color": "#ef4444"
+        })),
+    )
+    .await;
+    assert_eq!(st_maya_overwrite, 400);
+
+    let (st_maya_steal, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": maya_token,
+            "action": "remove",
+            "x": 10,
+            "y": 1,
+            "z": 10
+        })),
+    )
+    .await;
+    assert_eq!(st_maya_steal, 400);
+
+    // Ella picks up her Ray Gun from (10, 1, 10) -> +1 refunded to Backpack!
+    let (st_pickup, pickup_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": ella_token,
+            "action": "remove",
+            "x": 10,
+            "y": 1,
+            "z": 10
+        })),
+    )
+    .await;
+    assert_eq!(st_pickup, 200);
+    assert_eq!(pickup_res["economy"]["inventory"]["legendary_ray_gun"], 1);
+
+    // Ella places geode_lamp at (12, 1, 10), then Parent Admin resets world blocks -> geode_lamp must be refunded!
+    let (st_geode, geode_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": ella_token,
+            "action": "place",
+            "x": 12,
+            "y": 1,
+            "z": 10,
+            "kind": "loot_decor",
+            "lootItemId": "geode_lamp"
+        })),
+    )
+    .await;
+    assert_eq!(st_geode, 200);
+    assert_eq!(
+        geode_res["economy"]["inventory"]
+            .get("geode_lamp")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        0
+    );
+
+    let (_, adm_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/login",
+        Some(json!({ "password": "changeme-parent-admin" })),
+    )
+    .await;
+    let admin_token = adm_login["adminToken"].as_str().unwrap().to_string();
+
+    let (st_rst, _) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/world/reset",
+        &admin_token,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(st_rst, 200);
+
+    {
+        let guard = running.world.users_cfg.read().await;
+        let ella_u = guard.users.iter().find(|u| u.username == "ella").unwrap();
+        assert_eq!(
+            ella_u.inventory.get("geode_lamp").copied().unwrap_or(0),
+            1,
+            "Admin world reset must refund displayed Backpack trophies back to their owners"
+        );
+    }
+
+    running.http_task.abort();
+}
+
+#[tokio::test]
+async fn legendary_ray_gun_ranged_dungeon_combat_and_plaza_light_show() {
+    let cfg = make_test_config("legendary_ray_gun");
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (_, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "rg1" })),
+    )
+    .await;
+    let ella_token = ella_login["token"].as_str().unwrap().to_string();
+
+    // Verify catalog includes legendary_ray_gun with rarity == "legendary"
+    let catalog = ella_login["itemCatalog"].as_array().unwrap();
+    let rg_def = catalog
+        .iter()
+        .find(|i| i["id"] == "legendary_ray_gun")
+        .expect("legendary_ray_gun in itemCatalog");
+    assert_eq!(rg_def["rarity"], "legendary");
+
+    // Without owning legendary_ray_gun, equipping accessory="ray_gun" is blocked and Plaza /raygun fails
+    let (st_unowned_av, unowned_av) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/avatar",
+        Some(json!({
+            "token": ella_token,
+            "avatar": { "accessory": "ray_gun" }
+        })),
+    )
+    .await;
+    assert_eq!(st_unowned_av, 200);
+    assert_ne!(unowned_av["user"]["avatar"]["accessory"], "ray_gun");
+
+    let (st_unowned_zap, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/raygun",
+        Some(json!({ "token": ella_token, "x": 4.0, "y": 1.2, "z": 6.0 })),
+    )
+    .await;
+    assert_eq!(st_unowned_zap, 400);
+
+    // Connect WS spine, warp into Crystal Cavern (zone 1), and stand 12.0m away from slime_1 (0, 0, 8) at (0, 0, 20)
+    let (mut ws_ella, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{}/api/ella-world/ws?token={}",
+        running.http_addr, ella_token
+    ))
+    .await
+    .unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), ws_ella.next()).await;
+
+    let (st_portal, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/portal",
+        Some(json!({ "token": ella_token, "targetZone": 1 })),
+    )
+    .await;
+    assert_eq!(st_portal, 200);
+
+    let stand_at_12m = encode_c2s_state(&DecodedC2SState {
+        seq: 2,
+        client_time_ms: 1200,
+        x: 0.0,
+        y: 0.0,
+        z: 20.0,
+        ry: std::f32::consts::PI,
+        anim: "idle".into(),
+        emote: None,
+        muted: false,
+        speaking: false,
+        zone: 1,
+    });
+    ws_ella
+        .send(TungsMessage::Binary(stand_at_12m.to_vec()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    // Normal blast from 12m fails (out of 3.9m range), and raygun mode without owning item fails
+    let (st_blast_far, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/attack",
+        Some(json!({ "token": ella_token, "mobId": "slime_1", "mode": "blast" })),
+    )
+    .await;
+    assert_eq!(st_blast_far, 400);
+
+    let (st_rg_unowned, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/attack",
+        Some(json!({ "token": ella_token, "mobId": "slime_1", "mode": "raygun" })),
+    )
+    .await;
+    assert_eq!(st_rg_unowned, 400);
+
+    // Grant 1x legendary_ray_gun -> ranged 12m Ray Gun beam deals 3 HP damage and defeats slime_1!
+    {
+        let mut guard = running.world.users_cfg.write().await;
+        let ella_u = guard
+            .users
+            .iter_mut()
+            .find(|u| u.username == "ella")
+            .unwrap();
+        ella_u.inventory.insert("legendary_ray_gun".into(), 1);
+    }
+
+    let (st_rg_hit, rg_hit) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/attack",
+        Some(json!({ "token": ella_token, "mobId": "slime_1", "mode": "raygun" })),
+    )
+    .await;
+    assert_eq!(st_rg_hit, 200);
+    assert_eq!(rg_hit["damage"], 3);
+    assert_eq!(rg_hit["defeated"], true);
+
+    // Return to Starlight Plaza (zone 0), equip Ray Gun, and fire harmless Plaza laser light show
+    let (st_back, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/portal",
+        Some(json!({ "token": ella_token, "targetZone": 0 })),
+    )
+    .await;
+    assert_eq!(st_back, 200);
+
+    let (st_zap_ok, zap_ok) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/raygun",
+        Some(json!({ "token": ella_token, "x": 6.0, "y": 1.5, "z": 6.0 })),
+    )
+    .await;
+    assert_eq!(st_zap_ok, 200);
+    assert_eq!(zap_ok["ok"], true);
 
     running.http_task.abort();
 }

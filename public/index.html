@@ -219,18 +219,73 @@
 
     <!-- Bottom Center: Emote & Runway Pose Bar + Optional Build Palette -->
     <div class="hud-bottom-center">
-      <!-- Sandbox Build Palette (Shown when Build Mode is active) -->
-      <div id="build-toolbar" class="build-toolbar" hidden role="region" aria-label="Block Building Palette">
-        <div class="build-toolbar-top">
-          <strong>🔨 Co-Op Block Builder</strong>
-          <div class="build-mode-buttons">
-            <button type="button" id="build-action-place" class="tool-mode-btn active">➕ Place Block (Click)</button>
-            <button type="button" id="build-action-remove" class="tool-mode-btn">⛏️ Remove Block (Right-Click)</button>
+      <!-- Sandbox & Home Interiors Build Palette (Shown when Build Mode is active) -->
+      <div id="build-toolbar" class="build-toolbar" hidden role="region" aria-label="Home Interiors and Block Builder">
+        <div class="build-toolbar-header">
+          <strong>🏠 Home &amp; Interiors Builder</strong>
+          <div
+            id="build-action-toolbar"
+            class="build-action-toolbar"
+            role="toolbar"
+            focusgroup="toolbar wrap"
+            aria-label="Builder Actions"
+            aria-controls="canvas-container"
+          >
+            <div class="build-mode-buttons" role="group" aria-label="Placement mode">
+              <button type="button" id="build-action-place" class="tool-mode-btn" aria-pressed="true">➕ Place (Click)</button>
+              <button type="button" id="build-action-remove" class="tool-mode-btn" aria-pressed="false">⛏️ Remove (Right-Click)</button>
+            </div>
+            <span role="separator" aria-orientation="vertical" class="toolbar-sep"></span>
+            <div class="build-mode-buttons" role="group" aria-label="Furniture orientation">
+              <button type="button" id="build-rotate-btn" class="tool-mode-btn" title="Rotate Furniture, Stairs or Door 90° (Shortcut: Q)">↻ Rotate (Q)</button>
+            </div>
           </div>
-          <span class="build-hint">Aim at ground, platforms, or blocks!</span>
+          <span id="build-facing-status" class="build-facing-pill" role="status" aria-live="polite">🧭 Facing S (0°)</span>
           <span id="build-save-status" class="build-save-pill" role="status" aria-live="polite">💾 Saved World</span>
         </div>
-        <div id="color-swatch-bar" class="color-swatch-bar" role="radiogroup" aria-label="Block Colors"></div>
+
+        <!-- Single-Row Scrolling Category Tablist (modern-web-guidance: tabs + scrollability-affordance-hints) -->
+        <div class="build-tablist" id="build-tablist" role="tablist" focusgroup="tablist nomemory" aria-label="Builder Categories">
+          <button type="button" role="tab" id="build-tab-structure" data-cat="structure" aria-selected="true" focusgroupstart>🧱 Structure</button>
+          <button type="button" role="tab" id="build-tab-kitchen" data-cat="kitchen" aria-selected="false" tabindex="-1">🍳 Kitchen</button>
+          <button type="button" role="tab" id="build-tab-bathroom" data-cat="bathroom" aria-selected="false" tabindex="-1">🛁 Bathroom</button>
+          <button type="button" role="tab" id="build-tab-bedroom" data-cat="bedroom" aria-selected="false" tabindex="-1">🛏️ Bedroom</button>
+          <button type="button" role="tab" id="build-tab-loot" data-cat="loot" aria-selected="false" tabindex="-1">🏆 My Loot</button>
+        </div>
+
+        <!-- Stacked Category Tab Panels (zero outer padding/border/margin on [role="tabpanel"]) -->
+        <div class="build-panels-stack" id="build-panels-stack">
+          <div role="tabpanel" id="build-panel-structure" aria-labelledby="build-tab-structure">
+            <div class="build-panel-inner">
+              <div class="build-items-row" id="build-items-structure"></div>
+            </div>
+          </div>
+          <div role="tabpanel" id="build-panel-kitchen" aria-labelledby="build-tab-kitchen" hidden="until-found">
+            <div class="build-panel-inner">
+              <div class="build-items-row" id="build-items-kitchen"></div>
+            </div>
+          </div>
+          <div role="tabpanel" id="build-panel-bathroom" aria-labelledby="build-tab-bathroom" hidden="until-found">
+            <div class="build-panel-inner">
+              <div class="build-items-row" id="build-items-bathroom"></div>
+            </div>
+          </div>
+          <div role="tabpanel" id="build-panel-bedroom" aria-labelledby="build-tab-bedroom" hidden="until-found">
+            <div class="build-panel-inner">
+              <div class="build-items-row" id="build-items-bedroom"></div>
+            </div>
+          </div>
+          <div role="tabpanel" id="build-panel-loot" aria-labelledby="build-tab-loot" hidden="until-found">
+            <div class="build-panel-inner">
+              <div class="build-items-row" id="build-items-loot"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="build-swatch-footer">
+          <span class="build-hint" id="build-hint-text">Paint tint:</span>
+          <div id="color-swatch-bar" class="color-swatch-bar" role="group" aria-label="Block and Furniture Colors"></div>
+        </div>
       </div>
 
       <!-- Emote / Runway Pose Wheel Bar -->
@@ -717,6 +772,11 @@
                   <strong>Prism Wings</strong>
                   <small class="glam-lock-badge" data-lock-badge="cosmetic_acc_crystal_wings">🔒 Locked</small>
                 </button>
+                <button type="button" class="glam-item-card is-exclusive is-legendary-card" data-field="accessory" data-val="ray_gun" data-req-item="legendary_ray_gun">
+                  <span class="glam-card-emoji">🔫</span>
+                  <strong>Starlight Ray Gun</strong>
+                  <small class="glam-lock-badge" data-lock-badge="legendary_ray_gun">✦ Legendary</small>
+                </button>
               </div>
             </div>
           </div>
@@ -781,7 +841,8 @@
           <li><strong>Jump &amp; Sky Obby:</strong> Press <kbd>Spacebar</kbd> to jump, or <kbd>R</kbd> to warp to your Sky Obby checkpoint.</li>
           <li><strong>Look Around (3D Camera):</strong> Drag anywhere on the 3D view with your mouse and scroll to zoom in/out.</li>
           <li><strong>Voice Chat:</strong> Press <kbd>M</kbd> to Mute/Unmute your mic, or turn on <strong>Push-to-Talk</strong> and hold <kbd>V</kbd> to speak.</li>
-          <li><strong>Co-Op Block Building:</strong> Press <kbd>B</kbd> in Starlight Plaza to build colorful creations together in real time!</li>
+          <li><strong>Co-Op 2-Story House &amp; Interiors Builder:</strong> Press <kbd>B</kbd> in Starlight Plaza to build solid walls, stairs, hinged Doors &amp; Windows (<kbd>E</kbd> or Click to open/close!), plus 3D Kitchens, Bathrooms, Bedrooms, and placed Backpack Loot Trophies! Press <kbd>Q</kbd> in Build Mode to rotate furniture 90°.</li>
+          <li><strong>Legendary Starlight Ray Gun:</strong> Hunt monsters &amp; Golden Vault Chests in Crystal Cavern for the Legendary <strong>🔫 Starlight Plasma Ray Gun</strong> — equip it in Backpack (<kbd>I</kbd>) or Glam Closet (<kbd>C</kbd>) for 3-DMG ranged cavern zaps &amp; Plaza laser light shows!</li>
           <li><strong>Kindness Rules &amp; Debtor's Prison:</strong> Cursing or unkind chat deducts escalating Starlight Coin fines (even into negative debt!). Dropping below the debt limit or hitting the strike limit sends you to <strong>⚖️ Debtor's Prison</strong>, where you press <kbd>E</kbd> at glowing courtyard chores (+5 🪙 toward clearing debt) or ask a parent for a pardon!</li>
         </ul>
         <div class="modal-footer">

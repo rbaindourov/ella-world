@@ -303,6 +303,7 @@ impl AvatarAppearance {
                 "wings",
                 "crystal_wings",
                 "star_lantern",
+                "ray_gun",
             ]
             .contains(&v)
             {
@@ -671,6 +672,43 @@ pub fn default_ice_servers() -> Vec<IceServerConfig> {
     }]
 }
 
+pub const ALLOWED_BLOCK_KINDS: &[&str] = &[
+    "block",
+    "stairs",
+    "door",
+    "window",
+    "kitchen_counter",
+    "kitchen_sink",
+    "kitchen_stove",
+    "kitchen_fridge",
+    "dining_table",
+    "chair",
+    "bath_tub",
+    "bath_vanity",
+    "bath_toilet",
+    "bed",
+    "nightstand_lamp",
+    "wardrobe",
+    "rug",
+    "loot_decor",
+];
+
+pub fn default_block_kind() -> String {
+    "block".into()
+}
+
+pub fn is_valid_block_kind(kind: &str) -> bool {
+    ALLOWED_BLOCK_KINDS.contains(&kind)
+}
+
+pub fn is_two_tall_block_kind(kind: &str) -> bool {
+    matches!(kind, "door" | "kitchen_fridge" | "wardrobe")
+}
+
+pub fn is_toggleable_block_kind(kind: &str) -> bool {
+    matches!(kind, "door" | "window")
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct VoxelBlock {
@@ -682,6 +720,14 @@ pub struct VoxelBlock {
     pub author: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placed_at: Option<u64>,
+    #[serde(default = "default_block_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub rot: u8,
+    #[serde(default)]
+    pub open: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loot_item_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -691,95 +737,30 @@ pub struct BlocksDataFile {
 }
 
 pub fn default_starter_blocks() -> Vec<VoxelBlock> {
+    let mk = |x: i32, y: i32, z: i32, color: &str| VoxelBlock {
+        x,
+        y,
+        z,
+        color: color.into(),
+        author: "ella".into(),
+        placed_at: None,
+        kind: default_block_kind(),
+        rot: 0,
+        open: false,
+        loot_item_id: None,
+    };
     vec![
-        VoxelBlock {
-            x: 16,
-            y: 1,
-            z: -6,
-            color: "#f472b6".into(),
-            author: "ella".into(),
-            placed_at: None,
-        },
-        VoxelBlock {
-            x: 16,
-            y: 2,
-            z: -6,
-            color: "#fbbf24".into(),
-            author: "ella".into(),
-            placed_at: None,
-        },
-        VoxelBlock {
-            x: 16,
-            y: 3,
-            z: -6,
-            color: "#34d399".into(),
-            author: "ella".into(),
-            placed_at: None,
-        },
-        VoxelBlock {
-            x: 16,
-            y: 4,
-            z: -6,
-            color: "#38bdf8".into(),
-            author: "ella".into(),
-            placed_at: None,
-        },
-        VoxelBlock {
-            x: 17,
-            y: 4,
-            z: -6,
-            color: "#a78bfa".into(),
-            author: "ella".into(),
-            placed_at: None,
-        },
-        VoxelBlock {
-            x: 18,
-            y: 4,
-            z: -6,
-            color: "#f472b6".into(),
-            author: "ella".into(),
-            placed_at: None,
-        },
-        VoxelBlock {
-            x: 19,
-            y: 4,
-            z: -6,
-            color: "#fbbf24".into(),
-            author: "ella".into(),
-            placed_at: None,
-        },
-        VoxelBlock {
-            x: 20,
-            y: 4,
-            z: -6,
-            color: "#38bdf8".into(),
-            author: "ella".into(),
-            placed_at: None,
-        },
-        VoxelBlock {
-            x: 20,
-            y: 3,
-            z: -6,
-            color: "#34d399".into(),
-            author: "ella".into(),
-            placed_at: None,
-        },
-        VoxelBlock {
-            x: 20,
-            y: 2,
-            z: -6,
-            color: "#fbbf24".into(),
-            author: "ella".into(),
-            placed_at: None,
-        },
-        VoxelBlock {
-            x: 20,
-            y: 1,
-            z: -6,
-            color: "#f472b6".into(),
-            author: "ella".into(),
-            placed_at: None,
-        },
+        mk(16, 1, -6, "#f472b6"),
+        mk(16, 2, -6, "#fbbf24"),
+        mk(16, 3, -6, "#34d399"),
+        mk(16, 4, -6, "#38bdf8"),
+        mk(17, 4, -6, "#a78bfa"),
+        mk(18, 4, -6, "#f472b6"),
+        mk(19, 4, -6, "#fbbf24"),
+        mk(20, 4, -6, "#38bdf8"),
+        mk(20, 3, -6, "#34d399"),
+        mk(20, 2, -6, "#fbbf24"),
+        mk(20, 1, -6, "#f472b6"),
     ]
 }
 

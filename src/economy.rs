@@ -165,6 +165,72 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_value: Some("crystal_wings"),
         suggested_coins: 350,
     },
+    ItemDef {
+        id: "geode_lamp",
+        name: "Amethyst Geode Lamp",
+        category: "decor",
+        rarity: "uncommon",
+        icon: "🔮",
+        description: "Glowing split amethyst geode lamp! Place it inside your house from Backpack.",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 55,
+    },
+    ItemDef {
+        id: "slime_lava_lamp",
+        name: "Glow-Slime Terrarium",
+        category: "decor",
+        rarity: "uncommon",
+        icon: "🧪",
+        description: "Cute bioluminescent cavern slime in a brass-trimmed terrarium jar for your room!",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 60,
+    },
+    ItemDef {
+        id: "bat_plushie",
+        name: "Crystal Bat Plushie",
+        category: "decor",
+        rarity: "rare",
+        icon: "🦇",
+        description: "Ultra-cuddly lavender Crystal Bat plushie dropped in the cavern — perfect for bedrooms!",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 110,
+    },
+    ItemDef {
+        id: "royal_chalice",
+        name: "Sanctum Golden Chalice",
+        category: "decor",
+        rarity: "rare",
+        icon: "🏆",
+        description: "Ruby-and-starlight jeweled goblet for kitchen tables or trophy pedestals!",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 145,
+    },
+    ItemDef {
+        id: "dragon_egg_relic",
+        name: "Prismatic Dragon Egg",
+        category: "decor",
+        rarity: "epic",
+        icon: "🥚",
+        description: "Shimmering dragon egg resting on a crimson velvet pillow from Golden Vault Chests!",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 280,
+    },
+    ItemDef {
+        id: "legendary_ray_gun",
+        name: "Starlight Plasma Ray Gun",
+        category: "weapon",
+        rarity: "legendary",
+        icon: "🔫",
+        description: "FIRST LEGENDARY! Equip in right hand to zap Cavern monsters from afar (3 HP!) or display on a Home Pedestal!",
+        cosmetic_slot: Some("accessory"),
+        cosmetic_value: Some("ray_gun"),
+        suggested_coins: 950,
+    },
 ];
 
 pub fn find_item_def(item_id: &str) -> Option<&'static ItemDef> {
@@ -728,10 +794,12 @@ pub fn roll_crystal_loot() -> (u64, Option<&'static str>, u32) {
     let mut rng = rand::thread_rng();
     let coins = rng.gen_range(10u64..=20u64);
     let roll: u32 = rng.gen_range(0..100);
-    if roll < 50 {
+    if roll < 42 {
         (coins, Some("star_shard"), rng.gen_range(1..=2))
-    } else if roll < 78 {
+    } else if roll < 66 {
         (coins, Some("moon_opal"), 1)
+    } else if roll < 80 {
+        (coins, Some("geode_lamp"), 1)
     } else if roll < 92 {
         (coins, Some("prism_block"), 1)
     } else {
@@ -747,18 +815,30 @@ pub fn roll_mob_loot(kind: &str) -> (u64, Option<&'static str>, u32) {
         rng.gen_range(12u64..=24u64)
     };
     let roll: u32 = rng.gen_range(0..100);
-    if roll < 34 {
+    if roll < 26 {
         (base_coins, Some("slime_gel"), rng.gen_range(1..=2))
-    } else if roll < 52 {
+    } else if roll < 40 {
         (base_coins, Some("speed_potion"), 1)
-    } else if roll < 68 {
+    } else if roll < 52 {
         (base_coins, Some("jump_potion"), 1)
-    } else if roll < 84 {
+    } else if roll < 66 {
         (base_coins, Some("dungeon_key"), 1)
-    } else if roll < 93 {
+    } else if roll < 78 {
+        if kind == "crystal_bat" {
+            (base_coins, Some("bat_plushie"), 1)
+        } else {
+            (base_coins, Some("slime_lava_lamp"), 1)
+        }
+    } else if roll < 86 {
+        (base_coins, Some("geode_lamp"), 1)
+    } else if roll < 92 {
         (base_coins, Some("cosmetic_hat_shadow_hood"), 1)
-    } else {
+    } else if roll < 96 {
         (base_coins, Some("cosmetic_acc_star_lantern"), 1)
+    } else if roll < 98 {
+        (base_coins, Some("royal_chalice"), 1)
+    } else {
+        (base_coins + 30, Some("legendary_ray_gun"), 1)
     }
 }
 
@@ -766,14 +846,20 @@ pub fn roll_wooden_chest_loot() -> (u64, Option<&'static str>, u32) {
     let mut rng = rand::thread_rng();
     let coins = rng.gen_range(22u64..=40u64);
     let roll: u32 = rng.gen_range(0..100);
-    if roll < 30 {
+    if roll < 24 {
         (coins, Some("moon_opal"), rng.gen_range(1..=2))
-    } else if roll < 58 {
+    } else if roll < 46 {
         (coins, Some("dungeon_key"), 1)
-    } else if roll < 78 {
+    } else if roll < 60 {
         (coins, Some("speed_potion"), 2)
-    } else if roll < 92 {
+    } else if roll < 72 {
         (coins, Some("prism_block"), 2)
+    } else if roll < 82 {
+        (coins, Some("geode_lamp"), 1)
+    } else if roll < 90 {
+        (coins, Some("slime_lava_lamp"), 1)
+    } else if roll < 96 {
+        (coins, Some("bat_plushie"), 1)
     } else {
         (coins, Some("cosmetic_acc_star_lantern"), 1)
     }
@@ -783,16 +869,20 @@ pub fn roll_golden_chest_loot() -> (u64, Option<&'static str>, u32) {
     let mut rng = rand::thread_rng();
     let coins = rng.gen_range(55u64..=95u64);
     let roll: u32 = rng.gen_range(0..100);
-    if roll < 28 {
+    if roll < 18 {
         (coins, Some("crown_relic"), 1)
-    } else if roll < 54 {
+    } else if roll < 34 {
+        (coins, Some("royal_chalice"), 1)
+    } else if roll < 50 {
+        (coins, Some("dragon_egg_relic"), 1)
+    } else if roll < 66 {
         (coins, Some("cosmetic_hat_obsidian_crown"), 1)
-    } else if roll < 80 {
+    } else if roll < 82 {
         (coins, Some("cosmetic_acc_crystal_wings"), 1)
     } else if roll < 90 {
-        (coins, Some("cosmetic_hat_shadow_hood"), 1)
+        (coins, Some("bat_plushie"), 1)
     } else {
-        (coins, Some("cosmetic_acc_star_lantern"), 1)
+        (coins + 50, Some("legendary_ray_gun"), 1)
     }
 }
 

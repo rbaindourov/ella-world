@@ -288,6 +288,11 @@ async fn run_ws_spine_session(
                             {
                                 continue;
                             }
+                            UdpWorldEvent::RayGunBeam { zone, .. }
+                                if world.get_peer_zone(&self_id).await != *zone =>
+                            {
+                                continue;
+                            }
                             _ => {}
                         }
                         if let Ok(json_txt) = serde_json::to_string(&ev) {

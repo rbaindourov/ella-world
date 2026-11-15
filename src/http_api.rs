@@ -7,7 +7,7 @@ use crate::udp_native::NativeUdpServer;
 use crate::webrtc_sfu::WebRtcSfu;
 use crate::world::{
     is_within_curfew_window, local_minutes_since_midnight, parse_hhmm_minutes,
-    AdminModerateUserInput, WorldEngine,
+    AdminModerateUserInput, BlockMutationInput, WorldEngine,
 };
 use crate::ws_spine::{ws_upgrade_handler, WsSpineHub};
 use axum::extract::{Path, Query, State};
@@ -44,6 +44,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/logout", post(logout_handler))
         .route("/rtc/offer", post(rtc_offer_handler))
         .route("/block", post(block_handler))
+        .route("/raygun", post(raygun_handler))
         .route("/avatar", post(avatar_handler))
         .route("/chat", post(chat_handler))
         .route("/runway", post(runway_handler))
@@ -362,6 +363,7 @@ async fn rtc_offer_handler(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct BlockMutationPayload {
     token: String,
     #[serde(default = "default_place_action")]
@@ -370,6 +372,10 @@ struct BlockMutationPayload {
     y: i32,
     z: i32,
     color: Option<String>,
+    kind: Option<String>,
+    rot: Option<u8>,
+    #[serde(alias = "loot_item_id")]
+    loot_item_id: Option<String>,
 }
 
 fn default_place_action() -> String {
@@ -389,22 +395,74 @@ async fn block_handler(
 
     match st
         .world
-        .mutate_block(
+        .mutate_block_ext(
             &self_id,
             &username,
-            &body.action,
-            (body.x, body.y, body.z),
-            body.color.as_deref(),
+            BlockMutationInput {
+                action: &body.action,
+                coords: (body.x, body.y, body.z),
+                color: body.color.as_deref(),
+                kind: body.kind.as_deref(),
+                rot: body.rot,
+                loot_item_id: body.loot_item_id.as_deref(),
+            },
         )
         .await
     {
-        Ok((blocks_version, blocks)) => Json(json!({
-            "ok": true,
-            "blocksVersion": blocks_version,
-            "blocks": blocks
-        }))
-        .into_response(),
-        Err(msg) => json_err(StatusCode::BAD_REQUEST, msg),
+        Ok((blocks_version, blocks)) => {
+            let economy = {
+                let cfg = st.world.users_cfg.read().await;
+                cfg.users
+                    .iter()
+                    .find(|u| u.username.eq_ignore_ascii_case(&username))
+                    .map(|u| u.economy_snapshot())
+            };
+            Json(json!({
+                "ok": true,
+                "blocksVersion": blocks_version,
+                "blocks": blocks,
+                "economy": economy
+            }))
+            .into_response()
+        }
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RayGunPayload {
+    token: String,
+    #[serde(default)]
+    x: f32,
+    #[serde(default = "default_raygun_y")]
+    y: f32,
+    #[serde(default = "default_raygun_z")]
+    z: f32,
+}
+
+fn default_raygun_y() -> f32 {
+    1.0
+}
+
+fn default_raygun_z() -> f32 {
+    8.0
+}
+
+async fn raygun_handler(State(st): State<AppState>, Json(body): Json<RayGunPayload>) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
+    };
+    match st
+        .world
+        .fire_plaza_raygun(&self_id, &username, [body.x, body.y, body.z])
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
     }
 }
 

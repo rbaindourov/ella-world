@@ -4,15 +4,16 @@ use crate::auth::{
 use crate::config::ServerConfig;
 use crate::economy::{
     add_inventory_item, calculate_escalating_fine, execute_atomic_trade_swap, find_item_def,
-    reconcile_equipped_cosmetics, remove_inventory_item, roll_crystal_loot, roll_golden_chest_loot,
-    roll_mob_loot, roll_wooden_chest_loot, sanitize_and_validate_offer, DungeonMob,
-    DungeonSnapshot, DungeonState, PrisonSnapshot, PrisonState, TradeSession, TradeSideOffer,
-    DUNGEON_RETURN_PORTAL_POS, DUNGEON_SPAWN_POS, ITEM_CATALOG, PLAZA_PORTAL_POS,
+    player_owns_item, reconcile_equipped_cosmetics, remove_inventory_item, roll_crystal_loot,
+    roll_golden_chest_loot, roll_mob_loot, roll_wooden_chest_loot, sanitize_and_validate_offer,
+    DungeonMob, DungeonSnapshot, DungeonState, PrisonSnapshot, PrisonState, TradeSession,
+    TradeSideOffer, DUNGEON_RETURN_PORTAL_POS, DUNGEON_SPAWN_POS, ITEM_CATALOG, PLAZA_PORTAL_POS,
     PLAZA_RETURN_SPAWN_POS, PRISON_RELEASE_PORTAL_POS, PRISON_SPAWN_POS, PRISON_WORK_REWARD_COINS,
     TRADE_ACTIVE_IDLE_TTL_MS, TRADE_INVITE_TTL_MS,
 };
 use crate::models::{
-    default_starter_blocks, is_valid_hex_color, normalize_chat_mode, now_ms, BlockedChatEntry,
+    default_block_kind, default_starter_blocks, is_toggleable_block_kind, is_two_tall_block_kind,
+    is_valid_block_kind, is_valid_hex_color, normalize_chat_mode, now_ms, BlockedChatEntry,
     BlocksDataFile, ChatMessage, PlayerEconomySnapshot, PlayerModerationSnapshot,
     PlayerRuntimeState, RunwayPublicSummary, RunwayState, SanitizedUser, SavedPosition,
     UserAccount, UsersConfigFile, VoxelBlock, RUNWAY_THEMES, SAFE_QUICK_CHAT_PHRASES,
@@ -139,6 +140,27 @@ pub enum UdpWorldEvent {
         actor_id: Option<String>,
         prison: PrisonSnapshot,
     },
+    RayGunBeam {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
+        #[serde(rename = "actorId")]
+        actor_id: String,
+        zone: u8,
+        from: [f32; 3],
+        to: [f32; 3],
+        #[serde(rename = "hitMobId", skip_serializing_if = "Option::is_none")]
+        hit_mob_id: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BlockMutationInput<'a> {
+    pub action: &'a str,
+    pub coords: (i32, i32, i32),
+    pub color: Option<&'a str>,
+    pub kind: Option<&'a str>,
+    pub rot: Option<u8>,
+    pub loot_item_id: Option<&'a str>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -223,6 +245,7 @@ pub struct WorldEngine {
     pub dungeon: RwLock<DungeonState>,
     pub prison: RwLock<PrisonState>,
     pub prison_work_cooldowns: RwLock<HashMap<String, u64>>,
+    pub raygun_cooldowns: RwLock<HashMap<String, u64>>,
     pub trades: RwLock<HashMap<String, TradeSession>>,
     pub global_voice_enabled: AtomicBool,
     pub server_tick: AtomicU32,
@@ -274,6 +297,7 @@ impl WorldEngine {
             dungeon: RwLock::new(DungeonState::new()),
             prison: RwLock::new(PrisonState::new()),
             prison_work_cooldowns: RwLock::new(HashMap::new()),
+            raygun_cooldowns: RwLock::new(HashMap::new()),
             trades: RwLock::new(HashMap::new()),
             global_voice_enabled: AtomicBool::new(initial_global_voice),
             server_tick: AtomicU32::new(1),
@@ -1437,38 +1461,230 @@ impl WorldEngine {
         action: &str,
         coords: (i32, i32, i32),
         color: Option<&str>,
-    ) -> Result<(u64, Vec<VoxelBlock>), &'static str> {
-        {
+    ) -> Result<(u64, Vec<VoxelBlock>), String> {
+        self.mutate_block_ext(
+            self_id,
+            username,
+            BlockMutationInput {
+                action,
+                coords,
+                color,
+                kind: None,
+                rot: None,
+                loot_item_id: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn mutate_block_ext(
+        &self,
+        self_id: &str,
+        username: &str,
+        input: BlockMutationInput<'_>,
+    ) -> Result<(u64, Vec<VoxelBlock>), String> {
+        let (x, y, z) = input.coords;
+        if !(-45..=45).contains(&x) || !(1..=60).contains(&y) || !(-45..=45).contains(&z) {
+            return Err("Invalid block coordinates".into());
+        }
+
+        let action = input.action.trim();
+        let (in_prison, can_build) = {
             let cfg = self.users_cfg.read().await;
-            if let Some(u) = cfg
-                .users
+            cfg.users
                 .iter()
                 .find(|u| u.username.eq_ignore_ascii_case(username))
-            {
-                if u.in_debtors_prison {
-                    return Err("Block building is disabled while in Debtor's Prison!");
+                .map(|u| (u.in_debtors_prison, u.can_build))
+                .unwrap_or((false, true))
+        };
+
+        if in_prison {
+            return Err("Block building and doors are disabled while in Debtor's Prison!".into());
+        }
+
+        // 1. Interactive Door / Window hinge toggle (`action == "toggle"`)
+        if action == "toggle" {
+            let (next_version, snapshot, blocks_file) = {
+                let mut bd = self.blocks_data.write().await;
+                let target_idx = bd.blocks.iter().position(|b| {
+                    b.x == x
+                        && b.z == z
+                        && ((b.y == y && is_toggleable_block_kind(&b.kind))
+                            || (b.y == y - 1 && b.kind == "door"))
+                });
+                let Some(idx) = target_idx else {
+                    return Err("No door or window at that spot to open or close.".into());
+                };
+                bd.blocks[idx].open = !bd.blocks[idx].open;
+                bd.version += 1;
+                (bd.version, bd.blocks.clone(), bd.clone())
+            };
+            self.persist_blocks_async(blocks_file).await;
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::Block {
+                state_seq: seq,
+                self_id: self_id.to_string(),
+                blocks_version: next_version,
+                blocks: snapshot.clone(),
+            });
+            return Ok((next_version, snapshot));
+        }
+
+        if !can_build {
+            return Err("Block building is currently locked for your account by a parent.".into());
+        }
+
+        // 2. Remove block / furniture / displayed loot trophy (`action == "remove"`)
+        if action == "remove" {
+            let (next_version, snapshot, blocks_file, refunded_loot) = {
+                let mut bd = self.blocks_data.write().await;
+                let hit_idx = bd.blocks.iter().position(|b| {
+                    b.x == x
+                        && b.z == z
+                        && (b.y == y || (b.y == y - 1 && is_two_tall_block_kind(&b.kind)))
+                });
+                let mut refund: Option<(String, String)> = None;
+                if let Some(idx) = hit_idx {
+                    if let Some(ref item_id) = bd.blocks[idx].loot_item_id {
+                        if !bd.blocks[idx].author.eq_ignore_ascii_case(username) {
+                            return Err(format!(
+                                "Only {} can pick up their displayed trophy!",
+                                bd.blocks[idx].author
+                            ));
+                        }
+                        refund = Some((bd.blocks[idx].author.clone(), item_id.clone()));
+                    }
+                    bd.blocks.remove(idx);
                 }
-                if !u.can_build {
-                    return Err("Block building is currently locked for your account by a parent.");
+                bd.version += 1;
+                (bd.version, bd.blocks.clone(), bd.clone(), refund)
+            };
+
+            self.persist_blocks_async(blocks_file).await;
+
+            if let Some((owner_user, loot_id)) = refunded_loot {
+                {
+                    let mut cfg = self.users_cfg.write().await;
+                    if let Some(u) = cfg
+                        .users
+                        .iter_mut()
+                        .find(|u| u.username.eq_ignore_ascii_case(&owner_user))
+                    {
+                        add_inventory_item(&mut u.inventory, &loot_id, 1);
+                    }
+                }
+                self.persist_users_async().await;
+                self.send_economy_update(
+                    self_id,
+                    &owner_user,
+                    &format!("picked_up_decor:{loot_id}"),
+                )
+                .await;
+            }
+
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::Block {
+                state_seq: seq,
+                self_id: self_id.to_string(),
+                blocks_version: next_version,
+                blocks: snapshot.clone(),
+            });
+            return Ok((next_version, snapshot));
+        }
+
+        // 3. Place block / stairs / door / window / furniture / Backpack loot trophy (`action == "place"`)
+        let kind = input
+            .kind
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("block");
+        if !is_valid_block_kind(kind) {
+            return Err("Unknown building block or furniture kind.".into());
+        }
+        let two_tall = is_two_tall_block_kind(kind);
+        if two_tall && y >= 60 {
+            return Err("Too high to place a 2-block-tall door, fridge, or wardrobe here!".into());
+        }
+        let rot = input.rot.unwrap_or(0) % 4;
+        let valid_color = input
+            .color
+            .filter(|c| is_valid_hex_color(c))
+            .unwrap_or("#38bdf8")
+            .to_string();
+
+        let mut deducted_loot_id: Option<&'static str> = None;
+        let mut prev_avatar = None;
+        let mut updated_sanitized_after_deduct: Option<SanitizedUser> = None;
+
+        if kind == "loot_decor" {
+            let raw_item = input
+                .loot_item_id
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "Select a Backpack item to place on a display stand!".to_string())?;
+            let Some(def) = find_item_def(raw_item) else {
+                return Err("Unknown Backpack item for home decoration.".into());
+            };
+            {
+                let mut cfg = self.users_cfg.write().await;
+                let Some(u) = cfg
+                    .users
+                    .iter_mut()
+                    .find(|u| u.username.eq_ignore_ascii_case(username))
+                else {
+                    return Err("Account not found.".into());
+                };
+                if !remove_inventory_item(&mut u.inventory, def.id, 1) {
+                    return Err(format!(
+                        "You don't have any {} left in your Backpack to place!",
+                        def.name
+                    ));
+                }
+                let saved_av = u.avatar.clone();
+                if reconcile_equipped_cosmetics(&mut u.avatar, &u.inventory) {
+                    prev_avatar = Some(saved_av);
+                    updated_sanitized_after_deduct = Some(u.sanitized());
                 }
             }
+            deducted_loot_id = Some(def.id);
         }
 
-        let (x, y, z) = coords;
-        if !(-45..=45).contains(&x) || !(1..=60).contains(&y) || !(-45..=45).contains(&z) {
-            return Err("Invalid block coordinates");
-        }
-
-        let (next_version, snapshot, blocks_file) = {
+        let place_res = {
             let mut bd = self.blocks_data.write().await;
-            bd.blocks.retain(|b| !(b.x == x && b.y == y && b.z == z));
-            if action != "remove" {
-                let valid_color = color
-                    .filter(|c| is_valid_hex_color(c))
-                    .unwrap_or("#38bdf8")
-                    .to_string();
+            let overlaps = |b: &VoxelBlock| -> bool {
+                if b.x != x || b.z != z {
+                    return false;
+                }
+                if b.y == y {
+                    return true;
+                }
+                if two_tall && b.y == y + 1 {
+                    return true;
+                }
+                if b.y == y - 1 && is_two_tall_block_kind(&b.kind) {
+                    return true;
+                }
+                if two_tall && b.y == y + 1 && is_two_tall_block_kind(&b.kind) {
+                    return true;
+                }
+                false
+            };
+
+            if bd
+                .blocks
+                .iter()
+                .any(|b| overlaps(b) && b.loot_item_id.is_some())
+            {
+                Err("Pick up the displayed loot trophy there before building over it!".to_string())
+            } else {
+                bd.blocks.retain(|b| !overlaps(b));
                 if bd.blocks.len() >= 5000 {
-                    bd.blocks.remove(0);
+                    if let Some(evict_idx) = bd.blocks.iter().position(|b| b.loot_item_id.is_none())
+                    {
+                        bd.blocks.remove(evict_idx);
+                    } else {
+                        bd.blocks.remove(0);
+                    }
                 }
                 bd.blocks.push(VoxelBlock {
                     x,
@@ -1477,12 +1693,66 @@ impl WorldEngine {
                     color: valid_color,
                     author: username.to_string(),
                     placed_at: Some(now_ms()),
+                    kind: if kind.is_empty() {
+                        default_block_kind()
+                    } else {
+                        kind.to_string()
+                    },
+                    rot,
+                    open: false,
+                    loot_item_id: deducted_loot_id.map(str::to_string),
+                });
+                bd.version += 1;
+                Ok((bd.version, bd.blocks.clone(), bd.clone()))
+            }
+        };
+
+        let (next_version, snapshot, blocks_file) = match place_res {
+            Ok(tuple) => tuple,
+            Err(err_msg) => {
+                if let Some(lid) = deducted_loot_id {
+                    let mut cfg = self.users_cfg.write().await;
+                    if let Some(u) = cfg
+                        .users
+                        .iter_mut()
+                        .find(|u| u.username.eq_ignore_ascii_case(username))
+                    {
+                        add_inventory_item(&mut u.inventory, lid, 1);
+                        if let Some(old_av) = prev_avatar {
+                            u.avatar = old_av;
+                        }
+                    }
+                }
+                return Err(err_msg);
+            }
+        };
+
+        self.persist_blocks_async(blocks_file).await;
+
+        if let Some(lid) = deducted_loot_id {
+            self.persist_users_async().await;
+            if let Some(sanitized) = updated_sanitized_after_deduct {
+                let avatar_hash = sanitized.avatar.short_hash();
+                {
+                    let mut map = self.players.write().await;
+                    for p in map.values_mut() {
+                        if p.user.username.eq_ignore_ascii_case(username) {
+                            p.user = sanitized.clone();
+                            p.avatar_hash = avatar_hash.clone();
+                        }
+                    }
+                }
+                let av_seq = self.next_state_seq();
+                let _ = self.udp_event_tx.send(UdpWorldEvent::AvatarUpdated {
+                    state_seq: av_seq,
+                    self_id: self_id.to_string(),
+                    avatar_hash,
+                    user: sanitized,
                 });
             }
-            bd.version += 1;
-            (bd.version, bd.blocks.clone(), bd.clone())
-        };
-        self.persist_blocks_async(blocks_file).await;
+            self.send_economy_update(self_id, username, &format!("placed_decor:{lid}"))
+                .await;
+        }
 
         let seq = self.next_state_seq();
         let _ = self.udp_event_tx.send(UdpWorldEvent::Block {
@@ -1969,17 +2239,51 @@ impl WorldEngine {
     }
 
     pub async fn reset_world_blocks(&self, clear_all: bool) -> Vec<VoxelBlock> {
-        let (next_ver, next_blocks, blocks_file) = {
+        let (next_ver, next_blocks, blocks_file, refunded_trophies) = {
             let mut bd = self.blocks_data.write().await;
+            let mut refunds: Vec<(String, String)> = Vec::new();
+            for b in &bd.blocks {
+                if let Some(ref item_id) = b.loot_item_id {
+                    refunds.push((b.author.clone(), item_id.clone()));
+                }
+            }
             bd.blocks = if clear_all {
                 Vec::new()
             } else {
                 default_starter_blocks()
             };
             bd.version += 1;
-            (bd.version, bd.blocks.clone(), bd.clone())
+            (bd.version, bd.blocks.clone(), bd.clone(), refunds)
         };
         self.persist_blocks_async(blocks_file).await;
+
+        if !refunded_trophies.is_empty() {
+            let mut refunded_users = Vec::new();
+            {
+                let mut cfg = self.users_cfg.write().await;
+                for (owner_name, item_id) in refunded_trophies {
+                    if let Some(u) = cfg
+                        .users
+                        .iter_mut()
+                        .find(|u| u.username.eq_ignore_ascii_case(&owner_name))
+                    {
+                        add_inventory_item(&mut u.inventory, &item_id, 1);
+                        if !refunded_users
+                            .iter()
+                            .any(|n: &String| n.eq_ignore_ascii_case(&owner_name))
+                        {
+                            refunded_users.push(owner_name);
+                        }
+                    }
+                }
+            }
+            self.persist_users_async().await;
+            for uname in refunded_users {
+                self.send_economy_update("admin", &uname, "world_reset_trophy_refund")
+                    .await;
+            }
+        }
+
         let seq = self.next_state_seq();
         let _ = self.udp_event_tx.send(UdpWorldEvent::Block {
             state_seq: seq,
@@ -2620,19 +2924,37 @@ impl WorldEngine {
         mob_id: &str,
         mode: &str,
     ) -> Result<serde_json::Value, String> {
-        let (p_zone, px, py, pz) = {
+        let (p_zone, px, py, pz, username) = {
             let map = self.players.read().await;
             let Some(p) = map.get(self_id) else {
                 return Err("Player session not found.".into());
             };
-            (p.zone, p.x, p.y, p.z)
+            (p.zone, p.x, p.y, p.z, p.user.username.clone())
         };
         if p_zone != ZONE_DUNGEON {
             return Err("Enter the Crystal Cavern Portal first!".into());
         }
 
+        let is_raygun = mode == "raygun";
+        if is_raygun {
+            let owns_raygun = {
+                let cfg = self.users_cfg.read().await;
+                cfg.users
+                    .iter()
+                    .find(|u| u.username.eq_ignore_ascii_case(&username))
+                    .map(|u| player_owns_item(&u.inventory, "legendary_ray_gun"))
+                    .unwrap_or(false)
+            };
+            if !owns_raygun {
+                return Err(
+                    "You need the Legendary Starlight Plasma Ray Gun 🔫 to fire plasma beams!"
+                        .into(),
+                );
+            }
+        }
+
         let now = now_ms();
-        let (defeated, spawned_drop, snapshot) = {
+        let (dmg, defeated, spawned_drop, snapshot, mob_center) = {
             let mut dg = self.dungeon.write().await;
             let Some(idx) = dg.mobs.iter().position(|m| m.id == mob_id) else {
                 return Err("Dungeon creature not found.".into());
@@ -2647,11 +2969,22 @@ impl WorldEngine {
             let my = dg.mobs[idx].y;
             let mz = dg.mobs[idx].z;
             let dist = ((px - mx).powi(2) + (py - my).powi(2) + (pz - mz).powi(2)).sqrt();
-            if dist > 6.2 {
-                return Err("Move closer to stomp or Sparkle-Blast that creature!".into());
+            let max_reach = if is_raygun { 14.5 } else { 6.2 };
+            if dist > max_reach {
+                return Err(if is_raygun {
+                    "Step within 14m so your Plasma Ray Gun can lock onto that creature!".into()
+                } else {
+                    "Move closer to stomp or Sparkle-Blast that creature!".into()
+                });
             }
 
-            let dmg: u8 = if mode == "stomp" { 2 } else { 1 };
+            let dmg: u8 = if is_raygun {
+                3
+            } else if mode == "stomp" {
+                2
+            } else {
+                1
+            };
             dg.mobs[idx].last_hit_at_ms = now;
             dg.mobs[idx].hp = dg.mobs[idx].hp.saturating_sub(dmg);
 
@@ -2665,8 +2998,20 @@ impl WorldEngine {
                 maybe_drop = Some(dg.spawn_drop(mx, my.max(0.25), mz, coins, item_opt, qty, now));
             }
             let snap = dg.snapshot();
-            (defeated, maybe_drop, snap)
+            (dmg, defeated, maybe_drop, snap, [mx, my + 0.55, mz])
         };
+
+        if is_raygun {
+            let beam_seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::RayGunBeam {
+                state_seq: beam_seq,
+                actor_id: self_id.to_string(),
+                zone: ZONE_DUNGEON,
+                from: [px, py + 1.05, pz],
+                to: mob_center,
+                hit_mob_id: Some(mob_id.to_string()),
+            });
+        }
 
         let seq = self.next_state_seq();
         let event_tag = if defeated {
@@ -2683,9 +3028,111 @@ impl WorldEngine {
 
         Ok(serde_json::json!({
             "ok": true,
+            "mode": mode,
+            "damage": dmg,
             "defeated": defeated,
             "drop": spawned_drop,
             "dungeon": snapshot,
+        }))
+    }
+
+    pub async fn fire_plaza_raygun(
+        &self,
+        self_id: &str,
+        username: &str,
+        target: [f32; 3],
+    ) -> Result<serde_json::Value, String> {
+        let (p_zone, px, py, pz) = {
+            let map = self.players.read().await;
+            let Some(p) = map.get(self_id) else {
+                return Err("Player session not found.".into());
+            };
+            (p.zone, p.x, p.y, p.z)
+        };
+        if p_zone != ZONE_PLAZA {
+            return Err(
+                "Plaza Laser Light-Show beams can only be fired in Starlight Plaza!".into(),
+            );
+        }
+
+        {
+            let cfg = self.users_cfg.read().await;
+            let Some(u) = cfg
+                .users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            else {
+                return Err("Account not found.".into());
+            };
+            if u.in_debtors_prison {
+                return Err("Ray Gun beams are disabled while in Debtor's Prison!".into());
+            }
+            if !player_owns_item(&u.inventory, "legendary_ray_gun") {
+                return Err(
+                    "Unlock the Legendary Starlight Plasma Ray Gun 🔫 in Crystal Cavern first!"
+                        .into(),
+                );
+            }
+        }
+
+        let now = now_ms();
+        {
+            let mut cds = self.raygun_cooldowns.write().await;
+            let key = username.to_lowercase();
+            if let Some(&last) = cds.get(&key) {
+                if now.saturating_sub(last) < 200 {
+                    return Err("Ray Gun plasma capacitor recharging...".into());
+                }
+            }
+            cds.insert(key, now);
+        }
+
+        let from = [px, py + 1.05, pz];
+        let mut dx = if target[0].is_finite() {
+            target[0] - from[0]
+        } else {
+            0.0
+        };
+        let mut dy = if target[1].is_finite() {
+            target[1] - from[1]
+        } else {
+            0.0
+        };
+        let mut dz = if target[2].is_finite() {
+            target[2] - from[2]
+        } else {
+            1.0
+        };
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        if len < 0.05 {
+            dz = 8.0;
+        } else if len > 14.5 {
+            let scale = 14.5 / len;
+            dx *= scale;
+            dy *= scale;
+            dz *= scale;
+        }
+        let to = [
+            ((from[0] + dx) * 100.0).round() / 100.0,
+            ((from[1] + dy).clamp(0.15, 62.0) * 100.0).round() / 100.0,
+            ((from[2] + dz) * 100.0).round() / 100.0,
+        ];
+
+        let seq = self.next_state_seq();
+        let _ = self.udp_event_tx.send(UdpWorldEvent::RayGunBeam {
+            state_seq: seq,
+            actor_id: self_id.to_string(),
+            zone: ZONE_PLAZA,
+            from,
+            to,
+            hit_mob_id: None,
+        });
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "stateSeq": seq,
+            "from": from,
+            "to": to,
         }))
     }
 
