@@ -496,6 +496,10 @@ pub fn normalize_chat_mode(raw: &str) -> String {
 }
 
 impl UserAccount {
+    pub fn is_subadmin(&self) -> bool {
+        self.role.eq_ignore_ascii_case("subadmin")
+    }
+
     pub fn sanitized(&self) -> SanitizedUser {
         SanitizedUser {
             username: self.username.clone(),

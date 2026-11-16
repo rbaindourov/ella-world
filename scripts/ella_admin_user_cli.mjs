@@ -105,6 +105,7 @@ function parseArgs(argv) {
     canBuild: undefined,
     canTrade: undefined,
     suspended: undefined,
+    setRole: null,
     skipLoginVerify: false
   };
   for (let i = 2; i < argv.length; i++) {
@@ -150,6 +151,7 @@ function parseArgs(argv) {
     else if (k === '--can-build') { out.canBuild = parseBoolFlag(v); i++; }
     else if (k === '--can-trade') { out.canTrade = parseBoolFlag(v); i++; }
     else if (k === '--suspended') { out.suspended = parseBoolFlag(v); i++; }
+    else if (k === '--set-role') { out.setRole = v; i++; }
     else if (k === '--skip-login-verify') { out.skipLoginVerify = true; }
   }
   return out;
@@ -206,7 +208,8 @@ async function main() {
     opts.muteVoice !== undefined ||
     opts.canBuild !== undefined ||
     opts.canTrade !== undefined ||
-    opts.suspended !== undefined;
+    opts.suspended !== undefined ||
+    opts.setRole !== null;
   const hasModerationAction =
     Boolean(opts.username) &&
     (opts.pardon ||
@@ -380,6 +383,7 @@ async function main() {
       if (opts.canBuild !== undefined) payload.canBuild = opts.canBuild;
       if (opts.canTrade !== undefined) payload.canTrade = opts.canTrade;
       if (opts.suspended !== undefined) payload.suspended = opts.suspended;
+      if (opts.setRole !== null) payload.role = opts.setRole;
       receipts.push(await postAdminModerate(opts.baseUrl, adminToken, payload));
     }
     if (opts.resetStrikes) {

@@ -166,6 +166,11 @@ To ensure parent password rotations and emergency sign-outs take effect **instan
 - **Per-Child Controls**: Server-enforced Voice Mic Mute (`voiceMutedByParent` drops Opus RTP/UDP frames inside both `WebRtcSfu` and `NativeUdpServer`), Text Chat Policy (`normal`, `quick_only` allowing only `SAFE_QUICK_CHAT_PHRASES`, or `muted`), Build Lock (`canBuild`), Trade Lock (`canTrade`), Account Pause/Grounding (`suspended` returning `403 Forbidden` + instant live session kick), `+ / -` Coin Adjust, Send to Prison, Parent Pardon, and Reset Strikes.
 - **Global Safety Switches**: World Pause Lock (`worldLocked`), Automatic Bedtime Curfew Window (`curfewEnabled`, `curfewStart`..`curfewEnd` in 24h local server time), Global Voice Toggle (`globalVoiceEnabled`), Global Chat Policy (`globalChatMode`), and configurable `profanityFineBase` / `debtPrisonThreshold` / `prisonStrikeThreshold`.
 
+### 8.5 Sub-Admin Friend Moderator Role (`role: "subadmin"`, `GET /subadmin/state`, `POST /subadmin/moderate`)
+- Parents can promote or demote any account between `friend`, `subadmin`, and `host` in the Parent Admin Panel or via `node scripts/ella_admin_user_cli.mjs --username <u> --set-role subadmin`.
+- A `subadmin` account unlocks the **🛡️ Mod Friends** modal (`#subadmin-dialog`) in the HUD to moderate **`friend`** accounts only (Mic Mute, Text Chat Mode, Build Lock, Trade Lock, and live `kick_session`).
+- **Strict Parent-Only Boundaries**: Sub-Admins cannot self-moderate, cannot moderate `host` or other `subadmin` accounts, cannot change passwords/coins/curfews/machine-signature overrides or pardon Debtor's Prison, and automatically lose Sub-Admin access (`403 Forbidden`) if their own account is paused or in Debtor's Prison.
+
 ---
 
 ## 9. Cryptographic Machine Digital Signatures & Anti-Alt-Evasion (`src/device_sig.rs`, `public/js/device_sig.js`)

@@ -11,7 +11,8 @@ use crate::udp_native::NativeUdpServer;
 use crate::webrtc_sfu::WebRtcSfu;
 use crate::world::{
     is_within_curfew_window, local_minutes_since_midnight, parse_hhmm_minutes,
-    AdminManageDeviceInput, AdminModerateUserInput, BlockMutationInput, WorldEngine,
+    AdminManageDeviceInput, AdminModerateUserInput, BlockMutationInput, SubadminModerateInput,
+    WorldEngine,
 };
 use crate::ws_spine::{ws_upgrade_handler, WsSpineHub};
 use axum::extract::{Extension, Path, Query, State};
@@ -72,6 +73,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/users", post(admin_upsert_user_handler))
         .route("/admin/users/:username", delete(admin_delete_user_handler))
         .route("/admin/moderate", post(admin_moderate_handler))
+        .route("/subadmin/state", get(subadmin_state_handler))
+        .route("/subadmin/moderate", post(subadmin_moderate_handler))
         .route("/admin/devices", post(admin_devices_handler))
         .route(
             "/admin/sessions/revoke",
@@ -1271,6 +1274,76 @@ async fn admin_moderate_handler(
     let dashboard = build_admin_dashboard(&st.world).await;
     if let Some(obj) = res.as_object_mut() {
         obj.insert("dashboard".into(), dashboard);
+    }
+    Json(res).into_response()
+}
+
+async fn extract_bearer_player_username(
+    world: &WorldEngine,
+    headers: &HeaderMap,
+) -> Option<String> {
+    let raw = headers.get("authorization").and_then(|v| v.to_str().ok())?;
+    let token = raw.strip_prefix("Bearer ").unwrap_or(raw).trim();
+    let (_, username) = extract_player_claims(world, token).await?;
+    Some(username)
+}
+
+async fn subadmin_state_handler(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(actor_username) = extract_bearer_player_username(&st.world, &headers).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
+    };
+    match st.world.build_subadmin_friends_state(&actor_username).await {
+        Ok(v) => Json(v).into_response(),
+        Err((code, msg)) => json_err(
+            StatusCode::from_u16(code).unwrap_or(StatusCode::FORBIDDEN),
+            &msg,
+        ),
+    }
+}
+
+async fn subadmin_moderate_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SubadminModerateInput>,
+) -> Response {
+    let Some(actor_username) = extract_bearer_player_username(&st.world, &headers).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
+    };
+    let mut res = match st
+        .world
+        .subadmin_moderate_friend(&actor_username, body)
+        .await
+    {
+        Ok(v) => v,
+        Err((code, msg)) => {
+            return json_err(
+                StatusCode::from_u16(code).unwrap_or(StatusCode::FORBIDDEN),
+                &msg,
+            )
+        }
+    };
+    for key in ["kickedPeers", "evictedAltPeers"] {
+        if let Some(arr) = res.get(key).and_then(Value::as_array) {
+            for pid_val in arr {
+                if let Some(pid) = pid_val.as_str() {
+                    st.sfu.cleanup_session(pid).await;
+                    st.native_udp.evict_sessions_for_peer(pid).await;
+                }
+            }
+        }
+    }
+    if let Ok(state_val) = st.world.build_subadmin_friends_state(&actor_username).await {
+        if let Some(obj) = res.as_object_mut() {
+            if let Some(friends) = state_val.get("friends").cloned() {
+                obj.insert("friends".into(), friends);
+            }
+        }
     }
     Json(res).into_response()
 }

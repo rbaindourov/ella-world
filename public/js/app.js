@@ -437,6 +437,10 @@ const avatarDialog = document.getElementById('avatar-dialog');
 const audioDialog = document.getElementById('audio-dialog');
 const helpDialog = document.getElementById('help-dialog');
 const adminDialog = document.getElementById('admin-dialog');
+const subadminDialog = document.getElementById('subadmin-dialog');
+const openSubadminHudBtn = document.getElementById('open-subadmin-hud-btn');
+const subadminFriendsTbody = document.getElementById('subadmin-friends-tbody');
+const subadminFeedback = document.getElementById('subadmin-feedback');
 const backpackDialog = document.getElementById('backpack-dialog');
 const backpackCoinsValue = document.getElementById('backpack-coins-value');
 const backpackItemsGrid = document.getElementById('backpack-items-grid');
@@ -1818,6 +1822,12 @@ function applyModerationAndParentalUi() {
   }
 
   const buildForbidden = !playerModeration.canBuild || currentZone !== ZONE_PLAZA;
+  if (openSubadminHudBtn) {
+    const canSubadmin =
+      String(selfUser?.role || '').toLowerCase() === 'subadmin' &&
+      !playerModeration.inDebtorsPrison;
+    openSubadminHudBtn.hidden = !canSubadmin;
+  }
   if (toggleBuildBtn) {
     toggleBuildBtn.classList.toggle('is-locked-chip', !playerModeration.canBuild);
   }
@@ -2733,7 +2743,9 @@ function renderFriendsList() {
 
     const nameSpan = document.createElement('span');
     nameSpan.className = 'friend-name';
-    nameSpan.textContent = `${p.user.role === 'host' ? '👑 ' : '🧒 '}${p.user.displayName}${isMe ? ' (You)' : ''}`;
+    const roleBadge =
+      p.user.role === 'host' ? '👑 ' : p.user.role === 'subadmin' ? '🛡️ ' : '🧒 ';
+    nameSpan.textContent = `${roleBadge}${p.user.displayName}${isMe ? ' (You)' : ''}`;
 
     const statusTag = document.createElement('span');
     statusTag.className = 'friend-voice-tag';
@@ -4539,6 +4551,198 @@ function openAdminModal() {
 document.getElementById('open-admin-from-login').addEventListener('click', openAdminModal);
 document.getElementById('open-admin-hud-btn').addEventListener('click', openAdminModal);
 
+function showSubadminFeedback(message) {
+  if (!subadminFeedback) return;
+  subadminFeedback.textContent = message;
+  subadminFeedback.hidden = false;
+}
+
+function renderSubadminFriends(friends) {
+  if (!subadminFriendsTbody) return;
+  subadminFriendsTbody.replaceChildren();
+  const list = Array.isArray(friends) ? friends : [];
+  if (list.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.textContent = 'No friend accounts available to moderate.';
+    tr.appendChild(td);
+    subadminFriendsTbody.appendChild(tr);
+    return;
+  }
+
+  for (const f of list) {
+    const tr = document.createElement('tr');
+
+    const tdName = document.createElement('td');
+    const strong = document.createElement('strong');
+    strong.textContent = `${f.displayName || f.username} (@${f.username})`;
+    tdName.appendChild(strong);
+
+    const tdStatus = document.createElement('td');
+    const stack = document.createElement('div');
+    stack.className = 'admin-status-stack';
+    const onlineSpan = document.createElement('span');
+    onlineSpan.className = 'admin-online-pill';
+    onlineSpan.textContent = f.online ? '🟢 Online' : '⚪ Offline';
+    stack.appendChild(onlineSpan);
+    if (f.inDebtorsPrison) {
+      const pBadge = document.createElement('span');
+      pBadge.className = 'prison-badge';
+      pBadge.textContent = "⚖️ Debtor's Prison";
+      stack.appendChild(pBadge);
+    }
+    if (f.suspended) {
+      const sBadge = document.createElement('span');
+      sBadge.className = 'suspended-badge';
+      sBadge.textContent = '🚫 Paused by Parent';
+      stack.appendChild(sBadge);
+    }
+    tdStatus.appendChild(stack);
+
+    const tdControls = document.createElement('td');
+    const wrap = document.createElement('div');
+    wrap.className = 'mod-controls-wrap';
+
+    const micBtn = document.createElement('button');
+    micBtn.type = 'button';
+    micBtn.className = `mod-pill-btn${f.voiceMutedByParent ? ' is-locked' : ''}`;
+    micBtn.textContent = f.voiceMutedByParent ? '🔇 Muted' : '🎤 Mic';
+    micBtn.addEventListener('click', () =>
+      subadminModerateFriend(
+        {
+          username: f.username,
+          action: 'update_controls',
+          voiceMutedByParent: !f.voiceMutedByParent
+        },
+        `${!f.voiceMutedByParent ? '🔇 Muted' : '🎤 Unmuted'} @${f.username}'s microphone.`
+      )
+    );
+
+    const chatSelect = document.createElement('select');
+    chatSelect.className = 'mod-chat-select';
+    chatSelect.setAttribute('aria-label', `Chat mode for ${f.username}`);
+    [
+      ['normal', '💬 Normal'],
+      ['quick_only', '🛡️ Safe Quick'],
+      ['muted', '🔇 Chat Off']
+    ].forEach(([val, label]) => {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if ((f.chatMode || 'normal') === val) opt.selected = true;
+      chatSelect.appendChild(opt);
+    });
+    chatSelect.addEventListener('change', () =>
+      subadminModerateFriend(
+        {
+          username: f.username,
+          action: 'update_controls',
+          chatMode: chatSelect.value
+        },
+        `💬 Set @${f.username}'s chat mode to "${chatSelect.value}".`
+      )
+    );
+
+    const buildLocked = f.canBuild === false;
+    const buildBtn = document.createElement('button');
+    buildBtn.type = 'button';
+    buildBtn.className = `mod-pill-btn${buildLocked ? ' is-locked' : ''}`;
+    buildBtn.textContent = buildLocked ? '🚫 Build' : '🔨 Build';
+    buildBtn.addEventListener('click', () =>
+      subadminModerateFriend(
+        {
+          username: f.username,
+          action: 'update_controls',
+          canBuild: buildLocked
+        },
+        `${buildLocked ? '🔨 Allowed' : '🚫 Locked'} building for @${f.username}.`
+      )
+    );
+
+    const tradeLocked = f.canTrade === false;
+    const tradeBtn = document.createElement('button');
+    tradeBtn.type = 'button';
+    tradeBtn.className = `mod-pill-btn${tradeLocked ? ' is-locked' : ''}`;
+    tradeBtn.textContent = tradeLocked ? '🚫 Trade' : '🤝 Trade';
+    tradeBtn.addEventListener('click', () =>
+      subadminModerateFriend(
+        {
+          username: f.username,
+          action: 'update_controls',
+          canTrade: tradeLocked
+        },
+        `${tradeLocked ? '🤝 Allowed' : '🚫 Locked'} trading for @${f.username}.`
+      )
+    );
+
+    wrap.append(micBtn, chatSelect, buildBtn, tradeBtn);
+    tdControls.appendChild(wrap);
+
+    const tdSession = document.createElement('td');
+    const kickBtn = document.createElement('button');
+    kickBtn.type = 'button';
+    kickBtn.className = 'mod-pill-btn warn-pill';
+    kickBtn.textContent = '👢 Kick';
+    kickBtn.disabled = !f.online;
+    kickBtn.addEventListener('click', () =>
+      subadminModerateFriend(
+        { username: f.username, action: 'kick_session' },
+        `👢 Kicked @${f.username} from the current session.`
+      )
+    );
+    tdSession.appendChild(kickBtn);
+
+    tr.append(tdName, tdStatus, tdControls, tdSession);
+    subadminFriendsTbody.appendChild(tr);
+  }
+}
+
+async function refreshSubadminFriends() {
+  if (!sessionToken) return;
+  const res = await fetch('/api/ella-world/subadmin/state', {
+    headers: { Authorization: `Bearer ${sessionToken}` }
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) {
+    renderSubadminFriends(data.friends || []);
+  } else {
+    showSubadminFeedback(`❌ ${data.error || 'Sub-Admin access unavailable.'}`);
+  }
+}
+
+async function subadminModerateFriend(payload, successMsg) {
+  if (!sessionToken) return;
+  const res = await fetch('/api/ella-world/subadmin/moderate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${sessionToken}`
+    },
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) {
+    if (data.friends) {
+      renderSubadminFriends(data.friends);
+    } else {
+      await refreshSubadminFriends();
+    }
+    if (successMsg) showSubadminFeedback(successMsg);
+  } else {
+    showSubadminFeedback(`❌ ${data.error || 'Moderation failed.'}`);
+  }
+}
+
+if (openSubadminHudBtn && subadminDialog) {
+  openSubadminHudBtn.addEventListener('click', () => {
+    if (subadminFeedback) subadminFeedback.hidden = true;
+    subadminDialog.showModal();
+    refreshSubadminFriends();
+  });
+}
+document.getElementById('subadmin-refresh-btn')?.addEventListener('click', refreshSubadminFriends);
+
 const adminAuthForm = document.getElementById('admin-auth-form');
 const adminAuthError = document.getElementById('admin-auth-error');
 const adminDashboardContent = document.getElementById('admin-dashboard-content');
@@ -4793,6 +4997,31 @@ function renderAdminDashboard(dashboard) {
     const controlsWrap = document.createElement('div');
     controlsWrap.className = 'mod-controls-wrap';
 
+    const roleSelect = document.createElement('select');
+    roleSelect.className = 'mod-chat-select';
+    roleSelect.setAttribute('aria-label', `Role for ${u.username}`);
+    [
+      ['friend', '🧒 Friend'],
+      ['subadmin', '🛡️ Sub-Admin'],
+      ['host', '👑 Host']
+    ].forEach(([val, label]) => {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if ((u.role || 'friend').toLowerCase() === val) opt.selected = true;
+      roleSelect.appendChild(opt);
+    });
+    roleSelect.addEventListener('change', () =>
+      adminModerateUser(
+        {
+          username: u.username,
+          action: 'update_controls',
+          role: roleSelect.value
+        },
+        `🛡️ Updated role for @${u.username} to "${roleSelect.value}".`
+      )
+    );
+
     const micBtn = document.createElement('button');
     micBtn.type = 'button';
     micBtn.className = `mod-pill-btn${u.voiceMutedByParent ? ' is-locked' : ''}`;
@@ -4899,7 +5128,7 @@ function renderAdminDashboard(dashboard) {
       )
     );
 
-    controlsWrap.append(micBtn, chatSelect, buildBtn, tradeBtn, pauseBtn, sentenceBtn);
+    controlsWrap.append(roleSelect, micBtn, chatSelect, buildBtn, tradeBtn, pauseBtn, sentenceBtn);
 
     if (inPrison || coins < 0) {
       const pardonBtn = document.createElement('button');

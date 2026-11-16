@@ -175,6 +175,7 @@ pub struct BlockMutationInput<'a> {
 pub struct AdminModerateUserInput {
     pub username: String,
     pub action: String, // "update_controls" | "sentence_prison" | "pardon_prison" | "adjust_coins" | "reset_strikes"
+    pub role: Option<String>,
     pub voice_muted_by_parent: Option<bool>,
     pub chat_mode: Option<String>,
     pub can_build: Option<bool>,
@@ -183,6 +184,17 @@ pub struct AdminModerateUserInput {
     pub coin_delta: Option<i64>,
     pub prison_tasks: Option<u32>,
     pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubadminModerateInput {
+    pub username: String,
+    pub action: String, // "update_controls" | "kick_session"
+    pub voice_muted_by_parent: Option<bool>,
+    pub chat_mode: Option<String>,
+    pub can_build: Option<bool>,
+    pub can_trade: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -4467,6 +4479,14 @@ impl WorldEngine {
 
             match action.as_str() {
                 "update_controls" => {
+                    if let Some(ref raw_role) = input.role {
+                        let norm_role = raw_role.trim().to_ascii_lowercase();
+                        if norm_role == "friend" || norm_role == "subadmin" || norm_role == "host" {
+                            user.role = norm_role;
+                        } else {
+                            return Err("Role must be friend, subadmin, or host.".into());
+                        }
+                    }
                     if let Some(vm) = input.voice_muted_by_parent {
                         user.voice_muted_by_parent = vm;
                     }
@@ -4639,6 +4659,217 @@ impl WorldEngine {
             "evictedAltPeers": evicted_alts,
             "economy": econ,
             "moderation": mod_snap,
+        }))
+    }
+
+    async fn verify_active_subadmin(&self, actor_username: &str) -> Result<String, (u16, String)> {
+        let cfg = self.users_cfg.read().await;
+        let Some(actor) = cfg
+            .users
+            .iter()
+            .find(|u| u.username.eq_ignore_ascii_case(actor_username))
+        else {
+            return Err((401, "Account not found.".into()));
+        };
+        if !actor.is_subadmin() {
+            return Err((403, "Sub-Admin role required.".into()));
+        }
+        if actor.suspended {
+            return Err((403, "Your account is paused by a parent.".into()));
+        }
+        if actor.in_debtors_prison {
+            return Err((
+                403,
+                "Sub-Admin tools are locked while you are in Debtor's Prison.".into(),
+            ));
+        }
+        let disp = if actor.display_name.is_empty() {
+            actor.username.clone()
+        } else {
+            actor.display_name.clone()
+        };
+        Ok(disp)
+    }
+
+    pub async fn build_subadmin_friends_state(
+        &self,
+        actor_username: &str,
+    ) -> Result<serde_json::Value, (u16, String)> {
+        self.verify_active_subadmin(actor_username).await?;
+        let cfg = self.users_cfg.read().await;
+        let active = self.players.read().await;
+        let friends: Vec<serde_json::Value> = cfg
+            .users
+            .iter()
+            .filter(|u| {
+                !u.username.eq_ignore_ascii_case(actor_username)
+                    && u.role.eq_ignore_ascii_case("friend")
+            })
+            .map(|u| {
+                let online = active
+                    .values()
+                    .any(|p| p.user.username.eq_ignore_ascii_case(&u.username));
+                serde_json::json!({
+                    "username": u.username,
+                    "displayName": if u.display_name.is_empty() { &u.username } else { &u.display_name },
+                    "role": u.role,
+                    "online": online,
+                    "inDebtorsPrison": u.in_debtors_prison,
+                    "voiceMutedByParent": u.voice_muted_by_parent,
+                    "chatMode": normalize_chat_mode(&u.chat_mode),
+                    "canBuild": u.can_build,
+                    "canTrade": u.can_trade,
+                    "suspended": u.suspended,
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "ok": true,
+            "friends": friends,
+        }))
+    }
+
+    pub async fn subadmin_moderate_friend(
+        &self,
+        actor_username: &str,
+        input: SubadminModerateInput,
+    ) -> Result<serde_json::Value, (u16, String)> {
+        let actor_disp = self.verify_active_subadmin(actor_username).await?;
+        let target_uname = input.username.trim().to_lowercase();
+        if target_uname.is_empty() {
+            return Err((400, "Target username is required.".into()));
+        }
+        if target_uname.eq_ignore_ascii_case(actor_username) {
+            return Err((403, "Sub-Admins cannot moderate their own account.".into()));
+        }
+        let action = input.action.trim().to_lowercase();
+
+        let mut cancel_trades = false;
+        let mut system_notice: Option<String> = None;
+        let (sanitized, mod_snap, target_disp) = {
+            let mut cfg = self.users_cfg.write().await;
+            let Some(user) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(&target_uname))
+            else {
+                return Err((404, format!("Friend @{target_uname} not found.")));
+            };
+            if !user.role.eq_ignore_ascii_case("friend") {
+                return Err((
+                    403,
+                    "Sub-Admins can only moderate friend accounts (not Hosts or other Sub-Admins)."
+                        .into(),
+                ));
+            }
+            let disp = if user.display_name.is_empty() {
+                user.username.clone()
+            } else {
+                user.display_name.clone()
+            };
+
+            match action.as_str() {
+                "update_controls" => {
+                    let mut notes = Vec::new();
+                    if let Some(vm) = input.voice_muted_by_parent {
+                        user.voice_muted_by_parent = vm;
+                        notes.push(if vm { "muted mic" } else { "unmuted mic" });
+                    }
+                    if let Some(ref cm) = input.chat_mode {
+                        let norm = normalize_chat_mode(cm);
+                        user.chat_mode = norm.clone();
+                        notes.push(match norm.as_str() {
+                            "muted" => "muted text chat",
+                            "quick_only" => "set quick-chat only",
+                            _ => "restored normal chat",
+                        });
+                    }
+                    if let Some(cb) = input.can_build {
+                        user.can_build = cb;
+                        notes.push(if cb {
+                            "allowed building"
+                        } else {
+                            "locked building"
+                        });
+                    }
+                    if let Some(ct) = input.can_trade {
+                        user.can_trade = ct;
+                        if !ct {
+                            cancel_trades = true;
+                        }
+                        notes.push(if ct {
+                            "allowed trading"
+                        } else {
+                            "locked trading"
+                        });
+                    }
+                    if !notes.is_empty() {
+                        system_notice = Some(format!(
+                            "🛡️ Sub-Admin {actor_disp} updated {disp}: {}.",
+                            notes.join(", ")
+                        ));
+                    }
+                }
+                "kick_session" => {
+                    system_notice = Some(format!(
+                        "🛡️ Sub-Admin {actor_disp} kicked {disp} from the current session."
+                    ));
+                }
+                _ => {
+                    return Err((
+                        400,
+                        "Unknown subadmin action (allowed: update_controls, kick_session).".into(),
+                    ))
+                }
+            }
+            (user.sanitized(), user.moderation_snapshot(), disp)
+        };
+
+        self.persist_users_async().await;
+        self.sync_runtime_user_state(&target_uname, &sanitized)
+            .await;
+
+        if cancel_trades {
+            let peer_ids: Vec<String> = {
+                let map = self.players.read().await;
+                map.values()
+                    .filter(|p| p.user.username.eq_ignore_ascii_case(&target_uname))
+                    .map(|p| p.id.clone())
+                    .collect()
+            };
+            for pid in peer_ids {
+                self.cancel_trades_for_peer(&pid, "Trading restricted by Sub-Admin.")
+                    .await;
+            }
+        }
+
+        self.send_moderation_update(&target_uname, &format!("subadmin:{action}"))
+            .await;
+        if let Some(notice) = system_notice {
+            let _ = self.broadcast_system_chat_notice(notice).await;
+        }
+
+        let mut kicked_peers = Vec::new();
+        if action == "kick_session" {
+            kicked_peers = self
+                .kick_and_remove_user_sessions(
+                    &target_uname,
+                    &format!("🛡️ Removed from session by Sub-Admin {actor_disp}."),
+                )
+                .await;
+        }
+        let evicted_alts = self
+            .evict_other_accounts_on_user_machines(&target_uname)
+            .await;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "action": action,
+            "username": target_uname,
+            "displayName": target_disp,
+            "moderation": mod_snap,
+            "kickedPeers": kicked_peers,
+            "evictedAltPeers": evicted_alts,
         }))
     }
 }

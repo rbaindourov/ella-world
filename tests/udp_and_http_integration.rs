@@ -3927,3 +3927,170 @@ async fn glam_studio_modal_stage_and_wardrobe_persistence_contract() {
 
     running.http_task.abort();
 }
+
+#[tokio::test]
+async fn subadmin_role_can_moderate_friends_only_and_cannot_bypass_parent_locks() {
+    let cfg = make_test_config("subadmin_role");
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    // 1. Parent admin promotes Ella to role="subadmin"
+    let (st_adm, adm_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/login",
+        Some(json!({ "password": "changeme-parent-admin" })),
+    )
+    .await;
+    assert_eq!(st_adm, 200);
+    let admin_token = adm_login["adminToken"].as_str().unwrap().to_string();
+
+    let (st_promo, _) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/moderate",
+        &admin_token,
+        Some(json!({
+            "username": "ella",
+            "action": "update_controls",
+            "role": "subadmin"
+        })),
+    )
+    .await;
+    assert_eq!(st_promo, 200);
+
+    // 2. Ella & Maya log in; Ella sees role="subadmin"
+    let (st_e, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(
+            json!({ "username": "ella", "password": "changeme-starlight", "clientId": "sub_ella" }),
+        ),
+    )
+    .await;
+    assert_eq!(st_e, 200);
+    assert_eq!(ella_login["self"]["user"]["role"], "subadmin");
+    let ella_token = ella_login["token"].as_str().unwrap().to_string();
+
+    let (st_m, maya_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "sub_maya" })),
+    )
+    .await;
+    assert_eq!(st_m, 200);
+    let maya_token = maya_login["token"].as_str().unwrap().to_string();
+
+    // 3. Regular friend (Maya) is forbidden from /subadmin/state
+    let (st_maya_sub, _) = http_json_auth_request(
+        running.http_addr,
+        "GET",
+        "/api/ella-world/subadmin/state",
+        &maya_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_maya_sub, 403);
+
+    // 4. Sub-Admin Ella can fetch friend list & mute Maya's mic + set quick_only chat + lock build
+    let (st_state, sub_state) = http_json_auth_request(
+        running.http_addr,
+        "GET",
+        "/api/ella-world/subadmin/state",
+        &ella_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_state, 200);
+    let friends = sub_state["friends"].as_array().unwrap();
+    assert!(friends.iter().any(|f| f["username"] == "maya"));
+
+    let (st_mod, mod_res) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/subadmin/moderate",
+        &ella_token,
+        Some(json!({
+            "username": "maya",
+            "action": "update_controls",
+            "voiceMutedByParent": true,
+            "chatMode": "quick_only",
+            "canBuild": false,
+            "canTrade": false
+        })),
+    )
+    .await;
+    assert_eq!(st_mod, 200);
+    assert_eq!(mod_res["moderation"]["voiceMutedByParent"], true);
+    assert_eq!(mod_res["moderation"]["chatMode"], "quick_only");
+    assert_eq!(mod_res["moderation"]["canBuild"], false);
+    assert_eq!(mod_res["moderation"]["canTrade"], false);
+
+    // 5. Sub-Admin Ella CANNOT self-moderate or access parent /admin/state
+    let (st_self, _) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/subadmin/moderate",
+        &ella_token,
+        Some(json!({
+            "username": "ella",
+            "action": "update_controls",
+            "voiceMutedByParent": false
+        })),
+    )
+    .await;
+    assert_eq!(st_self, 403);
+
+    let (st_parent_api, _) = http_json_auth_request(
+        running.http_addr,
+        "GET",
+        "/api/ella-world/admin/state",
+        &ella_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_parent_api, 401);
+
+    // 6. Sub-Admin Ella can kick Maya's live session (invalidating Maya's active session)
+    let (st_kick, kick_res) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/subadmin/moderate",
+        &ella_token,
+        Some(json!({
+            "username": "maya",
+            "action": "kick_session"
+        })),
+    )
+    .await;
+    assert_eq!(st_kick, 200);
+    assert_eq!(kick_res["kickedPeers"].as_array().unwrap().len(), 1);
+
+    // 7. If Ella is sentenced to Debtor's Prison, her Sub-Admin tools lock immediately (403)
+    let (st_pris, _) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/moderate",
+        &admin_token,
+        Some(json!({
+            "username": "ella",
+            "action": "sentence_prison",
+            "prisonTasks": 2
+        })),
+    )
+    .await;
+    assert_eq!(st_pris, 200);
+
+    let (st_locked, _) = http_json_auth_request(
+        running.http_addr,
+        "GET",
+        "/api/ella-world/subadmin/state",
+        &ella_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_locked, 403);
+
+    running.http_task.abort();
+}
