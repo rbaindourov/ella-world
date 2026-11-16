@@ -1291,6 +1291,7 @@ struct AdminGiftItemPayload {
     item_id: String,
     #[serde(default)]
     qty: u32,
+    set_qty: Option<u32>,
     allow_clone: Option<bool>,
 }
 
@@ -1304,7 +1305,13 @@ async fn admin_gift_item_handler(
     }
     let mut res = match st
         .world
-        .admin_gift_item(&body.username, &body.item_id, body.qty, body.allow_clone)
+        .admin_gift_item(
+            &body.username,
+            &body.item_id,
+            body.qty,
+            body.set_qty,
+            body.allow_clone,
+        )
         .await
     {
         Ok(v) => v,

@@ -168,8 +168,8 @@ To ensure parent password rotations and emergency sign-outs take effect **instan
 
 ### 8.5 Sub-Admin Friend Moderator Role (`role: "subadmin"`, `GET /subadmin/state`, `POST /subadmin/moderate`)
 - Parents can promote or demote any account between `friend`, `subadmin`, and `host` in the Parent Admin Panel or via `node scripts/ella_admin_user_cli.mjs --username <u> --set-role subadmin`.
-- A `subadmin` account unlocks the **🛡️ Mod Friends** modal (`#subadmin-dialog`) in the HUD to moderate **`friend`** accounts only (Mic Mute, Text Chat Mode, Build Lock, Trade Lock, and live `kick_session`).
-- **Strict Parent-Only Boundaries**: Sub-Admins cannot self-moderate, cannot moderate `host` or other `subadmin` accounts, cannot change passwords/coins/curfews/machine-signature overrides or pardon Debtor's Prison, and automatically lose Sub-Admin access (`403 Forbidden`) if their own account is paused or in Debtor's Prison.
+- A `subadmin` account unlocks the **🛡️ Mod Friends** modal (`#subadmin-dialog`) in the HUD to manage **`friend`** accounts' Gold (`coinDelta` / `setCoins`), Inventory (`gift_item` with `qty`, `setQty`, and `allowClone`), Customizable Features (`displayName` and `avatar` look presets), and Moderation Controls (Mic Mute, Text Chat Mode, Build Lock, Trade Lock, and live `kick_session`).
+- **Strict Parent-Only Boundaries**: Sub-Admins cannot self-moderate, cannot moderate `host` or other `subadmin` accounts, cannot change passwords/curfews/machine-signature overrides or pardon Debtor's Prison, and automatically lose Sub-Admin access (`403 Forbidden`) if their own account is paused or in Debtor's Prison.
 
 ### 8.6 Parent-Exclusive Item Gifting & Authorized Cloning (`POST /admin/gift-item`, `POST /economy/clone`)
 - **Parent-Exclusive Catalog (`parent_exclusive: true`)**: Mythic items (`parent_golden_trophy`, `parent_guardian_crown`, `parent_starlight_heirloom`) never spawn in Crystal Cavern mobs, chests, or veins (`roll_mob_loot` / `roll_chest_loot`) and can only be gifted by a Parent in **Parent Admin** or via `--gift-item <itemId> --qty <n> --allow-clone true|false` in `scripts/ella_admin_user_cli.mjs`.

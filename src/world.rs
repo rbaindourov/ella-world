@@ -176,12 +176,15 @@ pub struct AdminModerateUserInput {
     pub username: String,
     pub action: String, // "update_controls" | "sentence_prison" | "pardon_prison" | "adjust_coins" | "reset_strikes"
     pub role: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar: Option<serde_json::Value>,
     pub voice_muted_by_parent: Option<bool>,
     pub chat_mode: Option<String>,
     pub can_build: Option<bool>,
     pub can_trade: Option<bool>,
     pub suspended: Option<bool>,
     pub coin_delta: Option<i64>,
+    pub set_coins: Option<i64>,
     pub prison_tasks: Option<u32>,
     pub reason: Option<String>,
 }
@@ -190,11 +193,19 @@ pub struct AdminModerateUserInput {
 #[serde(rename_all = "camelCase")]
 pub struct SubadminModerateInput {
     pub username: String,
-    pub action: String, // "update_controls" | "kick_session"
+    pub action: String, // "update_controls" | "gift_item" | "kick_session"
+    pub display_name: Option<String>,
+    pub avatar: Option<serde_json::Value>,
     pub voice_muted_by_parent: Option<bool>,
     pub chat_mode: Option<String>,
     pub can_build: Option<bool>,
     pub can_trade: Option<bool>,
+    pub coin_delta: Option<i64>,
+    pub set_coins: Option<i64>,
+    pub item_id: Option<String>,
+    pub qty: Option<u32>,
+    pub set_qty: Option<u32>,
+    pub allow_clone: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -4464,6 +4475,7 @@ impl WorldEngine {
         let mut warp_to_prison = false;
         let mut warp_to_plaza = false;
         let mut cancel_trades = false;
+        let mut avatar_or_name_changed = false;
         let mut system_notice: Option<String> = None;
 
         let (sanitized, econ, mod_snap, now_suspended) = {
@@ -4483,9 +4495,30 @@ impl WorldEngine {
                         let norm_role = raw_role.trim().to_ascii_lowercase();
                         if norm_role == "friend" || norm_role == "subadmin" || norm_role == "host" {
                             user.role = norm_role;
+                            avatar_or_name_changed = true;
                         } else {
                             return Err("Role must be friend, subadmin, or host.".into());
                         }
+                    }
+                    if let Some(ref dn) = input.display_name {
+                        let clean_dn: String = dn.trim().chars().take(32).collect();
+                        if !clean_dn.is_empty() {
+                            user.display_name = clean_dn;
+                            avatar_or_name_changed = true;
+                        }
+                    }
+                    if let Some(ref av_patch) = input.avatar {
+                        user.avatar.apply_patch(av_patch);
+                        reconcile_equipped_cosmetics(&mut user.avatar, &user.inventory);
+                        avatar_or_name_changed = true;
+                    }
+                    if let Some(sc) = input.set_coins {
+                        user.coins = sc.clamp(-1_000_000, 1_000_000);
+                    } else if let Some(delta) = input.coin_delta {
+                        user.coins = user
+                            .coins
+                            .saturating_add(delta)
+                            .clamp(-1_000_000, 1_000_000);
                     }
                     if let Some(vm) = input.voice_muted_by_parent {
                         user.voice_muted_by_parent = vm;
@@ -4638,6 +4671,15 @@ impl WorldEngine {
                 .unwrap_or_default()
         };
         if !online_peer.is_empty() {
+            if avatar_or_name_changed {
+                let seq = self.next_state_seq();
+                let _ = self.udp_event_tx.send(UdpWorldEvent::AvatarUpdated {
+                    state_seq: seq,
+                    self_id: online_peer.clone(),
+                    avatar_hash: sanitized.avatar.short_hash(),
+                    user: sanitized.clone(),
+                });
+            }
             self.send_economy_update(&online_peer, &uname, &format!("admin:{action}"))
                 .await;
         }
@@ -4714,6 +4756,10 @@ impl WorldEngine {
                     "displayName": if u.display_name.is_empty() { &u.username } else { &u.display_name },
                     "role": u.role,
                     "online": online,
+                    "coins": u.coins,
+                    "inventory": u.inventory,
+                    "cloneableItems": u.cloneable_items,
+                    "avatar": u.avatar,
                     "inDebtorsPrison": u.in_debtors_prison,
                     "voiceMutedByParent": u.voice_muted_by_parent,
                     "chatMode": normalize_chat_mode(&u.chat_mode),
@@ -4725,6 +4771,7 @@ impl WorldEngine {
             .collect();
         Ok(serde_json::json!({
             "ok": true,
+            "itemCatalog": crate::economy::ITEM_CATALOG,
             "friends": friends,
         }))
     }
@@ -4745,8 +4792,10 @@ impl WorldEngine {
         let action = input.action.trim().to_lowercase();
 
         let mut cancel_trades = false;
+        let mut economy_changed = false;
+        let mut avatar_or_name_changed = false;
         let mut system_notice: Option<String> = None;
-        let (sanitized, mod_snap, target_disp) = {
+        let (sanitized, econ, mod_snap, target_disp) = {
             let mut cfg = self.users_cfg.write().await;
             let Some(user) = cfg
                 .users
@@ -4771,6 +4820,32 @@ impl WorldEngine {
             match action.as_str() {
                 "update_controls" => {
                     let mut notes = Vec::new();
+                    if let Some(ref dn) = input.display_name {
+                        let clean_dn: String = dn.trim().chars().take(32).collect();
+                        if !clean_dn.is_empty() {
+                            user.display_name = clean_dn;
+                            avatar_or_name_changed = true;
+                            notes.push("updated name");
+                        }
+                    }
+                    if let Some(ref av_patch) = input.avatar {
+                        user.avatar.apply_patch(av_patch);
+                        reconcile_equipped_cosmetics(&mut user.avatar, &user.inventory);
+                        avatar_or_name_changed = true;
+                        notes.push("customized avatar");
+                    }
+                    if let Some(sc) = input.set_coins {
+                        user.coins = sc.clamp(-1_000_000, 1_000_000);
+                        economy_changed = true;
+                        notes.push("set gold");
+                    } else if let Some(delta) = input.coin_delta {
+                        user.coins = user
+                            .coins
+                            .saturating_add(delta)
+                            .clamp(-1_000_000, 1_000_000);
+                        economy_changed = true;
+                        notes.push("adjusted gold");
+                    }
                     if let Some(vm) = input.voice_muted_by_parent {
                         user.voice_muted_by_parent = vm;
                         notes.push(if vm { "muted mic" } else { "unmuted mic" });
@@ -4810,19 +4885,52 @@ impl WorldEngine {
                         ));
                     }
                 }
+                "gift_item" => {
+                    let raw_item = input.item_id.as_deref().unwrap_or("");
+                    let qty = input.qty.unwrap_or(0);
+                    let (def, _new_qty, av_changed) = mutate_user_inventory_item(
+                        user,
+                        raw_item,
+                        qty,
+                        input.set_qty,
+                        input.allow_clone,
+                    )
+                    .map_err(|e| (400, e))?;
+                    economy_changed = true;
+                    if av_changed {
+                        avatar_or_name_changed = true;
+                    }
+                    if let Some(sq) = input.set_qty {
+                        system_notice = Some(format!(
+                            "🛡️ Sub-Admin {actor_disp} set {disp}'s {} {} to {}x.",
+                            def.icon, def.name, sq
+                        ));
+                    } else if qty > 0 {
+                        system_notice = Some(format!(
+                            "🎁 Sub-Admin {actor_disp} gifted {}x {} {} to {disp}!",
+                            qty.min(99),
+                            def.icon,
+                            def.name
+                        ));
+                    }
+                }
                 "kick_session" => {
                     system_notice = Some(format!(
                         "🛡️ Sub-Admin {actor_disp} kicked {disp} from the current session."
                     ));
                 }
-                _ => {
-                    return Err((
-                        400,
-                        "Unknown subadmin action (allowed: update_controls, kick_session).".into(),
-                    ))
-                }
+                _ => return Err((
+                    400,
+                    "Unknown subadmin action (allowed: update_controls, gift_item, kick_session)."
+                        .into(),
+                )),
             }
-            (user.sanitized(), user.moderation_snapshot(), disp)
+            (
+                user.sanitized(),
+                user.economy_snapshot(),
+                user.moderation_snapshot(),
+                disp,
+            )
         };
 
         self.persist_users_async().await;
@@ -4840,6 +4948,33 @@ impl WorldEngine {
             for pid in peer_ids {
                 self.cancel_trades_for_peer(&pid, "Trading restricted by Sub-Admin.")
                     .await;
+            }
+        }
+
+        let online_peer = {
+            let map = self.players.read().await;
+            map.values()
+                .find(|p| p.user.username.eq_ignore_ascii_case(&target_uname))
+                .map(|p| p.id.clone())
+                .unwrap_or_default()
+        };
+        if !online_peer.is_empty() {
+            if avatar_or_name_changed {
+                let seq = self.next_state_seq();
+                let _ = self.udp_event_tx.send(UdpWorldEvent::AvatarUpdated {
+                    state_seq: seq,
+                    self_id: online_peer.clone(),
+                    avatar_hash: sanitized.avatar.short_hash(),
+                    user: sanitized.clone(),
+                });
+            }
+            if economy_changed {
+                self.send_economy_update(
+                    &online_peer,
+                    &target_uname,
+                    &format!("subadmin:{action}"),
+                )
+                .await;
             }
         }
 
@@ -4867,6 +5002,7 @@ impl WorldEngine {
             "action": action,
             "username": target_uname,
             "displayName": target_disp,
+            "economy": econ,
             "moderation": mod_snap,
             "kickedPeers": kicked_peers,
             "evictedAltPeers": evicted_alts,
@@ -4878,15 +5014,13 @@ impl WorldEngine {
         username: &str,
         item_id: &str,
         qty: u32,
+        set_qty: Option<u32>,
         allow_clone: Option<bool>,
     ) -> Result<serde_json::Value, String> {
         let uname = username.trim().to_lowercase();
         let clean_item = item_id.trim();
-        let Some(def) = find_item_def(clean_item) else {
-            return Err(format!("Unknown item ID: {clean_item}"));
-        };
         let mut system_notice: Option<String> = None;
-        let (econ, disp_name) = {
+        let (econ, disp_name, def, av_changed, sanitized) = {
             let mut cfg = self.users_cfg.write().await;
             let Some(user) = cfg
                 .users
@@ -4895,13 +5029,19 @@ impl WorldEngine {
             else {
                 return Err(format!("Account @{uname} not found."));
             };
-            if qty > 0 {
-                add_inventory_item(&mut user.inventory, def.id, qty.min(99));
-                let disp = if user.display_name.is_empty() {
-                    user.username.clone()
-                } else {
-                    user.display_name.clone()
-                };
+            let (def, _new_qty, av_changed) =
+                mutate_user_inventory_item(user, clean_item, qty, set_qty, allow_clone)?;
+            let disp = if user.display_name.is_empty() {
+                user.username.clone()
+            } else {
+                user.display_name.clone()
+            };
+            if let Some(sq) = set_qty {
+                system_notice = Some(format!(
+                    "🎁 Parent set {disp}'s {} {} to {}x.",
+                    def.icon, def.name, sq
+                ));
+            } else if qty > 0 {
                 system_notice = Some(format!(
                     "🎁 Parent gifted {}x {} {} to {}!",
                     qty.min(99),
@@ -4910,22 +5050,19 @@ impl WorldEngine {
                     disp
                 ));
             }
-            if let Some(ac) = allow_clone {
-                if ac {
-                    user.cloneable_items.insert(def.id.to_string());
-                } else {
-                    user.cloneable_items.remove(def.id);
-                }
-            }
-            let disp = if user.display_name.is_empty() {
-                user.username.clone()
-            } else {
-                user.display_name.clone()
-            };
-            (user.economy_snapshot(), disp)
+            (
+                user.economy_snapshot(),
+                disp,
+                def,
+                av_changed,
+                user.sanitized(),
+            )
         };
 
         self.persist_users_async().await;
+        if av_changed {
+            self.sync_runtime_user_state(&uname, &sanitized).await;
+        }
         let online_peer = {
             let map = self.players.read().await;
             map.values()
@@ -4934,6 +5071,15 @@ impl WorldEngine {
                 .unwrap_or_default()
         };
         if !online_peer.is_empty() {
+            if av_changed {
+                let seq = self.next_state_seq();
+                let _ = self.udp_event_tx.send(UdpWorldEvent::AvatarUpdated {
+                    state_seq: seq,
+                    self_id: online_peer.clone(),
+                    avatar_hash: sanitized.avatar.short_hash(),
+                    user: sanitized,
+                });
+            }
             self.send_economy_update(&online_peer, &uname, &format!("admin:gift:{clean_item}"))
                 .await;
         }
@@ -5016,6 +5162,41 @@ impl WorldEngine {
             "economy": econ,
         }))
     }
+}
+
+pub fn mutate_user_inventory_item(
+    user: &mut UserAccount,
+    item_id: &str,
+    qty: u32,
+    set_qty: Option<u32>,
+    allow_clone: Option<bool>,
+) -> Result<(&'static crate::economy::ItemDef, u32, bool), String> {
+    let clean_item = item_id.trim();
+    let Some(def) = find_item_def(clean_item) else {
+        return Err(format!("Unknown item ID: {clean_item}"));
+    };
+    let next_qty = if let Some(sq) = set_qty {
+        let clamped = sq.min(999);
+        if clamped == 0 {
+            user.inventory.remove(def.id);
+        } else {
+            user.inventory.insert(def.id.to_string(), clamped);
+        }
+        clamped
+    } else if qty > 0 {
+        add_inventory_item(&mut user.inventory, def.id, qty.min(99))
+    } else {
+        user.inventory.get(def.id).copied().unwrap_or(0)
+    };
+    if let Some(ac) = allow_clone {
+        if ac {
+            user.cloneable_items.insert(def.id.to_string());
+        } else {
+            user.cloneable_items.remove(def.id);
+        }
+    }
+    let av_changed = reconcile_equipped_cosmetics(&mut user.avatar, &user.inventory);
+    Ok((def, next_qty, av_changed))
 }
 
 pub fn check_machine_access_for_cfg(

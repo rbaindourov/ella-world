@@ -4055,6 +4055,60 @@ async fn subadmin_role_can_moderate_friends_only_and_cannot_bypass_parent_locks(
     .await;
     assert_eq!(st_parent_api, 401);
 
+    // 5b. Sub-Admin Ella can manage Maya's gold, inventory items (gift/clone/remove), displayName & avatar
+    let (st_sub_cust, sub_cust_res) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/subadmin/moderate",
+        &ella_token,
+        Some(json!({
+            "username": "maya",
+            "action": "update_controls",
+            "setCoins": 250,
+            "displayName": "Maya VIP",
+            "avatar": { "characterPreset": "katey", "topColor": "#c084fc" }
+        })),
+    )
+    .await;
+    assert_eq!(st_sub_cust, 200);
+    assert_eq!(sub_cust_res["economy"]["coins"], 250);
+
+    let (st_sub_gift, sub_gift_res) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/subadmin/moderate",
+        &ella_token,
+        Some(json!({
+            "username": "maya",
+            "action": "gift_item",
+            "itemId": "parent_golden_trophy",
+            "qty": 2,
+            "allowClone": true
+        })),
+    )
+    .await;
+    assert_eq!(st_sub_gift, 200);
+    assert_eq!(
+        sub_gift_res["economy"]["inventory"]["parent_golden_trophy"],
+        2
+    );
+
+    let (st_sub_rm, sub_rm_res) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/subadmin/moderate",
+        &ella_token,
+        Some(json!({
+            "username": "maya",
+            "action": "gift_item",
+            "itemId": "parent_golden_trophy",
+            "setQty": 0
+        })),
+    )
+    .await;
+    assert_eq!(st_sub_rm, 200);
+    assert!(sub_rm_res["economy"]["inventory"]["parent_golden_trophy"].is_null());
+
     // 6. Sub-Admin Ella can kick Maya's live session (invalidating Maya's active session)
     let (st_kick, kick_res) = http_json_auth_request(
         running.http_addr,

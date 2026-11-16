@@ -4595,10 +4595,66 @@ function showSubadminFeedback(message) {
   subadminFeedback.hidden = false;
 }
 
-function renderSubadminFriends(friends) {
+function buildAvatarPresetSelect(currentPreset, username, onChoose) {
+  const sel = document.createElement('select');
+  sel.className = 'mod-chat-select';
+  sel.setAttribute('aria-label', `Avatar look for ${username}`);
+  const opts = [
+    ['', '👗 Avatar Look...'],
+    ['ella_idol', '👑 Ella Idol'],
+    ['amy', '🐱 Amy Cat'],
+    ['katey', '😎 Katey Cool'],
+    ['jack_tech49', '🕶️ Jack Tech-49'],
+    ['maverick_cabin', '🧢 Maverick Cabin']
+  ];
+  for (const [val, label] of opts) {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = label;
+    if (val && currentPreset === val) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change', () => {
+    if (!sel.value || !SIGNATURE_GLAM_PRESETS[sel.value]) return;
+    onChoose(sel.value, SIGNATURE_GLAM_PRESETS[sel.value]);
+  });
+  return sel;
+}
+
+function renderSubadminFriends(friends, catalogOverride = null) {
   if (!subadminFriendsTbody) return;
   subadminFriendsTbody.replaceChildren();
   const list = Array.isArray(friends) ? friends : [];
+  const activeCatalog = Array.isArray(catalogOverride) ? catalogOverride : itemCatalog;
+
+  const giftUserSel = document.getElementById('subadmin-gift-username');
+  if (giftUserSel) {
+    const prevU = giftUserSel.value;
+    giftUserSel.replaceChildren();
+    for (const f of list) {
+      const opt = document.createElement('option');
+      opt.value = f.username;
+      opt.textContent = `${f.displayName || f.username} (@${f.username})`;
+      if (f.username === prevU) opt.selected = true;
+      giftUserSel.appendChild(opt);
+    }
+  }
+  const giftItemSel = document.getElementById('subadmin-gift-item');
+  if (giftItemSel) {
+    const prevI = giftItemSel.value;
+    giftItemSel.replaceChildren();
+    const sorted = [...activeCatalog].sort(
+      (a, b) => Number(Boolean(b.parentExclusive)) - Number(Boolean(a.parentExclusive))
+    );
+    for (const it of sorted) {
+      const opt = document.createElement('option');
+      opt.value = it.id;
+      opt.textContent = `${it.icon || '🎁'} ${it.name}${it.parentExclusive ? ' [Exclusive]' : ''}`;
+      if (it.id === prevI) opt.selected = true;
+      giftItemSel.appendChild(opt);
+    }
+  }
+
   if (list.length === 0) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
@@ -4611,13 +4667,11 @@ function renderSubadminFriends(friends) {
 
   for (const f of list) {
     const tr = document.createElement('tr');
+    const coins = Number(f.coins || 0);
 
     const tdName = document.createElement('td');
     const strong = document.createElement('strong');
     strong.textContent = `${f.displayName || f.username} (@${f.username})`;
-    tdName.appendChild(strong);
-
-    const tdStatus = document.createElement('td');
     const stack = document.createElement('div');
     stack.className = 'admin-status-stack';
     const onlineSpan = document.createElement('span');
@@ -4636,11 +4690,128 @@ function renderSubadminFriends(friends) {
       sBadge.textContent = '🚫 Paused by Parent';
       stack.appendChild(sBadge);
     }
-    tdStatus.appendChild(stack);
+    tdName.append(strong, stack);
 
+    // Gold & Inventory Controls
+    const tdEcon = document.createElement('td');
+    const econTop = document.createElement('div');
+    econTop.className = 'admin-econ-top';
+    const coinBadge = document.createElement('span');
+    coinBadge.className = `coin-balance-pill${coins < 0 ? ' is-in-debt' : ''}`;
+    coinBadge.textContent = `🪙 ${coins.toLocaleString()}`;
+    econTop.appendChild(coinBadge);
+
+    const coinBtns = document.createElement('div');
+    coinBtns.className = 'mod-coin-step-row';
+    for (const [delta, label] of [
+      [-25, '-25 🪙'],
+      [25, '+25 🪙'],
+      [100, '+100 🪙']
+    ]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `mod-pill-btn${delta < 0 ? ' warn-pill' : ''}`;
+      b.textContent = label;
+      b.addEventListener('click', () =>
+        subadminModerateFriend(
+          { username: f.username, action: 'update_controls', coinDelta: delta },
+          `🪙 Adjusted @${f.username}'s gold by ${delta > 0 ? `+${delta}` : delta}.`
+        )
+      );
+      coinBtns.appendChild(b);
+    }
+    const setGoldBtn = document.createElement('button');
+    setGoldBtn.type = 'button';
+    setGoldBtn.className = 'mod-pill-btn';
+    setGoldBtn.textContent = '✏️ Set Gold';
+    setGoldBtn.addEventListener('click', () => {
+      const raw = window.prompt(`Set exact gold balance for @${f.username}:`, String(coins));
+      if (raw === null) return;
+      const parsed = Math.trunc(Number(raw));
+      if (!Number.isFinite(parsed)) return;
+      subadminModerateFriend(
+        { username: f.username, action: 'update_controls', setCoins: parsed },
+        `🪙 Set @${f.username}'s gold to ${parsed.toLocaleString()}.`
+      );
+    });
+    coinBtns.appendChild(setGoldBtn);
+    tdEcon.append(econTop, coinBtns);
+
+    const invEntries = Object.entries(f.inventory || {}).filter(([, q]) => Number(q) > 0);
+    if (invEntries.length > 0) {
+      const cloneSet = new Set(Array.isArray(f.cloneableItems) ? f.cloneableItems : []);
+      const invWrap = document.createElement('div');
+      invWrap.className = 'mod-coin-step-row';
+      for (const [itemId, qty] of invEntries) {
+        const def = catalogById.get(itemId);
+        const allow = cloneSet.has(itemId);
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'mod-pill-btn';
+        addBtn.textContent = `${def?.icon || '🎁'} ${qty}x +1`;
+        addBtn.title = `Give +1 ${def?.name || itemId} to @${f.username}`;
+        addBtn.addEventListener('click', () =>
+          subadminModerateFriend(
+            { username: f.username, action: 'gift_item', itemId, qty: 1 },
+            `🎁 Added +1 ${def?.name || itemId} to @${f.username}.`
+          )
+        );
+        const cloneBtn = document.createElement('button');
+        cloneBtn.type = 'button';
+        cloneBtn.className = `mod-pill-btn${allow ? ' is-active-safe' : ''}`;
+        cloneBtn.textContent = allow ? '🧬 On' : '🧬 Off';
+        cloneBtn.title = `Toggle clone for ${def?.name || itemId}`;
+        cloneBtn.addEventListener('click', () =>
+          subadminModerateFriend(
+            { username: f.username, action: 'gift_item', itemId, qty: 0, allowClone: !allow },
+            `${!allow ? '🧬 Enabled' : '🔒 Disabled'} clone of ${def?.name || itemId} for @${f.username}.`
+          )
+        );
+        const rmBtn = document.createElement('button');
+        rmBtn.type = 'button';
+        rmBtn.className = 'mod-pill-btn warn-pill';
+        rmBtn.textContent = '🗑️';
+        rmBtn.title = `Remove ${def?.name || itemId} from @${f.username}`;
+        rmBtn.addEventListener('click', () =>
+          subadminModerateFriend(
+            { username: f.username, action: 'gift_item', itemId, setQty: 0 },
+            `🗑️ Removed ${def?.name || itemId} from @${f.username}.`
+          )
+        );
+        invWrap.append(addBtn, cloneBtn, rmBtn);
+      }
+      tdEcon.appendChild(invWrap);
+    }
+
+    // Customize & Moderation Controls
     const tdControls = document.createElement('td');
     const wrap = document.createElement('div');
     wrap.className = 'mod-controls-wrap';
+
+    const presetSel = buildAvatarPresetSelect(
+      f.avatar?.characterPreset || '',
+      f.username,
+      (presetKey, presetObj) =>
+        subadminModerateFriend(
+          { username: f.username, action: 'update_controls', avatar: presetObj },
+          `👗 Changed @${f.username}'s avatar look to "${presetKey}".`
+        )
+    );
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.className = 'mod-pill-btn';
+    renameBtn.textContent = '✏️ Name';
+    renameBtn.addEventListener('click', () => {
+      const next = window.prompt(
+        `New display name for @${f.username}:`,
+        f.displayName || f.username
+      );
+      if (!next || !next.trim()) return;
+      subadminModerateFriend(
+        { username: f.username, action: 'update_controls', displayName: next.trim() },
+        `✏️ Renamed @${f.username} to "${next.trim()}".`
+      );
+    });
 
     const micBtn = document.createElement('button');
     micBtn.type = 'button';
@@ -4714,7 +4885,7 @@ function renderSubadminFriends(friends) {
       )
     );
 
-    wrap.append(micBtn, chatSelect, buildBtn, tradeBtn);
+    wrap.append(presetSel, renameBtn, micBtn, chatSelect, buildBtn, tradeBtn);
     tdControls.appendChild(wrap);
 
     const tdSession = document.createElement('td');
@@ -4731,7 +4902,7 @@ function renderSubadminFriends(friends) {
     );
     tdSession.appendChild(kickBtn);
 
-    tr.append(tdName, tdStatus, tdControls, tdSession);
+    tr.append(tdName, tdEcon, tdControls, tdSession);
     subadminFriendsTbody.appendChild(tr);
   }
 }
@@ -4743,7 +4914,10 @@ async function refreshSubadminFriends() {
   });
   const data = await res.json().catch(() => ({}));
   if (res.ok) {
-    renderSubadminFriends(data.friends || []);
+    if (Array.isArray(data.itemCatalog) && data.itemCatalog.length > 0) {
+      setItemCatalog(data.itemCatalog);
+    }
+    renderSubadminFriends(data.friends || [], data.itemCatalog || null);
   } else {
     showSubadminFeedback(`❌ ${data.error || 'Sub-Admin access unavailable.'}`);
   }
@@ -4771,6 +4945,19 @@ async function subadminModerateFriend(payload, successMsg) {
     showSubadminFeedback(`❌ ${data.error || 'Moderation failed.'}`);
   }
 }
+
+document.getElementById('subadmin-gift-item-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const username = document.getElementById('subadmin-gift-username')?.value || '';
+  const itemId = document.getElementById('subadmin-gift-item')?.value || '';
+  const qty = Math.max(1, Number(document.getElementById('subadmin-gift-qty')?.value || 1));
+  const allowClone = Boolean(document.getElementById('subadmin-gift-allow-clone')?.checked);
+  if (!username || !itemId) return;
+  await subadminModerateFriend(
+    { username, action: 'gift_item', itemId, qty, allowClone },
+    `🎁 Gifted ${qty}x ${itemId} to @${username}${allowClone ? ' (🧬 Clone Enabled)' : ''}!`
+  );
+});
 
 if (openSubadminHudBtn && subadminDialog) {
   openSubadminHudBtn.addEventListener('click', () => {
@@ -5020,7 +5207,21 @@ function renderAdminDashboard(dashboard) {
         `✨ Granted +25 🪙 to @${u.username}.`
       )
     );
-    stepRow.append(minusBtn, plusBtn);
+    const setGoldBtn = document.createElement('button');
+    setGoldBtn.type = 'button';
+    setGoldBtn.className = 'mod-pill-btn';
+    setGoldBtn.textContent = '✏️ Set Gold';
+    setGoldBtn.addEventListener('click', () => {
+      const raw = window.prompt(`Set exact gold balance for @${u.username}:`, String(coins));
+      if (raw === null) return;
+      const parsed = Math.trunc(Number(raw));
+      if (!Number.isFinite(parsed)) return;
+      adminModerateUser(
+        { username: u.username, action: 'update_controls', setCoins: parsed },
+        `🪙 Set @${u.username}'s gold to ${parsed.toLocaleString()}.`
+      );
+    });
+    stepRow.append(minusBtn, plusBtn, setGoldBtn);
     tdEcon.append(econTop, stepRow);
 
     const invEntries = Object.entries(u.inventory || {}).filter(([, q]) => Number(q) > 0);
@@ -5028,13 +5229,24 @@ function renderAdminDashboard(dashboard) {
       const cloneSet = new Set(Array.isArray(u.cloneableItems) ? u.cloneableItems : []);
       const giftWrap = document.createElement('div');
       giftWrap.className = 'mod-coin-step-row';
-      for (const [itemId, qty] of invEntries.slice(0, 4)) {
+      for (const [itemId, qty] of invEntries) {
         const def = catalogById.get(itemId);
         const allow = cloneSet.has(itemId);
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'mod-pill-btn';
+        addBtn.textContent = `${def?.icon || '🎁'} ${qty}x +1`;
+        addBtn.title = `Give +1 ${def?.name || itemId} to @${u.username}`;
+        addBtn.addEventListener('click', () =>
+          adminGiftOrToggleClone(
+            { username: u.username, itemId, qty: 1 },
+            `🎁 Added +1 ${def?.name || itemId} to @${u.username}.`
+          )
+        );
         const cBtn = document.createElement('button');
         cBtn.type = 'button';
         cBtn.className = `mod-pill-btn${allow ? ' is-active-safe' : ''}`;
-        cBtn.textContent = `${def?.icon || '🎁'} ${qty}x ${allow ? '🧬 Clone On' : 'Clone Off'}`;
+        cBtn.textContent = allow ? '🧬 On' : '🧬 Off';
         cBtn.title = `Toggle whether @${u.username} can clone ${def?.name || itemId}`;
         cBtn.addEventListener('click', () =>
           adminGiftOrToggleClone(
@@ -5042,7 +5254,18 @@ function renderAdminDashboard(dashboard) {
             `${!allow ? '🧬 Enabled' : '🔒 Disabled'} cloning of ${def?.name || itemId} for @${u.username}.`
           )
         );
-        giftWrap.appendChild(cBtn);
+        const rmBtn = document.createElement('button');
+        rmBtn.type = 'button';
+        rmBtn.className = 'mod-pill-btn warn-pill';
+        rmBtn.textContent = '🗑️';
+        rmBtn.title = `Remove ${def?.name || itemId} from @${u.username}`;
+        rmBtn.addEventListener('click', () =>
+          adminGiftOrToggleClone(
+            { username: u.username, itemId, setQty: 0 },
+            `🗑️ Removed ${def?.name || itemId} from @${u.username}.`
+          )
+        );
+        giftWrap.append(addBtn, cBtn, rmBtn);
       }
       tdEcon.appendChild(giftWrap);
     }
@@ -5087,6 +5310,31 @@ function renderAdminDashboard(dashboard) {
     const tdControls = document.createElement('td');
     const controlsWrap = document.createElement('div');
     controlsWrap.className = 'mod-controls-wrap';
+
+    const presetSel = buildAvatarPresetSelect(
+      u.avatar?.characterPreset || '',
+      u.username,
+      (presetKey, presetObj) =>
+        adminModerateUser(
+          { username: u.username, action: 'update_controls', avatar: presetObj },
+          `👗 Updated @${u.username}'s avatar look to "${presetKey}".`
+        )
+    );
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.className = 'mod-pill-btn';
+    renameBtn.textContent = '✏️ Name';
+    renameBtn.addEventListener('click', () => {
+      const next = window.prompt(
+        `New display name for @${u.username}:`,
+        u.displayName || u.username
+      );
+      if (!next || !next.trim()) return;
+      adminModerateUser(
+        { username: u.username, action: 'update_controls', displayName: next.trim() },
+        `✏️ Renamed @${u.username} to "${next.trim()}".`
+      );
+    });
 
     const roleSelect = document.createElement('select');
     roleSelect.className = 'mod-chat-select';
@@ -5219,7 +5467,7 @@ function renderAdminDashboard(dashboard) {
       )
     );
 
-    controlsWrap.append(roleSelect, micBtn, chatSelect, buildBtn, tradeBtn, pauseBtn, sentenceBtn);
+    controlsWrap.append(presetSel, renameBtn, roleSelect, micBtn, chatSelect, buildBtn, tradeBtn, pauseBtn, sentenceBtn);
 
     if (inPrison || coins < 0) {
       const pardonBtn = document.createElement('button');

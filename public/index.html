@@ -1368,13 +1368,36 @@
   <dialog id="subadmin-dialog" closedby="any" aria-labelledby="subadmin-dialog-title">
     <div class="modal-shell modal-wide">
       <header class="modal-header">
-        <h2 id="subadmin-dialog-title">🛡️ Sub-Admin Friend Moderation</h2>
+        <h2 id="subadmin-dialog-title">🛡️ Sub-Admin Friend Moderation, Gold &amp; Inventory</h2>
         <button type="button" class="modal-close-btn" data-close-dialog="subadmin-dialog" aria-label="Close Sub-Admin Panel">✕</button>
       </header>
       <div class="modal-body">
         <p class="small-note">
-          Moderate friends' Mic, Text Chat, Build, Trade, or kick a disruptive session. Parent-only controls (Passwords, Coins, Debtor's Prison Pardons, and Machine Signatures) remain locked to Parents.
+          Manage friends' Gold, Inventory Items (gift, remove, or toggle Clone), Avatar Look &amp; Name, Mic, Text Chat, Build, Trade, or Kick. Parent-only controls (Passwords, Debtor's Prison Pardons, and Machine Signatures) remain locked to Parents.
         </p>
+
+        <form id="subadmin-gift-item-form" class="admin-form">
+          <div class="admin-form-grid-2">
+            <div class="field-group">
+              <label for="subadmin-gift-username">Friend</label>
+              <select id="subadmin-gift-username" name="username" required></select>
+            </div>
+            <div class="field-group">
+              <label for="subadmin-gift-item">Item to Gift / Set</label>
+              <select id="subadmin-gift-item" name="itemId" required></select>
+            </div>
+            <div class="field-group">
+              <label for="subadmin-gift-qty">Quantity</label>
+              <input type="number" id="subadmin-gift-qty" name="qty" min="1" max="99" value="1" inputmode="numeric" />
+            </div>
+            <div class="admin-check-row">
+              <input type="checkbox" id="subadmin-gift-allow-clone" name="allowClone" checked />
+              <label for="subadmin-gift-allow-clone">🧬 Allow friend to clone item</label>
+            </div>
+          </div>
+          <button type="submit" class="small-action-btn">🎁 Gift Item to Friend</button>
+        </form>
+
         <div class="admin-chat-header">
           <span id="subadmin-feedback" class="admin-feedback-banner" hidden role="status" aria-live="polite"></span>
           <button type="button" id="subadmin-refresh-btn" class="small-action-btn">↻ Refresh Friends</button>
@@ -1384,8 +1407,8 @@
             <thead>
               <tr>
                 <th scope="col">Friend</th>
-                <th scope="col">Status</th>
-                <th scope="col">Moderation Controls</th>
+                <th scope="col">Gold &amp; Inventory</th>
+                <th scope="col">Customize &amp; Controls</th>
                 <th scope="col">Session</th>
               </tr>
             </thead>
