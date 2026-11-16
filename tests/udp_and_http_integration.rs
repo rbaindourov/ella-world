@@ -1370,7 +1370,7 @@ async fn dungeon_portal_farming_and_live_p2p_trade_end_to_end() {
     let seed_file = cfg.seed_users_file.clone();
     let running = start_all_servers(cfg).await.expect("start servers");
 
-    // 1. Verify item catalog endpoint exposes all 18 items (12 original + 5 3D home relics + Legendary Ray Gun)
+    // 1. Verify item catalog endpoint exposes all items (18 world items + 3 parent-exclusive items)
     let (st_cat, cat_res) = http_json_request(
         running.http_addr,
         "GET",
@@ -1379,7 +1379,10 @@ async fn dungeon_portal_farming_and_live_p2p_trade_end_to_end() {
     )
     .await;
     assert_eq!(st_cat, 200);
-    assert_eq!(cat_res["itemCatalog"].as_array().unwrap().len(), 18);
+    assert_eq!(
+        cat_res["itemCatalog"].as_array().unwrap().len(),
+        ella_world::economy::ITEM_CATALOG.len()
+    );
 
     // 2. Login Ella & Maya and connect WebSocket spines
     let (st_e, ella_login) = http_json_request(
@@ -4091,6 +4094,100 @@ async fn subadmin_role_can_moderate_friends_only_and_cannot_bypass_parent_locks(
     )
     .await;
     assert_eq!(st_locked, 403);
+
+    running.http_task.abort();
+}
+
+#[tokio::test]
+async fn parent_exclusive_item_gift_and_authorized_cloning_end_to_end() {
+    let cfg = make_test_config("parent_gift_clone");
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (st_adm, adm_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/login",
+        Some(json!({ "password": "changeme-parent-admin" })),
+    )
+    .await;
+    assert_eq!(st_adm, 200);
+    let admin_token = adm_login["adminToken"].as_str().unwrap().to_string();
+
+    let (st_e, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "gift_ella" })),
+    )
+    .await;
+    assert_eq!(st_e, 200);
+    let ella_token = ella_login["token"].as_str().unwrap().to_string();
+
+    // 1. Cannot clone before parent grants item + allowClone permission
+    let (st_pre, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/economy/clone",
+        Some(json!({ "token": ella_token, "itemId": "parent_golden_trophy" })),
+    )
+    .await;
+    assert_eq!(st_pre, 400);
+
+    // 2. Parent gifts 1x Parent-Exclusive Golden Star Trophy with allowClone: true
+    let (st_gift, gift_res) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/gift-item",
+        &admin_token,
+        Some(json!({
+            "username": "ella",
+            "itemId": "parent_golden_trophy",
+            "qty": 1,
+            "allowClone": true
+        })),
+    )
+    .await;
+    assert_eq!(st_gift, 200);
+    assert_eq!(gift_res["qtyGranted"], 1);
+    assert_eq!(gift_res["allowClone"], true);
+    assert_eq!(gift_res["economy"]["inventory"]["parent_golden_trophy"], 1);
+
+    // 3. Ella clones her gifted trophy -> quantity becomes 2
+    let (st_clone, clone_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/economy/clone",
+        Some(json!({ "token": ella_token, "itemId": "parent_golden_trophy" })),
+    )
+    .await;
+    assert_eq!(st_clone, 200);
+    assert_eq!(clone_res["newQty"], 2);
+    assert_eq!(clone_res["economy"]["inventory"]["parent_golden_trophy"], 2);
+
+    // 4. Parent revokes clone permission -> further clone attempts return 403 Forbidden
+    let (st_rev, _) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/gift-item",
+        &admin_token,
+        Some(json!({
+            "username": "ella",
+            "itemId": "parent_golden_trophy",
+            "qty": 0,
+            "allowClone": false
+        })),
+    )
+    .await;
+    assert_eq!(st_rev, 200);
+
+    let (st_blocked, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/economy/clone",
+        Some(json!({ "token": ella_token, "itemId": "parent_golden_trophy" })),
+    )
+    .await;
+    assert_eq!(st_blocked, 403);
 
     running.http_task.abort();
 }

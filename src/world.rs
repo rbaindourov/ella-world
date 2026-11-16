@@ -4872,6 +4872,150 @@ impl WorldEngine {
             "evictedAltPeers": evicted_alts,
         }))
     }
+
+    pub async fn admin_gift_item(
+        &self,
+        username: &str,
+        item_id: &str,
+        qty: u32,
+        allow_clone: Option<bool>,
+    ) -> Result<serde_json::Value, String> {
+        let uname = username.trim().to_lowercase();
+        let clean_item = item_id.trim();
+        let Some(def) = find_item_def(clean_item) else {
+            return Err(format!("Unknown item ID: {clean_item}"));
+        };
+        let mut system_notice: Option<String> = None;
+        let (econ, disp_name) = {
+            let mut cfg = self.users_cfg.write().await;
+            let Some(user) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(&uname))
+            else {
+                return Err(format!("Account @{uname} not found."));
+            };
+            if qty > 0 {
+                add_inventory_item(&mut user.inventory, def.id, qty.min(99));
+                let disp = if user.display_name.is_empty() {
+                    user.username.clone()
+                } else {
+                    user.display_name.clone()
+                };
+                system_notice = Some(format!(
+                    "🎁 Parent gifted {}x {} {} to {}!",
+                    qty.min(99),
+                    def.icon,
+                    def.name,
+                    disp
+                ));
+            }
+            if let Some(ac) = allow_clone {
+                if ac {
+                    user.cloneable_items.insert(def.id.to_string());
+                } else {
+                    user.cloneable_items.remove(def.id);
+                }
+            }
+            let disp = if user.display_name.is_empty() {
+                user.username.clone()
+            } else {
+                user.display_name.clone()
+            };
+            (user.economy_snapshot(), disp)
+        };
+
+        self.persist_users_async().await;
+        let online_peer = {
+            let map = self.players.read().await;
+            map.values()
+                .find(|p| p.user.username.eq_ignore_ascii_case(&uname))
+                .map(|p| p.id.clone())
+                .unwrap_or_default()
+        };
+        if !online_peer.is_empty() {
+            self.send_economy_update(&online_peer, &uname, &format!("admin:gift:{clean_item}"))
+                .await;
+        }
+        if let Some(notice) = system_notice {
+            let _ = self.broadcast_system_chat_notice(notice).await;
+        }
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "username": uname,
+            "displayName": disp_name,
+            "itemId": def.id,
+            "itemName": def.name,
+            "qtyGranted": qty.min(99),
+            "allowClone": econ.cloneable_items.contains(def.id),
+            "economy": econ,
+        }))
+    }
+
+    pub async fn clone_inventory_item(
+        &self,
+        self_id: &str,
+        username: &str,
+        item_id: &str,
+    ) -> Result<serde_json::Value, (u16, String)> {
+        let clean_item = item_id.trim();
+        let Some(def) = find_item_def(clean_item) else {
+            return Err((400, format!("Unknown item: {clean_item}")));
+        };
+        let (econ, new_qty) = {
+            let mut cfg = self.users_cfg.write().await;
+            let Some(user) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            else {
+                return Err((401, "Account not found.".into()));
+            };
+            if user.suspended {
+                return Err((403, "Account is paused by a parent.".into()));
+            }
+            if user.in_debtors_prison {
+                return Err((
+                    403,
+                    "Item cloning is locked while in Debtor's Prison!".into(),
+                ));
+            }
+            if !player_owns_item(&user.inventory, def.id) {
+                return Err((
+                    400,
+                    format!(
+                        "You need at least 1x {} {} to clone it.",
+                        def.icon, def.name
+                    ),
+                ));
+            }
+            if !user.cloneable_items.contains(def.id) {
+                return Err((
+                    403,
+                    format!(
+                        "Cloning is not enabled for {} {}. Ask a parent to enable Clone!",
+                        def.icon, def.name
+                    ),
+                ));
+            }
+            let updated_qty = add_inventory_item(&mut user.inventory, def.id, 1);
+            (user.economy_snapshot(), updated_qty)
+        };
+
+        self.persist_users_async().await;
+        self.send_economy_update(self_id, username, &format!("clone:{}", def.id))
+            .await;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "itemId": def.id,
+            "itemName": def.name,
+            "itemIcon": def.icon,
+            "newQty": new_qty,
+            "economy": econ,
+        }))
+    }
 }
 
 pub fn check_machine_access_for_cfg(

@@ -604,6 +604,7 @@ mod tests {
             avatar: AvatarAppearance::default(),
             coins: 20,
             inventory: HashMap::new(),
+            cloneable_items: Default::default(),
             violation_strikes: 0,
             in_debtors_prison: false,
             prison_reason: None,

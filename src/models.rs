@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const RUNWAY_THEMES: &[&str] = &[
     "✨ Starlight Pop Idol",
@@ -397,6 +397,8 @@ pub const SAFE_QUICK_CHAT_PHRASES: &[&str] = &[
 pub struct PlayerEconomySnapshot {
     pub coins: i64,
     pub inventory: HashMap<String, u32>,
+    #[serde(default)]
+    pub cloneable_items: HashSet<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -455,6 +457,8 @@ pub struct UserAccount {
     pub coins: i64,
     #[serde(default)]
     pub inventory: HashMap<String, u32>,
+    #[serde(default)]
+    pub cloneable_items: HashSet<String>,
     #[serde(default)]
     pub violation_strikes: u32,
     #[serde(default)]
@@ -522,6 +526,7 @@ impl UserAccount {
         PlayerEconomySnapshot {
             coins: self.coins,
             inventory: self.inventory.clone(),
+            cloneable_items: self.cloneable_items.clone(),
         }
     }
 

@@ -56,6 +56,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/runway", post(runway_handler))
         .route("/economy/catalog", get(economy_catalog_handler))
         .route("/economy/use", post(economy_use_handler))
+        .route("/economy/clone", post(economy_clone_handler))
         .route("/dungeon/portal", post(dungeon_portal_handler))
         .route("/dungeon/interact", post(dungeon_interact_handler))
         .route("/dungeon/attack", post(dungeon_attack_handler))
@@ -73,6 +74,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/users", post(admin_upsert_user_handler))
         .route("/admin/users/:username", delete(admin_delete_user_handler))
         .route("/admin/moderate", post(admin_moderate_handler))
+        .route("/admin/gift-item", post(admin_gift_item_handler))
         .route("/subadmin/state", get(subadmin_state_handler))
         .route("/subadmin/moderate", post(subadmin_moderate_handler))
         .route("/admin/devices", post(admin_devices_handler))
@@ -141,6 +143,8 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
                 "role": u.role,
                 "tokenEpoch": u.token_epoch,
                 "coins": u.coins,
+                "inventory": u.inventory,
+                "cloneableItems": u.cloneable_items,
                 "itemCount": u.inventory.values().sum::<u32>(),
                 "violationStrikes": u.violation_strikes,
                 "inDebtorsPrison": u.in_debtors_prison,
@@ -235,6 +239,7 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
         "deviceEvasionCount": world.cached_device_evasion_count.load(std::sync::atomic::Ordering::Relaxed),
         "devices": devices_list,
         "recentDeviceEvasions": recent_evasions,
+        "itemCatalog": ITEM_CATALOG,
         "users": users_list
     })
 }
@@ -866,6 +871,7 @@ async fn admin_upsert_user_handler(
                 avatar: av,
                 coins: 0,
                 inventory: HashMap::new(),
+                cloneable_items: Default::default(),
                 violation_strikes: 0,
                 in_debtors_prison: false,
                 prison_reason: None,
@@ -1276,6 +1282,69 @@ async fn admin_moderate_handler(
         obj.insert("dashboard".into(), dashboard);
     }
     Json(res).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminGiftItemPayload {
+    username: String,
+    item_id: String,
+    #[serde(default)]
+    qty: u32,
+    allow_clone: Option<bool>,
+}
+
+async fn admin_gift_item_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AdminGiftItemPayload>,
+) -> Response {
+    if !verify_admin_bearer(&st.world, &headers).await {
+        return json_err(StatusCode::UNAUTHORIZED, "Unauthorized admin token.");
+    }
+    let mut res = match st
+        .world
+        .admin_gift_item(&body.username, &body.item_id, body.qty, body.allow_clone)
+        .await
+    {
+        Ok(v) => v,
+        Err(msg) => return json_err(StatusCode::BAD_REQUEST, &msg),
+    };
+    let dashboard = build_admin_dashboard(&st.world).await;
+    if let Some(obj) = res.as_object_mut() {
+        obj.insert("dashboard".into(), dashboard);
+    }
+    Json(res).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EconomyClonePayload {
+    token: String,
+    item_id: String,
+}
+
+async fn economy_clone_handler(
+    State(st): State<AppState>,
+    Json(body): Json<EconomyClonePayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
+    };
+    match st
+        .world
+        .clone_inventory_item(&self_id, &username, &body.item_id)
+        .await
+    {
+        Ok(v) => Json(v).into_response(),
+        Err((code, msg)) => json_err(
+            StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST),
+            &msg,
+        ),
+    }
 }
 
 async fn extract_bearer_player_username(

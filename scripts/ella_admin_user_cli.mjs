@@ -106,6 +106,9 @@ function parseArgs(argv) {
     canTrade: undefined,
     suspended: undefined,
     setRole: null,
+    giftItem: '',
+    giftQty: 1,
+    allowClone: undefined,
     skipLoginVerify: false
   };
   for (let i = 2; i < argv.length; i++) {
@@ -152,6 +155,9 @@ function parseArgs(argv) {
     else if (k === '--can-trade') { out.canTrade = parseBoolFlag(v); i++; }
     else if (k === '--suspended') { out.suspended = parseBoolFlag(v); i++; }
     else if (k === '--set-role') { out.setRole = v; i++; }
+    else if (k === '--gift-item') { out.giftItem = v || ''; i++; }
+    else if (k === '--qty') { out.giftQty = Math.max(0, Math.floor(Number(v) || 1)); i++; }
+    else if (k === '--allow-clone') { out.allowClone = parseBoolFlag(v); i++; }
     else if (k === '--skip-login-verify') { out.skipLoginVerify = true; }
   }
   return out;
@@ -225,6 +231,7 @@ async function main() {
     opts.devicesOnly ||
     hasDeviceAction ||
     hasModerationAction ||
+    Boolean(opts.username && opts.giftItem) ||
     Boolean(opts.username && opts.password);
 
   if (!hasAction) {
@@ -366,6 +373,42 @@ async function main() {
             suspended: u.suspended,
             tokenEpoch: u.tokenEpoch
           }))
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  if (opts.username && opts.giftItem) {
+    const giftRes = await fetch(`${opts.baseUrl}/api/ella-world/admin/gift-item`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({
+        username: opts.username,
+        itemId: opts.giftItem,
+        qty: opts.giftQty,
+        allowClone: opts.allowClone
+      })
+    });
+    if (!giftRes.ok) {
+      throw new Error(`Gift item failed: HTTP ${giftRes.status} ${await giftRes.text()}`);
+    }
+    const giftOut = await giftRes.json();
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          username: giftOut.username,
+          itemId: giftOut.itemId,
+          itemName: giftOut.itemName,
+          qtyGranted: giftOut.qtyGranted,
+          allowClone: giftOut.allowClone,
+          economy: giftOut.economy
         },
         null,
         2

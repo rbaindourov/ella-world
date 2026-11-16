@@ -1754,7 +1754,8 @@ function applyEconomySnapshot(econ) {
   if (!econ || typeof econ !== 'object') return;
   playerEconomy = {
     coins: Number(econ.coins || 0),
-    inventory: { ...(econ.inventory || {}) }
+    inventory: { ...(econ.inventory || {}) },
+    cloneableItems: Array.isArray(econ.cloneableItems) ? [...econ.cloneableItems] : []
   };
   renderEconomyHud();
 }
@@ -2189,6 +2190,29 @@ async function useInventoryItem(itemId) {
   }
 }
 
+async function cloneInventoryItem(itemId) {
+  if (!sessionToken || !itemId) return;
+  try {
+    const res = await fetch('/api/ella-world/economy/clone', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, itemId })
+    });
+    if (await handleHttpAuthCheck(res)) return;
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      if (data.economy) applyEconomySnapshot(data.economy);
+      showToast(
+        `🧬 Cloned +1 ${data.itemIcon || '✨'} ${data.itemName || itemId}! (Now ${data.newQty}x)`
+      );
+    } else if (data.error) {
+      showToast(`⚠️ ${data.error}`);
+    }
+  } catch {
+    showToast('⚠️ Could not clone item right now.');
+  }
+}
+
 function openBackpackModal() {
   renderBackpackGrid();
   if (backpackDialog && !backpackDialog.open) {
@@ -2330,6 +2354,20 @@ function renderBackpackGrid() {
         openBuildModeForLootItem(item.id);
       });
       btnRow.appendChild(decorBtn);
+
+      const canClone =
+        Array.isArray(playerEconomy.cloneableItems) &&
+        playerEconomy.cloneableItems.includes(item.id);
+      if (canClone) {
+        const cloneBtn = document.createElement('button');
+        cloneBtn.type = 'button';
+        cloneBtn.className = 'small-action-btn';
+        cloneBtn.textContent = '🧬 Clone (+1)';
+        cloneBtn.title = 'Parent-authorized: make a clone of this gifted item!';
+        cloneBtn.addEventListener('click', () => cloneInventoryItem(item.id));
+        btnRow.appendChild(cloneBtn);
+      }
+
       actions.appendChild(btnRow);
     }
 
@@ -4895,6 +4933,35 @@ function renderAdminDashboard(dashboard) {
     blockedCountEl.textContent = String(dashboard.blockedChatCount || 0);
   }
 
+  const giftUserSelect = document.getElementById('admin-gift-username');
+  if (giftUserSelect) {
+    const prevUser = giftUserSelect.value;
+    giftUserSelect.replaceChildren();
+    for (const u of dashboard.users || []) {
+      const opt = document.createElement('option');
+      opt.value = u.username;
+      opt.textContent = `${u.displayName || u.username} (@${u.username})`;
+      if (u.username === prevUser) opt.selected = true;
+      giftUserSelect.appendChild(opt);
+    }
+  }
+  const giftItemSelect = document.getElementById('admin-gift-item');
+  if (giftItemSelect) {
+    const prevItem = giftItemSelect.value;
+    giftItemSelect.replaceChildren();
+    const catList = Array.isArray(dashboard.itemCatalog) ? dashboard.itemCatalog : itemCatalog;
+    const sortedItems = [...catList].sort(
+      (a, b) => Number(Boolean(b.parentExclusive)) - Number(Boolean(a.parentExclusive))
+    );
+    for (const it of sortedItems) {
+      const opt = document.createElement('option');
+      opt.value = it.id;
+      opt.textContent = `${it.icon || '🎁'} ${it.name}${it.parentExclusive ? ' [Parent-Only]' : ''}`;
+      if (it.id === prevItem) opt.selected = true;
+      giftItemSelect.appendChild(opt);
+    }
+  }
+
   const tbody = document.getElementById('admin-users-tbody');
   tbody.innerHTML = '';
 
@@ -4955,6 +5022,30 @@ function renderAdminDashboard(dashboard) {
     );
     stepRow.append(minusBtn, plusBtn);
     tdEcon.append(econTop, stepRow);
+
+    const invEntries = Object.entries(u.inventory || {}).filter(([, q]) => Number(q) > 0);
+    if (invEntries.length > 0) {
+      const cloneSet = new Set(Array.isArray(u.cloneableItems) ? u.cloneableItems : []);
+      const giftWrap = document.createElement('div');
+      giftWrap.className = 'mod-coin-step-row';
+      for (const [itemId, qty] of invEntries.slice(0, 4)) {
+        const def = catalogById.get(itemId);
+        const allow = cloneSet.has(itemId);
+        const cBtn = document.createElement('button');
+        cBtn.type = 'button';
+        cBtn.className = `mod-pill-btn${allow ? ' is-active-safe' : ''}`;
+        cBtn.textContent = `${def?.icon || '🎁'} ${qty}x ${allow ? '🧬 Clone On' : 'Clone Off'}`;
+        cBtn.title = `Toggle whether @${u.username} can clone ${def?.name || itemId}`;
+        cBtn.addEventListener('click', () =>
+          adminGiftOrToggleClone(
+            { username: u.username, itemId, qty: 0, allowClone: !allow },
+            `${!allow ? '🧬 Enabled' : '🔒 Disabled'} cloning of ${def?.name || itemId} for @${u.username}.`
+          )
+        );
+        giftWrap.appendChild(cBtn);
+      }
+      tdEcon.appendChild(giftWrap);
+    }
 
     // 3. Password
     const tdPass = document.createElement('td');
@@ -5682,6 +5773,56 @@ document.getElementById('admin-upsert-user-form').addEventListener('submit', asy
     document.getElementById('admin-friend-password').value = '';
   } else {
     feedback.textContent = `❌ ${data.error || 'Failed to save user'}`;
+    feedback.hidden = false;
+  }
+});
+
+async function adminGiftOrToggleClone(payload, successMsg) {
+  if (!adminToken) return;
+  const res = await fetch('/api/ella-world/admin/gift-item', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`
+    },
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) {
+    if (data.dashboard) renderAdminDashboard(data.dashboard);
+    if (successMsg) showAdminSessionFeedback(successMsg);
+  } else {
+    showAdminSessionFeedback(`❌ ${data.error || 'Gift update failed.'}`);
+  }
+}
+
+document.getElementById('admin-gift-item-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!adminToken) return;
+  const feedback = document.getElementById('admin-gift-feedback');
+  if (feedback) feedback.hidden = true;
+  const username = document.getElementById('admin-gift-username')?.value || '';
+  const itemId = document.getElementById('admin-gift-item')?.value || '';
+  const qty = Math.max(1, Number(document.getElementById('admin-gift-qty')?.value || 1));
+  const allowClone = Boolean(document.getElementById('admin-gift-allow-clone')?.checked);
+
+  const res = await fetch('/api/ella-world/admin/gift-item', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`
+    },
+    body: JSON.stringify({ username, itemId, qty, allowClone })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) {
+    if (data.dashboard) renderAdminDashboard(data.dashboard);
+    if (feedback) {
+      feedback.textContent = `🎁 Gifted ${data.qtyGranted}x ${data.itemName} to @${data.username}${data.allowClone ? ' (🧬 Clone Enabled)' : ''}!`;
+      feedback.hidden = false;
+    }
+  } else if (feedback) {
+    feedback.textContent = `❌ ${data.error || 'Could not gift item.'}`;
     feedback.hidden = false;
   }
 });

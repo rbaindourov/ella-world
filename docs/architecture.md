@@ -171,6 +171,10 @@ To ensure parent password rotations and emergency sign-outs take effect **instan
 - A `subadmin` account unlocks the **🛡️ Mod Friends** modal (`#subadmin-dialog`) in the HUD to moderate **`friend`** accounts only (Mic Mute, Text Chat Mode, Build Lock, Trade Lock, and live `kick_session`).
 - **Strict Parent-Only Boundaries**: Sub-Admins cannot self-moderate, cannot moderate `host` or other `subadmin` accounts, cannot change passwords/coins/curfews/machine-signature overrides or pardon Debtor's Prison, and automatically lose Sub-Admin access (`403 Forbidden`) if their own account is paused or in Debtor's Prison.
 
+### 8.6 Parent-Exclusive Item Gifting & Authorized Cloning (`POST /admin/gift-item`, `POST /economy/clone`)
+- **Parent-Exclusive Catalog (`parent_exclusive: true`)**: Mythic items (`parent_golden_trophy`, `parent_guardian_crown`, `parent_starlight_heirloom`) never spawn in Crystal Cavern mobs, chests, or veins (`roll_mob_loot` / `roll_chest_loot`) and can only be gifted by a Parent in **Parent Admin** or via `--gift-item <itemId> --qty <n> --allow-clone true|false` in `scripts/ella_admin_user_cli.mjs`.
+- **Authorized Item Cloning (`UserAccount::cloneable_items`)**: When Parents enable **🧬 Allow Clone** on a gifted item, the player's **🎒 Backpack** renders a **`🧬 Clone (+1)`** button (`POST /api/ella-world/economy/clone`), which verifies ownership + clone permission + non-prison/non-suspended status before minting `+1` copy.
+
 ---
 
 ## 9. Cryptographic Machine Digital Signatures & Anti-Alt-Evasion (`src/device_sig.rs`, `public/js/device_sig.js`)

@@ -1244,6 +1244,35 @@
             </div>
           </div>
 
+          <div class="admin-card">
+            <h3>🎁 Gift Parent-Exclusive &amp; World Items</h3>
+            <p class="small-note">
+              Give any player a rare item—including <strong>Parent-Exclusive</strong> trophies &amp; heirlooms that never spawn in the world. Check <strong>Allow Clone</strong> to let that player make copies of the gifted item in their Backpack.
+            </p>
+            <form id="admin-gift-item-form" class="admin-form">
+              <div class="admin-form-grid-2">
+                <div class="field-group">
+                  <label for="admin-gift-username">Recipient Player</label>
+                  <select id="admin-gift-username" name="username" required></select>
+                </div>
+                <div class="field-group">
+                  <label for="admin-gift-item">Item to Gift</label>
+                  <select id="admin-gift-item" name="itemId" required></select>
+                </div>
+                <div class="field-group">
+                  <label for="admin-gift-qty">Quantity</label>
+                  <input type="number" id="admin-gift-qty" name="qty" min="1" max="99" value="1" inputmode="numeric" />
+                </div>
+                <div class="admin-check-row">
+                  <input type="checkbox" id="admin-gift-allow-clone" name="allowClone" checked />
+                  <label for="admin-gift-allow-clone">🧬 Allow player to clone this item</label>
+                </div>
+              </div>
+              <p id="admin-gift-feedback" class="feedback-note" hidden role="status"></p>
+              <button type="submit" class="primary-cta-btn">🎁 Gift Item</button>
+            </form>
+          </div>
+
           <div class="admin-card admin-devices-card">
             <div class="admin-chat-header">
               <div>

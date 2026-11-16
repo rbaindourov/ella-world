@@ -102,6 +102,7 @@ impl PersistenceStore {
                     avatar: AvatarAppearance::default(),
                     coins: 0,
                     inventory: std::collections::HashMap::new(),
+                    cloneable_items: Default::default(),
                     violation_strikes: 0,
                     in_debtors_prison: false,
                     prison_reason: None,

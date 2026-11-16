@@ -30,6 +30,7 @@ pub struct ItemDef {
     pub cosmetic_slot: Option<&'static str>,
     pub cosmetic_value: Option<&'static str>,
     pub suggested_coins: u64,
+    pub parent_exclusive: bool,
 }
 
 pub const ITEM_CATALOG: &[ItemDef] = &[
@@ -43,6 +44,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 12,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "slime_gel",
@@ -54,6 +56,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 15,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "moon_opal",
@@ -65,6 +68,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 35,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "dungeon_key",
@@ -76,6 +80,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 65,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "crown_relic",
@@ -87,6 +92,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 140,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "speed_potion",
@@ -98,6 +104,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 25,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "jump_potion",
@@ -109,6 +116,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 25,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "prism_block",
@@ -120,6 +128,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 40,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "cosmetic_hat_shadow_hood",
@@ -131,6 +140,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: Some("hat"),
         cosmetic_value: Some("ninja"),
         suggested_coins: 180,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "cosmetic_acc_star_lantern",
@@ -142,6 +152,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: Some("accessory"),
         cosmetic_value: Some("star_lantern"),
         suggested_coins: 190,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "cosmetic_hat_obsidian_crown",
@@ -153,6 +164,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: Some("hat"),
         cosmetic_value: Some("obsidian_crown"),
         suggested_coins: 320,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "cosmetic_acc_crystal_wings",
@@ -164,6 +176,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: Some("accessory"),
         cosmetic_value: Some("crystal_wings"),
         suggested_coins: 350,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "geode_lamp",
@@ -175,6 +188,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 55,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "slime_lava_lamp",
@@ -186,6 +200,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 60,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "bat_plushie",
@@ -197,6 +212,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 110,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "royal_chalice",
@@ -208,6 +224,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 145,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "dragon_egg_relic",
@@ -219,6 +236,7 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: None,
         cosmetic_value: None,
         suggested_coins: 280,
+        parent_exclusive: false,
     },
     ItemDef {
         id: "legendary_ray_gun",
@@ -230,6 +248,43 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         cosmetic_slot: Some("accessory"),
         cosmetic_value: Some("ray_gun"),
         suggested_coins: 950,
+        parent_exclusive: false,
+    },
+    ItemDef {
+        id: "parent_golden_trophy",
+        name: "Parent's Golden Star Trophy",
+        category: "decor",
+        rarity: "mythic",
+        icon: "🏅",
+        description: "Parent-Exclusive Award! Never spawns in the world — gifted only by a Parent in Admin.",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 0,
+        parent_exclusive: true,
+    },
+    ItemDef {
+        id: "parent_guardian_crown",
+        name: "Guardian's Ruby Crown",
+        category: "decor",
+        rarity: "mythic",
+        icon: "👸",
+        description: "Parent-Exclusive Heirloom Trophy! Never spawns in-game — gifted only by a Parent.",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 0,
+        parent_exclusive: true,
+    },
+    ItemDef {
+        id: "parent_starlight_heirloom",
+        name: "Royal Starlight Heirloom",
+        category: "material",
+        rarity: "mythic",
+        icon: "💠",
+        description: "Parent-Exclusive Collector Gem! Never spawns in-game — gifted only by a Parent.",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 0,
+        parent_exclusive: true,
     },
 ];
 
@@ -1350,6 +1405,7 @@ mod tests {
             avatar: AvatarAppearance::default(),
             coins,
             inventory: HashMap::new(),
+            cloneable_items: Default::default(),
             violation_strikes: 0,
             in_debtors_prison: false,
             prison_reason: None,
@@ -1465,5 +1521,34 @@ mod tests {
             Some(1)
         );
         assert_eq!(maya.inventory.get("dungeon_key").copied(), Some(1));
+    }
+
+    #[test]
+    fn parent_exclusive_items_never_spawn_in_dungeon_loot_tables() {
+        for _ in 0..250 {
+            for kind in ["shadow_slime", "crystal_bat"] {
+                let (_, item_opt, _) = roll_mob_loot(kind);
+                if let Some(id) = item_opt {
+                    let def = find_item_def(id).expect("valid item def");
+                    assert!(
+                        !def.parent_exclusive,
+                        "Parent-exclusive item {id} must never spawn from mob loot"
+                    );
+                }
+            }
+            for (_, item_opt, _) in [
+                roll_crystal_loot(),
+                roll_wooden_chest_loot(),
+                roll_golden_chest_loot(),
+            ] {
+                if let Some(id) = item_opt {
+                    let def = find_item_def(id).expect("valid item def");
+                    assert!(
+                        !def.parent_exclusive,
+                        "Parent-exclusive item {id} must never spawn from crystal/chest loot"
+                    );
+                }
+            }
+        }
     }
 }
