@@ -82,106 +82,153 @@
     </div>
   </section>
 
-  <!-- Main In-Game HUD (Shown after joining world) -->
-  <div id="game-hud" class="game-hud" hidden>
-    <!-- Top Bar: World Info, Voice Controls, Warp Buttons, Glam Closet & Parent Admin -->
-    <header class="hud-top-bar">
-      <div class="hud-brand">
-        <span class="hud-logo" aria-hidden="true">👑</span>
-        <div>
-          <strong id="hud-world-title" class="hud-world-title">Ella's Starlight Glam Plaza</strong>
-          <div class="hud-sub-badges">
-            <span id="hud-player-badge" class="hud-player-badge">@ella</span>
-            <span id="hud-zone-pill" class="hud-zone-pill" title="Current World Zone">⛲ Starlight Plaza</span>
-            <span id="hud-coins-pill" class="hud-coins-pill" title="Your Starlight Coins">🪙 <strong id="hud-coins-count">0</strong></span>
-            <span id="hud-buff-pill" class="hud-buff-pill" hidden role="status" aria-live="polite">⚡ Buff</span>
-            <span id="udp-status-pill" class="udp-status-pill is-connecting" title="Rust UDP Voice SFU + 20Hz Binary Game State">⚡ UDP Connecting...</span>
-            <span id="udp-status-sr" class="visually-hidden" role="status" aria-live="polite"></span>
+  <!-- Main In-Game HUD (Shown after joining world; defaults to Clean Fullscreen HUD with Chat) -->
+  <div id="game-hud" class="game-hud is-fullscreen-hud" hidden>
+    <!-- Minimal Corner Toggle Pill (Always accessible in Fullscreen HUD & Controls Mode) -->
+    <div class="hud-mode-corner" role="region" aria-label="HUD Mode and Fullscreen Controls">
+      <button
+        type="button"
+        id="toggle-hud-mode-btn"
+        class="hud-corner-btn"
+        aria-expanded="false"
+        aria-controls="hud-top-bar"
+        title="Show HUD Controls &amp; Panel Toggles"
+      >
+        🎛️ Controls
+      </button>
+      <button
+        type="button"
+        id="toggle-browser-fullscreen-btn"
+        class="hud-corner-btn icon-only-btn"
+        aria-pressed="false"
+        title="Toggle Browser Fullscreen"
+        aria-label="Toggle Browser Fullscreen"
+      >
+        ⛶
+      </button>
+    </div>
+
+    <div class="hud-top-stack">
+      <!-- Top Bar: World Info, Voice Controls, Warp Buttons, Panel Toggles & Parent Admin -->
+      <header id="hud-top-bar" class="hud-top-bar">
+        <div class="hud-brand">
+          <span class="hud-logo" aria-hidden="true">👑</span>
+          <div>
+            <strong id="hud-world-title" class="hud-world-title">Ella's Starlight Glam Plaza</strong>
+            <div class="hud-sub-badges">
+              <span id="hud-player-badge" class="hud-player-badge">@ella</span>
+              <span id="hud-zone-pill" class="hud-zone-pill" title="Current World Zone">⛲ Starlight Plaza</span>
+              <span id="hud-coins-pill" class="hud-coins-pill" title="Your Starlight Coins">🪙 <strong id="hud-coins-count">0</strong></span>
+              <span id="hud-buff-pill" class="hud-buff-pill" hidden role="status" aria-live="polite">⚡ Buff</span>
+              <span id="udp-status-pill" class="udp-status-pill is-connecting" title="Rust UDP Voice SFU + 20Hz Binary Game State">⚡ UDP Connecting...</span>
+              <span id="udp-status-sr" class="visually-hidden" role="status" aria-live="polite"></span>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- Primary Voice Chat Control Strip -->
-      <div class="voice-strip" role="region" aria-label="Voice Chat Controls">
-        <button type="button" id="mic-toggle-btn" class="voice-btn mic-unmuted" title="Toggle Microphone (Shortcut: M)">
-          <span id="mic-icon" aria-hidden="true">🎤</span>
-          <span id="mic-label">Mic On</span>
-          <span id="local-speaking-meter" class="mic-level-bar" aria-hidden="true"></span>
-        </button>
+        <!-- Primary Voice Chat Control Strip -->
+        <div class="voice-strip" role="region" aria-label="Voice Chat Controls">
+          <button type="button" id="mic-toggle-btn" class="voice-btn mic-unmuted" title="Toggle Microphone (Shortcut: M)">
+            <span id="mic-icon" aria-hidden="true">🎤</span>
+            <span id="mic-label">Mic On</span>
+            <span id="local-speaking-meter" class="mic-level-bar" aria-hidden="true"></span>
+          </button>
 
-        <label class="switch-pill" title="Switch between hearing everyone anywhere (Party Voice) vs louder when standing close in 3D (Proximity Voice)">
-          <span>3D Proximity Voice</span>
-          <input type="checkbox" id="proximity-voice-switch" switch />
-        </label>
+          <label class="switch-pill" title="Switch between hearing everyone anywhere (Party Voice) vs louder when standing close in 3D (Proximity Voice)">
+            <span>3D Proximity Voice</span>
+            <input type="checkbox" id="proximity-voice-switch" switch />
+          </label>
 
-        <label class="switch-pill" title="When enabled, hold the V key to talk">
-          <span>Push-to-Talk (Hold V)</span>
-          <input type="checkbox" id="ptt-voice-switch" switch />
-        </label>
+          <label class="switch-pill" title="When enabled, hold the V key to talk">
+            <span>Push-to-Talk (Hold V)</span>
+            <input type="checkbox" id="ptt-voice-switch" switch />
+          </label>
 
-        <button type="button" id="audio-settings-btn" class="hud-chip-btn" title="Choose Microphone &amp; Test Voice">
-          🎧 Mic Setup
-        </button>
-      </div>
-
-      <!-- Action & Teleport Buttons -->
-      <div class="hud-actions">
-        <button type="button" id="warp-plaza-btn" class="hud-chip-btn" title="Teleport back to Central Plaza (Shortcut: H)">
-          ⛲ Plaza
-        </button>
-        <button type="button" id="warp-dungeon-btn" class="hud-chip-btn dungeon-chip" title="Enter or Exit the Crystal Cavern Dungeon! (Shortcut: G)">
-          🌀 Dungeon
-        </button>
-        <button type="button" id="warp-runway-btn" class="hud-chip-btn runway-chip" title="Teleport to the Dress to Impress Fashion Runway! (Shortcut: F)">
-          💃 Runway
-        </button>
-        <button type="button" id="warp-obby-btn" class="hud-chip-btn" title="Teleport to Sky Obby Start or Last Checkpoint (Shortcut: R)">
-          🏃‍♀️ Obby
-        </button>
-        <button type="button" id="open-backpack-btn" class="hud-chip-btn backpack-chip" title="Open Backpack Inventory &amp; Trade Items (Shortcut: I)">
-          🎒 Backpack (<span id="hud-item-count">0</span>)
-        </button>
-        <button type="button" id="toggle-build-btn" class="hud-chip-btn" title="Toggle Co-Op Block Builder Mode (Shortcut: B)">
-          🔨 Build Mode
-        </button>
-        <button type="button" id="open-avatar-btn" class="hud-chip-btn accent-chip" title="Open the Dress to Impress Glam Salon Closet (Shortcut: C)">
-          👗 Glam Closet
-        </button>
-        <button type="button" id="open-help-btn" class="hud-chip-btn" title="Controls &amp; How to Play">
-          ❓ Controls
-        </button>
-        <button type="button" id="open-admin-hud-btn" class="hud-chip-btn" title="Parent Admin Panel">
-          🔐 Parent Admin
-        </button>
-        <button type="button" id="logout-btn" class="hud-chip-btn danger-chip" title="Leave World">
-          🚪 Leave
-        </button>
-      </div>
-    </header>
-
-    <!-- Dress to Impress Fashion Runway Theme & 1-5 Star Voting Bar -->
-    <section id="runway-hud-bar" class="runway-hud-bar" aria-label="Fashion Runway Theme and Star Voting">
-      <div class="runway-theme-box">
-        <span class="runway-badge">👗 RUNWAY THEME</span>
-        <strong id="runway-theme-label">Starlight Princess Gala</strong>
-        <button type="button" id="runway-next-theme-btn" class="runway-mini-btn" title="Spin a new Dress to Impress Runway Theme!">
-          🎲 New Theme
-        </button>
-      </div>
-
-      <div class="runway-vote-box">
-        <label for="runway-model-select" class="runway-vote-label">Rate Look:</label>
-        <select id="runway-model-select" class="runway-model-select" aria-label="Select friend on the runway to rate"></select>
-        <div class="star-vote-group" role="group" aria-label="Give 1 to 5 Stars">
-          <button type="button" class="star-vote-btn" data-stars="1" title="1 Star">⭐</button>
-          <button type="button" class="star-vote-btn" data-stars="2" title="2 Stars">⭐⭐</button>
-          <button type="button" class="star-vote-btn" data-stars="3" title="3 Stars">⭐⭐⭐</button>
-          <button type="button" class="star-vote-btn" data-stars="4" title="4 Stars">⭐⭐⭐⭐</button>
-          <button type="button" class="star-vote-btn" data-stars="5" title="5 Stars — Slay!">⭐⭐⭐⭐⭐</button>
+          <button type="button" id="audio-settings-btn" class="hud-chip-btn" title="Choose Microphone &amp; Test Voice">
+            🎧 Mic Setup
+          </button>
         </div>
-        <span id="runway-leader-pill" class="runway-leader-pill">🏆 Walk the West Runway!</span>
-      </div>
-    </section>
+
+        <!-- Action & Teleport Buttons -->
+        <div class="hud-actions">
+          <button type="button" id="warp-plaza-btn" class="hud-chip-btn" title="Teleport back to Central Plaza (Shortcut: H)">
+            ⛲ Plaza
+          </button>
+          <button type="button" id="warp-dungeon-btn" class="hud-chip-btn dungeon-chip" title="Enter or Exit the Crystal Cavern Dungeon! (Shortcut: G)">
+            🌀 Dungeon
+          </button>
+          <button type="button" id="warp-runway-btn" class="hud-chip-btn runway-chip" title="Teleport to the Dress to Impress Fashion Runway! (Shortcut: F)">
+            💃 Runway
+          </button>
+          <button type="button" id="warp-obby-btn" class="hud-chip-btn" title="Teleport to Sky Obby Start or Last Checkpoint (Shortcut: R)">
+            🏃‍♀️ Obby
+          </button>
+          <button type="button" id="open-backpack-btn" class="hud-chip-btn backpack-chip" title="Open Backpack Inventory &amp; Trade Items (Shortcut: I)">
+            🎒 Backpack (<span id="hud-item-count">0</span>)
+          </button>
+          <button type="button" id="toggle-build-btn" class="hud-chip-btn" title="Toggle Co-Op Block Builder Mode (Shortcut: B)">
+            🔨 Build Mode
+          </button>
+          <button type="button" id="open-avatar-btn" class="hud-chip-btn accent-chip" title="Open the Dress to Impress Glam Salon Closet (Shortcut: C)">
+            👗 Glam Closet
+          </button>
+          <button type="button" id="open-help-btn" class="hud-chip-btn" title="Controls &amp; How to Play">
+            ❓ Controls
+          </button>
+          <button type="button" id="open-admin-hud-btn" class="hud-chip-btn" title="Parent Admin Panel">
+            🔐 Parent Admin
+          </button>
+          <button type="button" id="logout-btn" class="hud-chip-btn danger-chip" title="Leave World">
+            🚪 Leave
+          </button>
+        </div>
+
+        <!-- Per-Panel Visibility Toggles (Shown when Controls Mode is open) -->
+        <div class="hud-panel-toggles" role="group" aria-label="Toggle HUD Panels">
+          <span class="hud-toggles-label">Panels:</span>
+          <button type="button" id="toggle-friends-panel-btn" class="hud-panel-toggle-btn" aria-pressed="false" title="Show/Hide Friends &amp; Voice Mixer">
+            🎤 Friends
+          </button>
+          <button type="button" id="toggle-runway-bar-btn" class="hud-panel-toggle-btn" aria-pressed="false" title="Show/Hide Mini Runway Voting Bar">
+            👗 Voting
+          </button>
+          <button type="button" id="toggle-emote-bar-btn" class="hud-panel-toggle-btn" aria-pressed="false" title="Show/Hide Emote &amp; Pose Bar">
+            💃 Emotes
+          </button>
+          <button type="button" id="toggle-touch-controls-btn" class="hud-panel-toggle-btn" aria-pressed="false" title="Show/Hide On-Screen Touch D-Pad">
+            🎮 Touch Pad
+          </button>
+          <button type="button" id="toggle-chat-panel-btn" class="hud-panel-toggle-btn" aria-pressed="true" title="Show/Hide Chat Box">
+            💬 Chat
+          </button>
+        </div>
+      </header>
+
+      <!-- Miniaturized Dress to Impress Fashion Runway Theme & 1-5 Star Voting Pill -->
+      <section id="runway-hud-bar" class="runway-hud-bar" aria-label="Fashion Runway Theme and Star Voting">
+        <div class="runway-theme-box">
+          <span class="runway-badge" title="Runway Theme">👗</span>
+          <strong id="runway-theme-label">Starlight Princess Gala</strong>
+          <button type="button" id="runway-next-theme-btn" class="runway-mini-btn" title="Spin a new Dress to Impress Runway Theme!" aria-label="New Runway Theme">
+            🎲
+          </button>
+        </div>
+
+        <span class="runway-sep" aria-hidden="true"></span>
+
+        <div class="runway-vote-box">
+          <select id="runway-model-select" class="runway-model-select" aria-label="Select friend on the runway to rate"></select>
+          <div class="star-vote-group" role="group" aria-label="Give 1 to 5 Stars">
+            <button type="button" class="star-vote-btn" data-stars="1" title="1 Star" aria-label="Rate 1 Star">1★</button>
+            <button type="button" class="star-vote-btn" data-stars="2" title="2 Stars" aria-label="Rate 2 Stars">2★</button>
+            <button type="button" class="star-vote-btn" data-stars="3" title="3 Stars" aria-label="Rate 3 Stars">3★</button>
+            <button type="button" class="star-vote-btn" data-stars="4" title="4 Stars" aria-label="Rate 4 Stars">4★</button>
+            <button type="button" class="star-vote-btn" data-stars="5" title="5 Stars — Slay!" aria-label="Rate 5 Stars">5★</button>
+          </div>
+          <span id="runway-leader-pill" class="runway-leader-pill">🏆 Rate 1–5★</span>
+        </div>
+      </section>
+    </div>
 
     <!-- Debtor's Prison Sentence & Community Service Banner (Shown only in ZONE_PRISON) -->
     <section id="prison-sentence-banner" class="prison-sentence-banner" hidden aria-label="Debtor's Prison Sentence Status">

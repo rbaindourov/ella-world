@@ -195,3 +195,16 @@ To prevent penalized players from signing out, opening an Incognito window, or l
 - **True Modal Input Isolation (`avatarDialog.showModal()`)**: Opening the Glam Salon (`👗 Glam` or shortcut `C`) promotes `<dialog id="avatar-dialog" class="glam-studio-modal">` into the browser Top Layer above `dialog::backdrop`, natively marking `#canvas-container` and `#game-hud` `inert` while `BlockyWorld3D.setSalonMirrorMode(true)` clears active movement/drag states.
 - **Character Rendered In Front of Modal Screen (`GlamSalonStage3D`)**: A dedicated transparent-alpha Three.js `WebGLRenderer` inside `#glam-stage-pane` renders the player's `WorldAvatar` (`studioMode: true`, `cloneGeometries: true`) on an illuminated Starlight Fitting Pedestal directly in front of the dimmed/blurred backdrop (left/right split on `> 900px`, top-stage + bottom-sheet on `<= 900px`), pausing its `requestAnimationFrame` loop whenever closed.
 - **Interactive Dress-Up Tooling**: Includes 360° drag turntable rotation, wheel/two-finger pinch zoom, accessible `focusgroup="toolbar wrap"` camera framing (`Full Fit`, `Head`, `Outfit`, `Shoes`), in-modal `0–8` pose/dance auditioning, build-aware `🎲 Surprise Me!` randomization, `👁️ Compare` before/after toggle, live Runway Theme pill, and `🎒 Bag` → `👗 Equip in Glam` relic framing. See [`docs/blender_and_dti_character_system.md`](blender_and_dti_character_system.md#7-top-layer-modal-glam-studio--glamsalonstage3d-publicjsworld3djs-publicjsappjs).
+
+---
+
+## 11. Clean Fullscreen HUD Mode, Panel Toggles & Miniaturized Voting Pill (`public/index.html`, `public/css/styles.css`, `public/js/app.js`)
+
+- **Default Clean Fullscreen HUD (`#game-hud.is-fullscreen-hud`)**: On world entry (`enterGameWorld`), `#game-hud` defaults to Clean Fullscreen HUD mode so the 3D viewport is unobstructed—displaying only the translucent bottom-right **Friends Text Chat** (`.hud-chat-panel` with a single-row horizontally scrollable `.quick-reactions` strip) and a minimal top-right corner pill (`.hud-mode-corner`) with **`🎛️ Controls`** (`#toggle-hud-mode-btn`, shortcut `\`) and **`⛶`** (`#toggle-browser-fullscreen-btn` for native browser `requestFullscreen()`).
+- **Controls Mode & Per-Panel Toggles**: Clicking **`🎛️ Controls`** (or pressing `\`) expands `#hud-top-bar` with a **`Panels:`** toggle strip (`aria-pressed`) so players can independently show or hide:
+  - **`🎤 Friends`** (`#toggle-friends-panel-btn` → `.hud-left-panel`, default off)
+  - **`👗 Voting`** (`#toggle-runway-bar-btn` → `#runway-hud-bar`, default off)
+  - **`💃 Emotes`** (`#toggle-emote-bar-btn` → `.emote-bar`, default off)
+  - **`🎮 Touch Pad`** (`#toggle-touch-controls-btn` → `.touch-controls`, auto-enabled on `(pointer: coarse)` touchscreens, default off on desktop)
+  - **`💬 Chat`** (`#toggle-chat-panel-btn` → `.hud-chat-panel`, default on)
+- **Miniaturized Runway Voting Pill (`#runway-hud-bar`)**: Stacked cleanly below `#hud-top-bar` inside `.hud-top-stack` (preventing vertical overlap) as a compact single-row pill featuring the truncated theme name, dice button (`🎲`), friend selector, compact `1★`–`5★` rating buttons, and compact leader badge (`🏆 <name> (<avg>★)`).

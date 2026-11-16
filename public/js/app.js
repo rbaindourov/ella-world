@@ -376,6 +376,14 @@ const runwayThemeLabel = document.getElementById('runway-theme-label');
 const runwayModelSelect = document.getElementById('runway-model-select');
 const runwayLeaderPill = document.getElementById('runway-leader-pill');
 
+const toggleHudModeBtn = document.getElementById('toggle-hud-mode-btn');
+const toggleBrowserFullscreenBtn = document.getElementById('toggle-browser-fullscreen-btn');
+const toggleFriendsPanelBtn = document.getElementById('toggle-friends-panel-btn');
+const toggleRunwayBarBtn = document.getElementById('toggle-runway-bar-btn');
+const toggleEmoteBarBtn = document.getElementById('toggle-emote-bar-btn');
+const toggleTouchControlsBtn = document.getElementById('toggle-touch-controls-btn');
+const toggleChatPanelBtn = document.getElementById('toggle-chat-panel-btn');
+
 const micToggleBtn = document.getElementById('mic-toggle-btn');
 const micIcon = document.getElementById('mic-icon');
 const micLabel = document.getElementById('mic-label');
@@ -1046,9 +1054,9 @@ function applyRunwaySummary(runway) {
         (p) => String(p.user?.username || '').toLowerCase() === top.username
       );
       const disp = matchedPlayer ? matchedPlayer.user.displayName : top.username;
-      runwayLeaderPill.textContent = `🏆 Top Look: ${disp} (${top.avgStars}★)`;
+      runwayLeaderPill.textContent = `🏆 ${disp} (${top.avgStars}★)`;
     } else {
-      runwayLeaderPill.textContent = '🏆 Rate outfits 1–5★!';
+      runwayLeaderPill.textContent = '🏆 Rate 1–5★';
     }
   }
 }
@@ -1132,6 +1140,7 @@ friendLoginForm.addEventListener('submit', async (e) => {
 async function enterGameWorld(loginData) {
   loginScreen.hidden = true;
   gameHud.hidden = false;
+  setHudFullscreenMode(true);
   sessionEnteredWallMs = Date.now();
 
   if (typeof loginData.serverTimeMs === 'number') {
@@ -3532,6 +3541,72 @@ if (buildRotateBtn) {
 
 renderBuildLootItems();
 
+// Fullscreen HUD Mode (Default: Clean Fullscreen with Chat) & Per-Panel Toggles
+const isCoarsePointerDevice =
+  typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+
+function setHudFullscreenMode(isFullscreen) {
+  if (!gameHud) return;
+  gameHud.classList.toggle('is-fullscreen-hud', Boolean(isFullscreen));
+  if (toggleHudModeBtn) {
+    toggleHudModeBtn.setAttribute('aria-expanded', String(!isFullscreen));
+    toggleHudModeBtn.textContent = isFullscreen ? '🎛️ Controls' : '⛶ Fullscreen HUD';
+    toggleHudModeBtn.title = isFullscreen
+      ? 'Show HUD Controls & Panel Toggles (Shortcut: \\)'
+      : 'Return to Clean Fullscreen HUD with Chat (Shortcut: \\)';
+  }
+}
+
+function bindHudPanelToggle(btn, className, initialVisible, invertClass = false) {
+  if (!btn || !gameHud) return;
+  const applyState = (visible) => {
+    gameHud.classList.toggle(className, invertClass ? !visible : visible);
+    btn.setAttribute('aria-pressed', String(visible));
+  };
+  applyState(Boolean(initialVisible));
+  btn.addEventListener('click', () => {
+    const nextVisible = btn.getAttribute('aria-pressed') !== 'true';
+    applyState(nextVisible);
+  });
+}
+
+if (toggleHudModeBtn) {
+  toggleHudModeBtn.addEventListener('click', () => {
+    const currentlyFullscreen = gameHud.classList.contains('is-fullscreen-hud');
+    setHudFullscreenMode(!currentlyFullscreen);
+  });
+}
+
+bindHudPanelToggle(toggleFriendsPanelBtn, 'show-friends-panel', false);
+bindHudPanelToggle(toggleRunwayBarBtn, 'show-runway-bar', false);
+bindHudPanelToggle(toggleEmoteBarBtn, 'show-emote-bar', false);
+bindHudPanelToggle(toggleTouchControlsBtn, 'show-touch-controls', isCoarsePointerDevice);
+bindHudPanelToggle(toggleChatPanelBtn, 'hide-chat-panel', true, true);
+setHudFullscreenMode(true);
+
+if (toggleBrowserFullscreenBtn) {
+  const syncBrowserFullscreenBtn = () => {
+    const active = Boolean(document.fullscreenElement);
+    toggleBrowserFullscreenBtn.setAttribute('aria-pressed', String(active));
+    toggleBrowserFullscreenBtn.title = active
+      ? 'Exit Browser Fullscreen'
+      : 'Enter Browser Fullscreen';
+  };
+  toggleBrowserFullscreenBtn.addEventListener('click', async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch {
+      // Ignore browser fullscreen permission rejections
+    }
+    syncBrowserFullscreenBtn();
+  });
+  document.addEventListener('fullscreenchange', syncBrowserFullscreenBtn);
+}
+
 // Keyboard shortcuts
 window.addEventListener('keydown', (e) => {
   const tag = document.activeElement ? document.activeElement.tagName : '';
@@ -3540,6 +3615,12 @@ window.addEventListener('keydown', (e) => {
 
   if (e.key === 'Escape' && isSalonOpen) {
     closeGlamSalon(false);
+    return;
+  }
+
+  if (e.key === '\\' && gameHud && !gameHud.hidden) {
+    const currentlyFullscreen = gameHud.classList.contains('is-fullscreen-hud');
+    setHudFullscreenMode(!currentlyFullscreen);
     return;
   }
 
