@@ -383,6 +383,8 @@ const toggleRunwayBarBtn = document.getElementById('toggle-runway-bar-btn');
 const toggleEmoteBarBtn = document.getElementById('toggle-emote-bar-btn');
 const toggleTouchControlsBtn = document.getElementById('toggle-touch-controls-btn');
 const toggleChatPanelBtn = document.getElementById('toggle-chat-panel-btn');
+const closeChatPanelBtn = document.getElementById('close-chat-panel-btn');
+const reopenChatBtn = document.getElementById('reopen-chat-btn');
 
 const micToggleBtn = document.getElementById('mic-toggle-btn');
 const micIcon = document.getElementById('mic-icon');
@@ -3581,7 +3583,42 @@ bindHudPanelToggle(toggleFriendsPanelBtn, 'show-friends-panel', false);
 bindHudPanelToggle(toggleRunwayBarBtn, 'show-runway-bar', false);
 bindHudPanelToggle(toggleEmoteBarBtn, 'show-emote-bar', false);
 bindHudPanelToggle(toggleTouchControlsBtn, 'show-touch-controls', isCoarsePointerDevice);
-bindHudPanelToggle(toggleChatPanelBtn, 'hide-chat-panel', true, true);
+
+function setChatPanelVisible(visible) {
+  if (!gameHud) return;
+  const isVisible = Boolean(visible);
+  gameHud.classList.toggle('hide-chat-panel', !isVisible);
+  if (toggleChatPanelBtn) {
+    toggleChatPanelBtn.setAttribute('aria-pressed', String(isVisible));
+  }
+  if (reopenChatBtn) {
+    reopenChatBtn.hidden = isVisible;
+    reopenChatBtn.setAttribute('aria-expanded', String(isVisible));
+  }
+}
+
+setChatPanelVisible(true);
+if (toggleChatPanelBtn) {
+  toggleChatPanelBtn.addEventListener('click', () => {
+    const currentlyVisible = !gameHud?.classList.contains('hide-chat-panel');
+    setChatPanelVisible(!currentlyVisible);
+  });
+}
+if (closeChatPanelBtn) {
+  closeChatPanelBtn.addEventListener('click', () => {
+    setChatPanelVisible(false);
+    if (reopenChatBtn && !reopenChatBtn.hidden) {
+      reopenChatBtn.focus();
+    }
+  });
+}
+if (reopenChatBtn) {
+  reopenChatBtn.addEventListener('click', () => {
+    setChatPanelVisible(true);
+    chatInput?.focus();
+  });
+}
+
 setHudFullscreenMode(true);
 
 if (toggleBrowserFullscreenBtn) {

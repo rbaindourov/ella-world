@@ -98,6 +98,17 @@
       </button>
       <button
         type="button"
+        id="reopen-chat-btn"
+        class="hud-corner-btn"
+        aria-expanded="true"
+        aria-controls="hud-chat-panel"
+        title="Open Talk to Friends Chat"
+        hidden
+      >
+        💬 Chat
+      </button>
+      <button
+        type="button"
         id="toggle-browser-fullscreen-btn"
         class="hud-corner-btn icon-only-btn"
         aria-pressed="false"
@@ -349,7 +360,17 @@
     </div>
 
     <!-- Bottom Right: Live Chat & Quick Reactions -->
-    <aside class="hud-chat-panel" aria-label="Friends Text Chat">
+    <aside id="hud-chat-panel" class="hud-chat-panel" aria-label="Talk to Friends Text Chat">
+      <div class="chat-panel-header">
+        <span class="chat-panel-title">💬 Talk to Friends</span>
+        <button
+          type="button"
+          id="close-chat-panel-btn"
+          class="chat-close-btn"
+          aria-label="Close Talk to Friends"
+          title="Close Talk to Friends"
+        >✕</button>
+      </div>
       <div id="chat-messages" class="chat-messages" role="log" aria-live="polite"></div>
       <div class="quick-reactions" aria-label="Quick Emoji Chat">
         <button type="button" class="reaction-btn" data-react="⭐⭐⭐⭐⭐ 5 STARS! Slay!!">⭐ 5 Stars!</button>

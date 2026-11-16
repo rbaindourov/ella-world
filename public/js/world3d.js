@@ -2040,7 +2040,7 @@ export class BlockyWorld3D {
     this.plazaGroup.add(buildGridFloor);
 
     // Crystal Cavern Dungeon Portal in Starlight Plaza
-    this._createPortalArch(
+    this.plazaPortalGroup = this._createPortalArch(
       {
         x: this.plazaPortalPos.x,
         y: this.plazaPortalPos.y,
@@ -3885,6 +3885,19 @@ export class BlockyWorld3D {
             }
           }
 
+          if (this.plazaPortalGroup) {
+            const portalHits = this.raycaster.intersectObject(this.plazaPortalGroup, true);
+            if (portalHits.length > 0 && portalHits[0].distance <= 14.0) {
+              const p = this.selfAvatar.group.position;
+              const dPortal = Math.hypot(p.x - this.plazaPortalPos.x, p.z - this.plazaPortalPos.z);
+              if (dPortal <= 6.5 && performance.now() - this.lastPortalTriggerAt > 1200) {
+                this.lastPortalTriggerAt = performance.now();
+                this.onRequestZonePortal(1);
+                return;
+              }
+            }
+          }
+
           if (
             e.button === 0 &&
             this.selfAvatar.user?.avatar?.accessory === 'ray_gun' &&
@@ -4413,10 +4426,10 @@ export class BlockyWorld3D {
           this.onRunwayProximity(isNowNearRunway);
         }
         const dPortal = Math.hypot(pos.x - this.plazaPortalPos.x, pos.z - this.plazaPortalPos.z);
-        if (dPortal < 2.25 && now - this.lastPortalTriggerAt > 2600) {
+        if (dPortal < 2.65 && Math.abs(pos.y - this.plazaPortalPos.y) < 3.5 && now - this.lastPortalTriggerAt > 2600) {
           this.lastPortalTriggerAt = now;
           this.onRequestZonePortal(1);
-        } else if (dPortal < 5.2) {
+        } else if (dPortal < 5.5) {
           nextHint = '🌀 Step In or Press E — Enter Crystal Cavern Dungeon!';
         } else if (!this.buildMode) {
           const nearToggle = this._findNearestToggleableBlock(3.8);
