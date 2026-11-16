@@ -2081,7 +2081,7 @@ async function requestZoneTransition(targetZone) {
     const res = await fetch('/api/ella-world/dungeon/portal', {
       method: 'POST',
       headers: JSON_HEADERS,
-      body: JSON.stringify({ token: sessionToken, zone: targetZone, targetZone })
+      body: JSON.stringify({ token: sessionToken, zone: targetZone })
     });
     if (await handleHttpAuthCheck(res)) return;
     const data = await res.json().catch(() => ({}));
@@ -2089,6 +2089,8 @@ async function requestZoneTransition(targetZone) {
       applyLocalZoneTransition(data);
     } else if (data.error) {
       showToast(`⚠️ ${data.error}`);
+    } else if (!res.ok) {
+      showToast(`⚠️ Portal transition failed (HTTP ${res.status}).`);
     }
   } catch {
     // fallback handled on next try

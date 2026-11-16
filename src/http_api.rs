@@ -1368,8 +1368,10 @@ async fn economy_use_handler(
 #[serde(rename_all = "camelCase")]
 struct DungeonPortalPayload {
     token: String,
-    #[serde(alias = "targetZone")]
-    zone: u8,
+    #[serde(default)]
+    zone: Option<u8>,
+    #[serde(default)]
+    target_zone: Option<u8>,
 }
 
 async fn dungeon_portal_handler(
@@ -1382,9 +1384,12 @@ async fn dungeon_portal_handler(
             "Invalid or expired session token.",
         );
     };
+    let Some(target_zone) = body.zone.or(body.target_zone) else {
+        return json_err(StatusCode::BAD_REQUEST, "Target zone is required.");
+    };
     match st
         .world
-        .transition_player_zone(&self_id, &username, body.zone)
+        .transition_player_zone(&self_id, &username, target_zone)
         .await
     {
         Ok(res) => Json(res).into_response(),

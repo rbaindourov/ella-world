@@ -1439,7 +1439,7 @@ async fn dungeon_portal_farming_and_live_p2p_trade_end_to_end() {
         running.http_addr,
         "POST",
         "/api/ella-world/dungeon/portal",
-        Some(json!({ "token": ella_token, "targetZone": 1 })),
+        Some(json!({ "token": ella_token, "zone": 1, "targetZone": 1 })),
     )
     .await;
     assert_eq!(st_portal, 200);
@@ -3084,7 +3084,7 @@ async fn legendary_ray_gun_ranged_dungeon_combat_and_plaza_light_show() {
         running.http_addr,
         "POST",
         "/api/ella-world/dungeon/portal",
-        Some(json!({ "token": ella_token, "targetZone": 1 })),
+        Some(json!({ "token": ella_token, "zone": 1, "targetZone": 1 })),
     )
     .await;
     assert_eq!(st_portal, 200);
