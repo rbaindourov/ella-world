@@ -18,12 +18,12 @@ use crate::economy::{
     TRADE_ACTIVE_IDLE_TTL_MS, TRADE_INVITE_TTL_MS,
 };
 use crate::models::{
-    default_block_kind, default_starter_blocks, is_toggleable_block_kind, is_two_tall_block_kind,
-    is_valid_block_kind, is_valid_hex_color, normalize_chat_mode, now_ms, BlockedChatEntry,
-    BlocksDataFile, ChatMessage, DeviceEvasionEntry, MachineDeviceRecord, PlayerEconomySnapshot,
-    PlayerModerationSnapshot, PlayerRuntimeState, RunwayPublicSummary, RunwayState, SanitizedUser,
-    SavedPosition, UserAccount, UsersConfigFile, VoxelBlock, RUNWAY_THEMES,
-    SAFE_QUICK_CHAT_PHRASES,
+    block_occupied_cells, default_block_kind, default_starter_blocks, is_toggleable_block_kind,
+    is_two_tall_block_kind, is_valid_block_kind, is_valid_hex_color, normalize_chat_mode, now_ms,
+    BlockedChatEntry, BlocksDataFile, ChatMessage, DeviceEvasionEntry, MachineDeviceRecord,
+    PlayerEconomySnapshot, PlayerModerationSnapshot, PlayerRuntimeState, RunwayPublicSummary,
+    RunwayState, SanitizedUser, SavedPosition, UserAccount, UsersConfigFile, VoxelBlock,
+    RUNWAY_THEMES, SAFE_QUICK_CHAT_PHRASES,
 };
 use crate::persistence::PersistenceStore;
 use crate::udp_wire::{
@@ -306,6 +306,7 @@ pub struct WorldEngine {
     pub prison: RwLock<PrisonState>,
     pub prison_work_cooldowns: RwLock<HashMap<String, u64>>,
     pub raygun_cooldowns: RwLock<HashMap<String, u64>>,
+    pub gauntlet_reward_cooldowns: RwLock<HashMap<String, u64>>,
     pub trades: RwLock<HashMap<String, TradeSession>>,
     pub global_voice_enabled: AtomicBool,
     pub server_tick: AtomicU32,
@@ -360,6 +361,7 @@ impl WorldEngine {
             prison: RwLock::new(PrisonState::new()),
             prison_work_cooldowns: RwLock::new(HashMap::new()),
             raygun_cooldowns: RwLock::new(HashMap::new()),
+            gauntlet_reward_cooldowns: RwLock::new(HashMap::new()),
             trades: RwLock::new(HashMap::new()),
             global_voice_enabled: AtomicBool::new(initial_global_voice),
             server_tick: AtomicU32::new(1),
@@ -1249,9 +1251,9 @@ impl WorldEngine {
 
         if let Some(pos) = &found_user.last_pos {
             (
-                pos.x.clamp(-75.0, 75.0),
-                pos.y.clamp(0.0, 75.0),
-                pos.z.clamp(-75.0, 75.0),
+                pos.x.clamp(-110.0, 110.0),
+                pos.y.clamp(0.0, 110.0),
+                pos.z.clamp(-110.0, 110.0),
                 pos.ry,
             )
         } else {
@@ -2025,7 +2027,7 @@ impl WorldEngine {
         input: BlockMutationInput<'_>,
     ) -> Result<(u64, Vec<VoxelBlock>), String> {
         let (x, y, z) = input.coords;
-        if !(-45..=45).contains(&x) || !(1..=60).contains(&y) || !(-45..=45).contains(&z) {
+        if !(-100..=100).contains(&x) || !(1..=80).contains(&y) || !(-100..=100).contains(&z) {
             return Err("Invalid block coordinates".into());
         }
 
@@ -2043,15 +2045,13 @@ impl WorldEngine {
             return Err("Block building and doors are disabled while in Debtor's Prison!".into());
         }
 
-        // 1. Interactive Door / Window hinge toggle (`action == "toggle"`)
+        // 1. Interactive Door / Double Door / Window hinge toggle (`action == "toggle"`)
         if action == "toggle" {
             let (next_version, snapshot, blocks_file) = {
                 let mut bd = self.blocks_data.write().await;
                 let target_idx = bd.blocks.iter().position(|b| {
-                    b.x == x
-                        && b.z == z
-                        && ((b.y == y && is_toggleable_block_kind(&b.kind))
-                            || (b.y == y - 1 && b.kind == "door"))
+                    is_toggleable_block_kind(&b.kind)
+                        && block_occupied_cells(b.x, b.y, b.z, &b.kind, b.rot).contains(&(x, y, z))
                 });
                 let Some(idx) = target_idx else {
                     return Err("No door or window at that spot to open or close.".into());
@@ -2080,9 +2080,7 @@ impl WorldEngine {
             let (next_version, snapshot, blocks_file, refunded_loot) = {
                 let mut bd = self.blocks_data.write().await;
                 let hit_idx = bd.blocks.iter().position(|b| {
-                    b.x == x
-                        && b.z == z
-                        && (b.y == y || (b.y == y - 1 && is_two_tall_block_kind(&b.kind)))
+                    block_occupied_cells(b.x, b.y, b.z, &b.kind, b.rot).contains(&(x, y, z))
                 });
                 let mut refund: Option<(String, String)> = None;
                 if let Some(idx) = hit_idx {
@@ -2143,10 +2141,16 @@ impl WorldEngine {
             return Err("Unknown building block or furniture kind.".into());
         }
         let two_tall = is_two_tall_block_kind(kind);
-        if two_tall && y >= 60 {
+        let rot = input.rot.unwrap_or(0) % 4;
+        let new_cells = block_occupied_cells(x, y, z, kind, rot);
+        if two_tall && y >= 80 {
             return Err("Too high to place a 2-block-tall door, fridge, or wardrobe here!".into());
         }
-        let rot = input.rot.unwrap_or(0) % 4;
+        if new_cells.iter().any(|&(cx, cy, cz)| {
+            !(-100..=100).contains(&cx) || !(1..=80).contains(&cy) || !(-100..=100).contains(&cz)
+        }) {
+            return Err("That double door extends past the edge of the buildable map!".into());
+        }
         let valid_color = input
             .color
             .filter(|c| is_valid_hex_color(c))
@@ -2193,22 +2197,8 @@ impl WorldEngine {
         let place_res = {
             let mut bd = self.blocks_data.write().await;
             let overlaps = |b: &VoxelBlock| -> bool {
-                if b.x != x || b.z != z {
-                    return false;
-                }
-                if b.y == y {
-                    return true;
-                }
-                if two_tall && b.y == y + 1 {
-                    return true;
-                }
-                if b.y == y - 1 && is_two_tall_block_kind(&b.kind) {
-                    return true;
-                }
-                if two_tall && b.y == y + 1 && is_two_tall_block_kind(&b.kind) {
-                    return true;
-                }
-                false
+                let existing_cells = block_occupied_cells(b.x, b.y, b.z, &b.kind, b.rot);
+                existing_cells.iter().any(|c| new_cells.contains(c))
             };
 
             if bd
@@ -2219,7 +2209,7 @@ impl WorldEngine {
                 Err("Pick up the displayed loot trophy there before building over it!".to_string())
             } else {
                 bd.blocks.retain(|b| !overlaps(b));
-                if bd.blocks.len() >= 5000 {
+                if bd.blocks.len() >= 12_000 {
                     if let Some(evict_idx) = bd.blocks.iter().position(|b| b.loot_item_id.is_none())
                     {
                         bd.blocks.remove(evict_idx);
@@ -2387,7 +2377,8 @@ impl WorldEngine {
         username: &str,
         raw_text: Option<&str>,
         is_trophy_win: bool,
-    ) -> Result<ChatMessage, String> {
+        trophy_tier: Option<&str>,
+    ) -> Result<(ChatMessage, i64), String> {
         let (
             disp_name,
             role,
@@ -2430,8 +2421,56 @@ impl WorldEngine {
         }
 
         let ts = now_ms();
+        let is_hard_obby = is_trophy_win
+            && trophy_tier
+                .map(|t| t.trim().eq_ignore_ascii_case("hard"))
+                .unwrap_or(false);
+        let mut coins_awarded: i64 = 0;
+
+        if is_hard_obby {
+            const GAUNTLET_REWARD_COOLDOWN_MS: u64 = 60_000;
+            const GAUNTLET_REWARD_COINS: i64 = 25;
+            let user_key = username.to_ascii_lowercase();
+            let eligible = {
+                let mut cd = self.gauntlet_reward_cooldowns.write().await;
+                let last_win = cd.get(&user_key).copied().unwrap_or(0);
+                if ts.saturating_sub(last_win) >= GAUNTLET_REWARD_COOLDOWN_MS {
+                    cd.insert(user_key, ts);
+                    true
+                } else {
+                    false
+                }
+            };
+            if eligible {
+                {
+                    let mut cfg = self.users_cfg.write().await;
+                    if let Some(u) = cfg
+                        .users
+                        .iter_mut()
+                        .find(|u| u.username.eq_ignore_ascii_case(username))
+                    {
+                        u.coins = u.coins.saturating_add(GAUNTLET_REWARD_COINS);
+                        coins_awarded = GAUNTLET_REWARD_COINS;
+                    }
+                }
+                if coins_awarded > 0 {
+                    self.persist_users_async().await;
+                    self.send_economy_update(self_id, username, "hard_obby_trophy_reward")
+                        .await;
+                }
+            }
+        }
+
         let clean_text = if is_trophy_win {
-            format!("🏆 {disp_name} conquered the Sky Obby and reached the Golden Trophy! 🎉")
+            if is_hard_obby {
+                if coins_awarded > 0 {
+                    format!("💎👑 {disp_name} conquered the Starlight Sky Gauntlet (Pro Obby) and earned +{coins_awarded} 🪙! 🎉")
+                } else {
+                    format!("💎👑 {disp_name} conquered the Starlight Sky Gauntlet (Pro Obby)! 🎉")
+                }
+            } else {
+                format!("🏆 {disp_name} conquered the Sky Obby and reached the Golden Trophy! 🎉")
+            }
         } else {
             raw_text
                 .unwrap_or("")
@@ -2694,7 +2733,7 @@ impl WorldEngine {
             chat: entry.clone(),
         });
 
-        Ok(entry)
+        Ok((entry, coins_awarded))
     }
 
     pub async fn mutate_runway(
@@ -3658,7 +3697,7 @@ impl WorldEngine {
         }
         let to = [
             ((from[0] + dx) * 100.0).round() / 100.0,
-            ((from[1] + dy).clamp(0.15, 62.0) * 100.0).round() / 100.0,
+            ((from[1] + dy).clamp(0.15, 85.0) * 100.0).round() / 100.0,
             ((from[2] + dz) * 100.0).round() / 100.0,
         ];
 
@@ -3832,9 +3871,9 @@ impl WorldEngine {
                 }
             }
             "prism_block" => {
-                let bx = (px.round() as i32).clamp(-45, 45);
-                let by = (py.floor() as i32 + 1).clamp(1, 60);
-                let bz = (pz.round() as i32 + 1).clamp(-45, 45);
+                let bx = (px.round() as i32).clamp(-100, 100);
+                let by = (py.floor() as i32 + 1).clamp(1, 80);
+                let bz = (pz.round() as i32 + 1).clamp(-100, 100);
                 if let Err(e) = self
                     .mutate_block(self_id, username, "place", (bx, by, bz), Some("#e879f9"))
                     .await

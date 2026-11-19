@@ -30,6 +30,7 @@ export const BUILD_CATALOG = [
   { kind: 'block', category: 'structure', icon: '🧱', label: 'Wall / Floor', height: 1 },
   { kind: 'stairs', category: 'structure', icon: '🪜', label: 'Stairs', height: 1 },
   { kind: 'door', category: 'structure', icon: '🚪', label: 'Hinged Door', height: 2 },
+  { kind: 'double_door', category: 'structure', icon: '🚪🚪', label: 'Double Door', height: 2, width: 2 },
   { kind: 'window', category: 'structure', icon: '🪟', label: 'Window', height: 1 },
   // Kitchen
   { kind: 'kitchen_counter', category: 'kitchen', icon: '🔪', label: 'Counter', height: 1 },
@@ -115,6 +116,19 @@ export function loadPropsAndLootPack() {
     });
   }
   return propsPackPromise;
+}
+
+function doubleDoorPartnerOffset(rot) {
+  switch (((rot || 0) % 4 + 4) % 4) {
+    case 0:
+      return { dx: 1, dz: 0 };
+    case 1:
+      return { dx: 0, dz: -1 };
+    case 2:
+      return { dx: -1, dz: 0 };
+    default:
+      return { dx: 0, dz: 1 };
+  }
 }
 
 function clonePropTemplate(templateName, tintHex = null, extraUserData = null, cloneGeo = false) {
@@ -1679,9 +1693,9 @@ export class BlockyWorld3D {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color('#7dd3fc');
-    this.scene.fog = new THREE.FogExp2('#bae6fd', 0.0078);
+    this.scene.fog = new THREE.FogExp2('#bae6fd', 0.0036);
 
-    this.camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 240);
+    this.camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 380);
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -1712,11 +1726,16 @@ export class BlockyWorld3D {
     this.prisonColliders = [];
     this.colliders = [];
     this.cameraOccluders = [];
+    this.openDoorPortals = [];
     this.movingPlatforms = [];
+    this.blinkingPlatforms = [];
+    this.sweeperHazards = [];
+    this.fountainShimmers = [];
     this.discoTiles = [];
     this.runwayStripLights = [];
     this.jumpPads = [];
     this.trophyMesh = null;
+    this.hardTrophyMesh = null;
     this.runwayStarCrest = null;
     this.confettiParticles = [];
     this.sparkleRings = [];
@@ -1766,8 +1785,15 @@ export class BlockyWorld3D {
     this.touchMove = { forward: false, backward: false, left: false, right: false };
     this.velocity = new THREE.Vector3();
     this.isGrounded = true;
-    this.currentCheckpoint = { x: 0, y: 0.5, z: -12, index: 0 };
+    this.obbyCheckpoints = {
+      easy: { x: 0, y: 0.5, z: -12, index: 0 },
+      hard: { x: 52, y: 0.9, z: 52, index: 0 }
+    };
+    this.currentCheckpoint = this.obbyCheckpoints.easy;
+    this.lastActiveObby = 'easy';
     this.lastTrophyWinAt = 0;
+    this.lastHardTrophyWinAt = 0;
+    this.lastSweeperHitAt = 0;
     this.nearRunway = false;
 
     this.cameraYaw = 0;
@@ -1855,6 +1881,32 @@ export class BlockyWorld3D {
         this.cameraOccluders.push(c.mesh);
       }
     }
+
+    // Track open doors & double doors for smooth snag-free walk-through passage
+    this.openDoorPortals = [];
+    if (this.currentZone === 0) {
+      for (const b of this.savedBlocksByKey.values()) {
+        if (!b.open) continue;
+        if (b.kind !== 'door' && b.kind !== 'double_door') continue;
+        const rot = ((b.rot || 0) % 4 + 4) % 4;
+        const isEW = rot % 2 === 1;
+        let centerX = b.x;
+        let centerZ = b.z;
+        if (b.kind === 'double_door') {
+          const { dx, dz } = doubleDoorPartnerOffset(rot);
+          centerX = b.x + dx * 0.5;
+          centerZ = b.z + dz * 0.5;
+        }
+        this.openDoorPortals.push({
+          centerX,
+          centerZ,
+          bottomY: b.y - 1,
+          topY: b.y + 1,
+          isEW, // true => passage along X axis, width along Z; false => passage along Z axis, width along X
+          halfOpening: b.kind === 'double_door' ? 0.98 : 0.54
+        });
+      }
+    }
   }
 
   _setupLights() {
@@ -1867,13 +1919,14 @@ export class BlockyWorld3D {
     this.sunLight.shadow.mapSize.width = 2048;
     this.sunLight.shadow.mapSize.height = 2048;
     this.sunLight.shadow.camera.near = 1;
-    this.sunLight.shadow.camera.far = 140;
-    const d = 48;
+    this.sunLight.shadow.camera.far = 165;
+    const d = 56;
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
     this.sunLight.shadow.camera.bottom = -d;
     this.scene.add(this.sunLight);
+    this.scene.add(this.sunLight.target);
 
     this.fillLight = new THREE.DirectionalLight('#fdf2f8', 0.55);
     this.fillLight.position.set(-28, 18, 26);
@@ -1881,14 +1934,28 @@ export class BlockyWorld3D {
   }
 
   _addBoxPlatform(
-    { x, y, z, w, h, d, color, type = 'solid', bounceVel = 0, checkpointIndex = 0, emissive = null, emissiveIntensity = 0 },
+    {
+      x,
+      y,
+      z,
+      w,
+      h,
+      d,
+      color,
+      type = 'solid',
+      bounceVel = 0,
+      checkpointIndex = 0,
+      obbyTier = 'easy',
+      emissive = null,
+      emissiveIntensity = 0
+    },
     targetGroup = this.plazaGroup,
     targetColliders = this.plazaColliders
   ) {
     const mat = new THREE.MeshStandardMaterial({
       color,
       roughness: type === 'ice' || type === 'runway' ? 0.18 : 0.55,
-      metalness: type === 'trophy-pad' || type === 'runway' ? 0.28 : 0.08
+      metalness: type === 'trophy-pad' || type === 'gauntlet-trophy-pad' || type === 'runway' ? 0.28 : 0.08
     });
     if (emissive) {
       mat.emissive = new THREE.Color(emissive);
@@ -1913,7 +1980,8 @@ export class BlockyWorld3D {
       bottomY: y - h / 2,
       type,
       bounceVel,
-      checkpointIndex
+      checkpointIndex,
+      obbyTier
     };
     targetColliders.push(entry);
     return entry;
@@ -1980,19 +2048,19 @@ export class BlockyWorld3D {
 
   _buildEnvironment() {
     const groundMat = new THREE.MeshStandardMaterial({ color: '#4ade80', roughness: 0.75 });
-    this.groundMesh = new THREE.Mesh(new THREE.BoxGeometry(84, 2, 84), groundMat);
+    this.groundMesh = new THREE.Mesh(new THREE.BoxGeometry(210, 2, 210), groundMat);
     this.groundMesh.position.set(0, -1, 0);
     this.groundMesh.receiveShadow = true;
     this.plazaGroup.add(this.groundMesh);
     this.plazaColliders.push({
       mesh: this.groundMesh,
-      w: 84,
+      w: 210,
       h: 2,
-      d: 84,
-      minX: -42,
-      maxX: 42,
-      minZ: -42,
-      maxZ: 42,
+      d: 210,
+      minX: -105,
+      maxX: 105,
+      minZ: -105,
+      maxZ: 105,
       topY: 0,
       bottomY: -2,
       type: 'ground'
@@ -2174,6 +2242,631 @@ export class BlockyWorld3D {
     trophyGroup.position.set(6.5, 17.3, -20);
     this.plazaGroup.add(trophyGroup);
     this.trophyMesh = trophyGroup;
+
+    // Expanded 210×210 Plaza Districts (Boulevards, Neighborhood Build Plots, Blossom Park & Signposts)
+    this._buildExpandedPlazaDistricts();
+
+    // Second, More Difficult Obby: Starlight Sky Gauntlet (Pro Obby)
+    this._buildHardObby();
+  }
+
+  _createSignpost(x, z, rotY, heading, subtext, accentHex = '#f472b6') {
+    const grp = new THREE.Group();
+    grp.position.set(x, 0, z);
+    grp.rotation.y = rotY;
+
+    const postMat = new THREE.MeshStandardMaterial({ color: '#78350f', roughness: 0.72 });
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 3.1, 8), postMat);
+    post.position.y = 1.55;
+    post.castShadow = true;
+    grp.add(post);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 192;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, 512, 192);
+    ctx.strokeStyle = accentHex;
+    ctx.lineWidth = 10;
+    ctx.strokeRect(8, 8, 496, 176);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 42px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(heading, 256, 86);
+    ctx.fillStyle = accentHex;
+    ctx.font = 'bold 28px Inter, sans-serif';
+    ctx.fillText(subtext, 256, 144);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    const boardMat = new THREE.MeshBasicMaterial({ map: tex });
+    const backMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.5 });
+    const board = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.2, 0.14), [
+      backMat,
+      backMat,
+      backMat,
+      backMat,
+      boardMat,
+      boardMat
+    ]);
+    board.position.y = 2.65;
+    board.castShadow = true;
+    grp.add(board);
+
+    this.plazaGroup.add(grp);
+    return grp;
+  }
+
+  _buildExpandedPlazaDistricts() {
+    // 1. Paved Starlight Boulevards radiating from Central Plaza (flush decorative stone paths)
+    const pathMat = new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.62 });
+    const trimMat = new THREE.MeshStandardMaterial({
+      color: '#cbd5e1',
+      roughness: 0.45,
+      metalness: 0.1
+    });
+    const addPath = (x, z, w, d) => {
+      const p = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, d), pathMat);
+      p.position.set(x, 0.03, z);
+      p.receiveShadow = true;
+      this.plazaGroup.add(p);
+    };
+
+    // East Boulevard -> Sunset Build Meadow
+    addPath(52, -4, 68, 5.2);
+    // East Cross Street connecting north & south build plots
+    addPath(68, 0, 4.4, 72);
+    // South Boulevard -> Blossom Fountain Park
+    addPath(0, 32, 5.4, 46);
+    // Southeast Diagonal/Connector Path -> Starlight Sky Gauntlet (Pro Obby)
+    addPath(26, 48, 52, 4.4);
+    // West Boulevard -> Westside Villa Estates
+    addPath(-56, 12, 52, 4.8);
+
+    // 2. Central Plaza 3D Directional Signposts
+    this._createSignpost(9.5, 9.5, -Math.PI * 0.25, '🔥 PRO OBBY GAUNTLET', 'Southeast Path • Press T', '#f472b6');
+    this._createSignpost(-9.5, 9.5, Math.PI * 0.25, '🌸 BLOSSOM PARK', 'Walk South for Fountain', '#38bdf8');
+    this._createSignpost(10.5, -6.5, -Math.PI * 0.5, '🏡 BUILD MEADOW', 'East Neighborhood Plots', '#34d399');
+    this._createSignpost(-10.5, -9.5, Math.PI * 0.75, '🏃‍♀️ SKY OBBY & RUNWAY', 'North (R) • West (F)', '#fbbf24');
+
+    // 3. Labeled Neighborhood Build Plots (Sunset Meadow East + Westside Villas West)
+    const lanternPostMat = new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.45, metalness: 0.35 });
+    const lanternGlowMat = new THREE.MeshStandardMaterial({
+      color: '#fef08a',
+      emissive: '#fbbf24',
+      emissiveIntensity: 0.85
+    });
+    const buildPlots = [
+      { x: 52, z: -26, size: 18, name: '🏡 Sunset Plot #1', accent: '#38bdf8' },
+      { x: 82, z: -26, size: 18, name: '🏡 Sunset Plot #2', accent: '#f472b6' },
+      { x: 52, z: 20, size: 18, name: '🏡 Starlight Plot #3', accent: '#a78bfa' },
+      { x: 82, z: 20, size: 18, name: '🏡 Starlight Plot #4', accent: '#34d399' },
+      { x: -64, z: -16, size: 20, name: '🏡 West Villa Plot #5', accent: '#fb923c' },
+      { x: -64, z: 32, size: 20, name: '🏡 West Villa Plot #6', accent: '#f472b6' }
+    ];
+    for (const plot of buildPlots) {
+      const grid = new THREE.GridHelper(plot.size, plot.size, plot.accent, '#94a3b8');
+      grid.position.set(plot.x, 0.05, plot.z);
+      this.plazaGroup.add(grid);
+
+      const half = plot.size / 2 + 0.6;
+      for (const [cx, cz] of [
+        [-half, -half],
+        [half, -half],
+        [-half, half],
+        [half, half]
+      ]) {
+        const p = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 2.3, 8), lanternPostMat);
+        p.position.set(plot.x + cx, 1.15, plot.z + cz);
+        const orb = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 10), lanternGlowMat);
+        orb.position.set(plot.x + cx, 2.42, plot.z + cz);
+        this.plazaGroup.add(p, orb);
+      }
+      this._createSignpost(plot.x, plot.z + half + 1.4, 0, plot.name, 'Open Build Lot (Press B)', plot.accent);
+    }
+
+    // 4. Blossom Fountain Park & Koi Pond (South: x ∈ [-28, 28], z ∈ [54, 92])
+    const parkPlaza = new THREE.Mesh(new THREE.CylinderGeometry(18, 18.6, 0.1, 40), trimMat);
+    parkPlaza.position.set(0, 0.05, 72);
+    parkPlaza.receiveShadow = true;
+    this.plazaGroup.add(parkPlaza);
+
+    const pondRim = new THREE.Mesh(
+      new THREE.TorusGeometry(8.2, 0.55, 12, 42),
+      new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.35 })
+    );
+    pondRim.rotation.x = Math.PI / 2;
+    pondRim.position.set(0, 0.36, 72);
+    this.plazaGroup.add(pondRim);
+
+    const waterMat = new THREE.MeshStandardMaterial({
+      color: '#38bdf8',
+      emissive: '#0284c7',
+      emissiveIntensity: 0.32,
+      roughness: 0.12,
+      metalness: 0.25,
+      transparent: true,
+      opacity: 0.86
+    });
+    const pondWater = new THREE.Mesh(new THREE.CylinderGeometry(7.9, 7.9, 0.25, 36), waterMat);
+    pondWater.position.set(0, 0.18, 72);
+    this.plazaGroup.add(pondWater);
+
+    // Tiered Crystal Fountain Centerpiece
+    const stoneMat = new THREE.MeshStandardMaterial({ color: '#f1f5f9', roughness: 0.3, metalness: 0.15 });
+    const fBase = new THREE.Mesh(new THREE.CylinderGeometry(2.3, 2.8, 0.9, 18), stoneMat);
+    fBase.position.set(0, 0.65, 72);
+    const fPillar = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.95, 2.8, 14), stoneMat);
+    fPillar.position.set(0, 2.2, 72);
+    const fBowl = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 1.2, 0.55, 20), stoneMat);
+    fBowl.position.set(0, 3.3, 72);
+    const fCrystal = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.95, 0),
+      new THREE.MeshStandardMaterial({
+        color: '#f472b6',
+        emissive: '#ec4899',
+        emissiveIntensity: 0.65,
+        roughness: 0.15,
+        metalness: 0.35
+      })
+    );
+    fCrystal.position.set(0, 4.9, 72);
+    this.plazaGroup.add(fBase, fPillar, fBowl, fCrystal);
+    this.fountainShimmers.push(fCrystal);
+
+    // Floating fountain water rings
+    for (let i = 0; i < 3; i++) {
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(1.4 + i * 1.3, 0.07, 8, 28),
+        new THREE.MeshStandardMaterial({
+          color: '#bae6fd',
+          emissive: '#38bdf8',
+          emissiveIntensity: 0.6,
+          transparent: true,
+          opacity: 0.72
+        })
+      );
+      ring.rotation.x = Math.PI / 2;
+      ring.position.set(0, 0.35 + i * 0.04, 72);
+      ring.userData.shimmerPhase = i * 1.4;
+      this.plazaGroup.add(ring);
+      this.fountainShimmers.push(ring);
+    }
+
+    // Park benches around the fountain
+    const benchAngles = [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5];
+    for (const ang of benchAngles) {
+      const bx = Math.cos(ang) * 13.8;
+      const bz = 72 + Math.sin(ang) * 13.8;
+      const isZBench = Math.abs(Math.sin(ang)) > 0.5;
+      this._addBoxPlatform({
+        x: bx,
+        y: 0.38,
+        z: bz,
+        w: isZBench ? 4.0 : 1.1,
+        h: 0.76,
+        d: isZBench ? 1.1 : 4.0,
+        color: '#b45309'
+      });
+    }
+
+    // 5. Lush Outer Park & Perimeter Trees + Flower Clusters + Glowing Perimeter Border Posts
+    const logMat = new THREE.MeshStandardMaterial({ color: '#78350f', roughness: 0.8 });
+    const trunkGeo = new THREE.BoxGeometry(1.0, 3.2, 1.0);
+    const leavesGeo = new THREE.BoxGeometry(3.2, 3.0, 3.2);
+    const blossomMat = new THREE.MeshStandardMaterial({ color: '#f9a8d4', roughness: 0.6 });
+    const greenLeafMat = new THREE.MeshStandardMaterial({ color: '#22c55e', roughness: 0.6 });
+    const lilacLeafMat = new THREE.MeshStandardMaterial({ color: '#c4b5fd', roughness: 0.6 });
+    const leafMats = [blossomMat, greenLeafMat, lilacLeafMat];
+
+    const outerTrees = [
+      [-24, 58], [-28, 72], [-22, 86], [24, 58], [28, 72], [22, 86],
+      [-10, 93], [10, 93], [-42, 66], [-48, 84], [-86, 60], [-88, 14],
+      [-88, -36], [-72, -62], [-38, -62], [-18, -74], [18, -72], [46, -64],
+      [78, -64], [94, -44], [95, 2], [95, 38], [34, -44], [-40, -40]
+    ];
+    outerTrees.forEach(([tx, tz], idx) => {
+      const trunk = new THREE.Mesh(trunkGeo, logMat);
+      trunk.position.set(tx, 1.6, tz);
+      trunk.castShadow = true;
+      const leaves = new THREE.Mesh(leavesGeo, leafMats[idx % leafMats.length]);
+      leaves.position.set(tx, 4.0, tz);
+      leaves.castShadow = true;
+      this.plazaGroup.add(trunk, leaves);
+    });
+
+    // Subtle perimeter lantern fence markers at ±103 so players see the 210×210 world edge
+    const railMat = new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.5 });
+    for (let p = -100; p <= 100; p += 20) {
+      for (const [fx, fz] of [
+        [p, -103],
+        [p, 103],
+        [-103, p],
+        [103, p]
+      ]) {
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.45, 1.6, 0.45), railMat);
+        post.position.set(fx, 0.8, fz);
+        const cap = new THREE.Mesh(new THREE.SphereGeometry(0.24, 8, 8), lanternGlowMat);
+        cap.position.set(fx, 1.78, fz);
+        this.plazaGroup.add(post, cap);
+      }
+    }
+  }
+
+  _buildHardObby() {
+    // Starlight Sky Gauntlet (Pro Obby #2) — Southeast Sector (x ∈ [48, 92], z ∈ [48, 92], y ∈ [0, 44])
+    // Entrance Archway & Checkpoint 1 at (52, 0.4, 52)
+    this._createSignpost(47.2, 52, Math.PI * 0.5, '🔥 STARLIGHT GAUNTLET', 'Pro Obby • +25 🪙 Reward', '#ec4899');
+    const archMat = new THREE.MeshStandardMaterial({
+      color: '#ec4899',
+      emissive: '#db2777',
+      emissiveIntensity: 0.45,
+      metalness: 0.45,
+      roughness: 0.2
+    });
+    const startArch = new THREE.Mesh(new THREE.TorusGeometry(3.2, 0.2, 12, 32, Math.PI), archMat);
+    startArch.position.set(52, 0.8, 52);
+    startArch.rotation.y = Math.PI * 0.5;
+    this.plazaGroup.add(startArch);
+
+    // CP 1: Start Pad
+    this._addBoxPlatform({
+      x: 52,
+      y: 0.4,
+      z: 52,
+      w: 5.0,
+      h: 0.8,
+      d: 5.0,
+      color: '#f59e0b',
+      emissive: '#d97706',
+      emissiveIntensity: 0.25,
+      type: 'checkpoint',
+      checkpointIndex: 1,
+      obbyTier: 'hard'
+    });
+
+    // Stage 1 -> CP 2: Narrow Zig-Zag Steps + Fast Split-Axis Movers
+    const s1Steps = [
+      { x: 56.2, y: 2.0, z: 52.0, w: 2.0, d: 2.0, color: '#ec4899' },
+      { x: 59.8, y: 3.5, z: 49.2, w: 1.85, d: 1.85, color: '#a855f7' },
+      { x: 63.6, y: 5.0, z: 52.4, w: 1.85, d: 1.85, color: '#38bdf8' }
+    ];
+    for (const s of s1Steps) {
+      this._addBoxPlatform({
+        x: s.x,
+        y: s.y,
+        z: s.z,
+        w: s.w,
+        h: 0.5,
+        d: s.d,
+        color: s.color,
+        emissive: s.color,
+        emissiveIntensity: 0.18
+      });
+    }
+
+    const hm1 = this._addBoxPlatform({
+      x: 67.8,
+      y: 6.6,
+      z: 52.4,
+      w: 2.4,
+      h: 0.5,
+      d: 2.4,
+      color: '#22d3ee',
+      emissive: '#0891b2',
+      emissiveIntensity: 0.25,
+      type: 'moving',
+      obbyTier: 'hard'
+    });
+    hm1.baseX = 67.8;
+    hm1.baseY = 6.6;
+    hm1.baseZ = 52.4;
+    hm1.ampX = 0;
+    hm1.ampZ = 3.4;
+    hm1.speed = 2.2;
+    this.movingPlatforms.push(hm1);
+
+    const hm2 = this._addBoxPlatform({
+      x: 71.2,
+      y: 8.2,
+      z: 52.4,
+      w: 2.4,
+      h: 0.5,
+      d: 2.4,
+      color: '#c084fc',
+      emissive: '#7c3aed',
+      emissiveIntensity: 0.25,
+      type: 'moving',
+      obbyTier: 'hard'
+    });
+    hm2.baseX = 71.2;
+    hm2.baseY = 8.2;
+    hm2.baseZ = 52.4;
+    hm2.ampX = 2.2;
+    hm2.ampZ = 0;
+    hm2.speed = 2.4;
+    this.movingPlatforms.push(hm2);
+
+    // CP 2
+    this._addBoxPlatform({
+      x: 76.0,
+      y: 9.6,
+      z: 52.4,
+      w: 4.8,
+      h: 0.6,
+      d: 4.8,
+      color: '#f59e0b',
+      emissive: '#d97706',
+      emissiveIntensity: 0.25,
+      type: 'checkpoint',
+      checkpointIndex: 2,
+      obbyTier: 'hard'
+    });
+
+    // Stage 2 -> CP 3: 5 Server-Synced Blinking / Disappearing Star Tiles
+    const blinkDefs = [
+      { x: 79.0, y: 11.1, z: 56.2, phaseOffsetMs: 0, color: '#f472b6' },
+      { x: 82.0, y: 12.6, z: 60.0, phaseOffsetMs: 1200, color: '#fb7185' },
+      { x: 85.0, y: 14.1, z: 63.8, phaseOffsetMs: 2400, color: '#f472b6' },
+      { x: 85.0, y: 15.6, z: 68.4, phaseOffsetMs: 600, color: '#fb7185' },
+      { x: 84.0, y: 17.0, z: 72.8, phaseOffsetMs: 1800, color: '#f472b6' }
+    ];
+    for (const bd of blinkDefs) {
+      const bp = this._addBoxPlatform({
+        x: bd.x,
+        y: bd.y,
+        z: bd.z,
+        w: 2.2,
+        h: 0.5,
+        d: 2.2,
+        color: bd.color,
+        emissive: bd.color,
+        emissiveIntensity: 0.35,
+        type: 'blinking',
+        obbyTier: 'hard'
+      });
+      bp.mesh.material.transparent = true;
+      bp.baseColor = new THREE.Color(bd.color);
+      bp.cycleMs = 5100;
+      bp.solidMs = 2600;
+      bp.warnMs = 900;
+      bp.phaseOffsetMs = bd.phaseOffsetMs;
+      this.blinkingPlatforms.push(bp);
+    }
+
+    // CP 3
+    this._addBoxPlatform({
+      x: 83.0,
+      y: 18.0,
+      z: 77.6,
+      w: 4.8,
+      h: 0.6,
+      d: 4.8,
+      color: '#f59e0b',
+      emissive: '#d97706',
+      emissiveIntensity: 0.25,
+      type: 'checkpoint',
+      checkpointIndex: 3,
+      obbyTier: 'hard'
+    });
+
+    // Stage 3 -> CP 4: Chained High-Arc Bounce Pads & Sky Islands
+    const addBouncePad = (x, y, z, bounceVel) => {
+      const pad = this._addBoxPlatform({
+        x,
+        y,
+        z,
+        w: 2.2,
+        h: 0.4,
+        d: 2.2,
+        color: '#ec4899',
+        emissive: '#db2777',
+        emissiveIntensity: 0.55,
+        type: 'jumppad',
+        bounceVel,
+        obbyTier: 'hard'
+      });
+      this.jumpPads.push(pad);
+    };
+    addBouncePad(80.6, 18.5, 78.6, 21.5);
+    this._addBoxPlatform({
+      x: 74.8,
+      y: 22.0,
+      z: 81.2,
+      w: 2.8,
+      h: 0.5,
+      d: 2.8,
+      color: '#38bdf8',
+      emissive: '#0284c7',
+      emissiveIntensity: 0.22
+    });
+    addBouncePad(74.8, 22.45, 81.2, 22.0);
+    this._addBoxPlatform({
+      x: 68.6,
+      y: 25.8,
+      z: 84.4,
+      w: 2.6,
+      h: 0.5,
+      d: 2.6,
+      color: '#a78bfa',
+      emissive: '#7c3aed',
+      emissiveIntensity: 0.22
+    });
+    addBouncePad(68.6, 26.25, 84.4, 22.0);
+
+    // CP 4
+    this._addBoxPlatform({
+      x: 61.5,
+      y: 29.0,
+      z: 85.5,
+      w: 5.0,
+      h: 0.6,
+      d: 5.0,
+      color: '#f59e0b',
+      emissive: '#d97706',
+      emissiveIntensity: 0.25,
+      type: 'checkpoint',
+      checkpointIndex: 4,
+      obbyTier: 'hard'
+    });
+
+    // Stage 4 -> CP 5: 3 Sky Discs with Spinning Sweeper Beams (Jump Over!)
+    const sweeperDefs = [
+      { x: 59.2, y: 30.2, z: 79.4, size: 5.4, radius: 2.75, speed: 1.75, color: '#1e1b4b' },
+      { x: 56.6, y: 31.6, z: 73.0, size: 5.2, radius: 2.65, speed: -2.0, color: '#312e81' },
+      { x: 54.6, y: 33.0, z: 66.8, size: 5.0, radius: 2.55, speed: 2.2, color: '#1e1b4b' }
+    ];
+    const beamMat = new THREE.MeshStandardMaterial({
+      color: '#fb7185',
+      emissive: '#f43f5e',
+      emissiveIntensity: 0.85,
+      roughness: 0.2
+    });
+    const hubMat = new THREE.MeshStandardMaterial({
+      color: '#fbbf24',
+      emissive: '#d97706',
+      emissiveIntensity: 0.4,
+      metalness: 0.6,
+      roughness: 0.25
+    });
+    for (const sd of sweeperDefs) {
+      this._addBoxPlatform({
+        x: sd.x,
+        y: sd.y,
+        z: sd.z,
+        w: sd.size,
+        h: 0.6,
+        d: sd.size,
+        color: sd.color,
+        emissive: '#4f46e5',
+        emissiveIntensity: 0.2
+      });
+      const beamY = sd.y + 0.82;
+      const sweeperGroup = new THREE.Group();
+      sweeperGroup.position.set(sd.x, beamY, sd.z);
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.38, 0.72, 12), hubMat);
+      hub.position.y = -0.18;
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, sd.radius * 2, 10), beamMat);
+      bar.rotation.z = Math.PI / 2;
+      sweeperGroup.add(hub, bar);
+      this.plazaGroup.add(sweeperGroup);
+      this.sweeperHazards.push({
+        group: sweeperGroup,
+        cx: sd.x,
+        cy: beamY,
+        cz: sd.z,
+        radius: sd.radius,
+        speed: sd.speed,
+        angle: 0
+      });
+    }
+
+    // CP 5
+    this._addBoxPlatform({
+      x: 55.5,
+      y: 34.4,
+      z: 60.4,
+      w: 4.8,
+      h: 0.6,
+      d: 4.8,
+      color: '#f59e0b',
+      emissive: '#d97706',
+      emissiveIntensity: 0.25,
+      type: 'checkpoint',
+      checkpointIndex: 5,
+      obbyTier: 'hard'
+    });
+
+    // Stage 5 -> Diamond Crown Summit: 2 Alternating Blinkers + Fast Diagonal Mover
+    for (const bd of [
+      { x: 59.5, y: 35.8, z: 62.6, phaseOffsetMs: 0, color: '#38bdf8' },
+      { x: 63.6, y: 37.3, z: 64.6, phaseOffsetMs: 1700, color: '#a855f7' }
+    ]) {
+      const bp = this._addBoxPlatform({
+        x: bd.x,
+        y: bd.y,
+        z: bd.z,
+        w: 2.0,
+        h: 0.5,
+        d: 2.0,
+        color: bd.color,
+        emissive: bd.color,
+        emissiveIntensity: 0.35,
+        type: 'blinking',
+        obbyTier: 'hard'
+      });
+      bp.mesh.material.transparent = true;
+      bp.baseColor = new THREE.Color(bd.color);
+      bp.cycleMs = 4800;
+      bp.solidMs = 2400;
+      bp.warnMs = 850;
+      bp.phaseOffsetMs = bd.phaseOffsetMs;
+      this.blinkingPlatforms.push(bp);
+    }
+
+    const finalMover = this._addBoxPlatform({
+      x: 67.5,
+      y: 38.8,
+      z: 66.6,
+      w: 2.5,
+      h: 0.5,
+      d: 2.5,
+      color: '#f472b6',
+      emissive: '#ec4899',
+      emissiveIntensity: 0.3,
+      type: 'moving',
+      obbyTier: 'hard'
+    });
+    finalMover.baseX = 67.5;
+    finalMover.baseY = 38.8;
+    finalMover.baseZ = 66.6;
+    finalMover.ampX = 1.8;
+    finalMover.ampZ = 1.8;
+    finalMover.speed = 2.2;
+    this.movingPlatforms.push(finalMover);
+
+    // Diamond Crown Summit Pad
+    this._addBoxPlatform({
+      x: 72.6,
+      y: 40.2,
+      z: 69.2,
+      w: 7.6,
+      h: 1.0,
+      d: 7.6,
+      color: '#e0f2fe',
+      emissive: '#38bdf8',
+      emissiveIntensity: 0.32,
+      type: 'gauntlet-trophy-pad',
+      checkpointIndex: 6,
+      obbyTier: 'hard'
+    });
+
+    // Spinning Diamond Crown Monument
+    const crownGroup = new THREE.Group();
+    const diamondMat = new THREE.MeshStandardMaterial({
+      color: '#67e8f9',
+      emissive: '#38bdf8',
+      emissiveIntensity: 0.65,
+      metalness: 0.4,
+      roughness: 0.12
+    });
+    const goldMat = new THREE.MeshStandardMaterial({
+      color: '#fbbf24',
+      emissive: '#f59e0b',
+      emissiveIntensity: 0.4,
+      metalness: 0.72,
+      roughness: 0.18
+    });
+    const basePedestal = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.45, 0.7, 8), goldMat);
+    const crownRing = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.16, 10, 24), goldMat);
+    crownRing.rotation.x = Math.PI / 2;
+    crownRing.position.y = 1.15;
+    const gemCore = new THREE.Mesh(new THREE.OctahedronGeometry(1.1, 0), diamondMat);
+    gemCore.position.y = 1.75;
+    crownGroup.add(basePedestal, crownRing, gemCore);
+    crownGroup.position.set(72.6, 41.3, 69.2);
+    this.plazaGroup.add(crownGroup);
+    this.hardTrophyMesh = crownGroup;
   }
 
   _buildDtiFashionRunway() {
@@ -2831,6 +3524,111 @@ export class BlockyWorld3D {
         maxX: x + halfW,
         minZ: z - halfD,
         maxZ: z + halfD,
+        topY: baseBottomY + 2.0,
+        bottomY: baseBottomY,
+        type: 'voxel',
+        passable: isOpen,
+        noStand: isOpen,
+        cameraOccluder: !isOpen
+      });
+    } else if (kind === 'double_door') {
+      // 2-block-wide hinged French Double Door: spans local X in [-0.5, +1.5], Y in [0, 2.0]
+      // Note: root is placed at anchor (x, baseBottomY, z) and rotated by rot * PI/2.
+      // At rot=0 (+Z), local +X maps to world (+1, 0); rot=1 (+X), local +X maps to world (0, -1);
+      // rot=2 (-Z), local +X maps to world (-1, 0); rot=3 (-X), local +X maps to world (0, +1).
+      // That matches doubleDoorPartnerOffset(rot) identically!
+      const jambMat = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.36 });
+      const goldMat = new THREE.MeshStandardMaterial({ color: '#fbbf24', metalness: 0.65, roughness: 0.22 });
+      const doorMat = new THREE.MeshStandardMaterial({ color, roughness: 0.38 });
+      const glassMat = new THREE.MeshStandardMaterial({
+        color: '#bae6fd',
+        transparent: true,
+        opacity: 0.38,
+        roughness: 0.12,
+        depthWrite: false
+      });
+
+      const jL = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.0, 0.2), jambMat);
+      jL.position.set(-0.45, 1.0, 0);
+      const jR = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.0, 0.2), jambMat);
+      jR.position.set(1.45, 1.0, 0);
+      const hdr = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.12, 0.22), jambMat);
+      hdr.position.set(0.5, 1.94, 0);
+      const thresh = new THREE.Mesh(new THREE.BoxGeometry(1.98, 0.03, 0.22), goldMat);
+      thresh.position.set(0.5, 0.015, 0);
+      for (const p of [jL, jR, hdr, thresh]) {
+        p.castShadow = true;
+        p.receiveShadow = true;
+        Object.assign(p.userData, meta);
+        root.add(p);
+      }
+
+      const buildLeaf = (dirSign) => {
+        const g = new THREE.Group();
+        const cx = dirSign * 0.45;
+        const lower = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.06, 0.08), doorMat);
+        lower.position.set(cx, 0.56, 0);
+        const stileOuter = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.78, 0.08), doorMat);
+        stileOuter.position.set(dirSign * 0.07, 1.48, 0);
+        const stileInner = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.78, 0.08), doorMat);
+        stileInner.position.set(dirSign * 0.83, 1.48, 0);
+        const topRail = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.14, 0.08), doorMat);
+        topRail.position.set(cx, 1.81, 0);
+        const trimPanel = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.64, 0.105), jambMat);
+        trimPanel.position.set(cx, 0.56, 0);
+        const glass = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.64, 0.03), glassMat);
+        glass.position.set(cx, 1.45, 0);
+        const knobF = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), goldMat);
+        knobF.position.set(dirSign * 0.78, 0.96, 0.08);
+        const knobB = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), goldMat);
+        knobB.position.set(dirSign * 0.78, 0.96, -0.08);
+        for (const p of [lower, stileOuter, stileInner, topRail, trimPanel, glass, knobF, knobB]) {
+          p.castShadow = true;
+          Object.assign(p.userData, meta);
+          g.add(p);
+        }
+        return g;
+      };
+
+      const leftPivot = new THREE.Group();
+      leftPivot.position.set(-0.4, 0, 0);
+      Object.assign(leftPivot.userData, meta);
+      leftPivot.add(buildLeaf(1));
+
+      const rightPivot = new THREE.Group();
+      rightPivot.position.set(1.4, 0, 0);
+      Object.assign(rightPivot.userData, meta);
+      rightPivot.add(buildLeaf(-1));
+
+      root.add(leftPivot, rightPivot);
+
+      const targetAngle = isOpen ? Math.PI * 0.48 : 0;
+      const startAngle = preservedHingeAngle !== undefined ? preservedHingeAngle : targetAngle;
+      leftPivot.rotation.y = startAngle;
+      rightPivot.rotation.y = -startAngle;
+      this.animatedHinges.set(key, {
+        pivot: leftPivot,
+        secondaryPivot: rightPivot,
+        currentAngle: startAngle,
+        targetAngle
+      });
+
+      const { dx, dz } = doubleDoorPartnerOffset(rot);
+      const isEW = rot % 2 === 1;
+      const centerX = x + dx * 0.5;
+      const centerZ = z + dz * 0.5;
+      const halfW = isEW ? 0.18 : 0.98;
+      const halfD = isEW ? 0.98 : 0.18;
+      this.voxelColliders.push({
+        mesh: root,
+        voxelKey: key,
+        w: halfW * 2,
+        h: 2,
+        d: halfD * 2,
+        minX: centerX - halfW,
+        maxX: centerX + halfW,
+        minZ: centerZ - halfD,
+        maxZ: centerZ + halfD,
         topY: baseBottomY + 2.0,
         bottomY: baseBottomY,
         type: 'voxel',
@@ -3573,9 +4371,16 @@ export class BlockyWorld3D {
     let best = null;
     let bestDist = maxDist;
     for (const b of this.savedBlocksByKey.values()) {
-      if (b.kind !== 'door' && b.kind !== 'window') continue;
-      const centerY = b.kind === 'door' ? b.y : b.y - 0.5;
-      const d = Math.hypot(pos.x - b.x, eyeY - centerY, pos.z - b.z);
+      if (b.kind !== 'door' && b.kind !== 'double_door' && b.kind !== 'window') continue;
+      let cx = b.x;
+      let cz = b.z;
+      if (b.kind === 'double_door') {
+        const { dx, dz } = doubleDoorPartnerOffset(b.rot || 0);
+        cx += dx * 0.5;
+        cz += dz * 0.5;
+      }
+      const centerY = b.kind === 'door' || b.kind === 'double_door' ? b.y : b.y - 0.5;
+      const d = Math.hypot(pos.x - cx, eyeY - centerY, pos.z - cz);
       if (d < bestDist) {
         bestDist = d;
         best = b;
@@ -3593,12 +4398,10 @@ export class BlockyWorld3D {
     );
 
     if (this.currentZone === 0) {
-      if (!this.buildMode) {
-        const toggleTarget = this._findNearestToggleableBlock(3.8);
-        if (toggleTarget) {
-          this.onToggleBlock({ x: toggleTarget.x, y: toggleTarget.y, z: toggleTarget.z });
-          return;
-        }
+      const toggleTarget = this._findNearestToggleableBlock(3.8);
+      if (toggleTarget) {
+        this.onToggleBlock({ x: toggleTarget.x, y: toggleTarget.y, z: toggleTarget.z });
+        return;
       }
       const dPortal = Math.hypot(pos.x - this.plazaPortalPos.x, pos.z - this.plazaPortalPos.z);
       if (dPortal < 4.2) {
@@ -3764,11 +4567,23 @@ export class BlockyWorld3D {
       this.onRequestZonePortal(0);
       return;
     }
-    this.selfAvatar.group.position.set(
-      this.currentCheckpoint.x,
-      this.currentCheckpoint.y + 0.6,
-      this.currentCheckpoint.z
-    );
+    const cp = this.obbyCheckpoints.easy;
+    this.lastActiveObby = 'easy';
+    this.selfAvatar.group.position.set(cp.x, cp.y + 0.6, cp.z);
+    this.velocity.set(0, 0, 0);
+    this.selfAvatar.emote = null;
+    this._emitMoveNow();
+  }
+
+  warpToHardObbyCheckpoint() {
+    if (!this.selfAvatar) return;
+    if (this.currentZone !== 0) {
+      this.onRequestZonePortal(0);
+      return;
+    }
+    const cp = this.obbyCheckpoints.hard;
+    this.lastActiveObby = 'hard';
+    this.selfAvatar.group.position.set(cp.x, cp.y + 0.6, cp.z);
     this.velocity.set(0, 0, 0);
     this.selfAvatar.emote = null;
     this._emitMoveNow();
@@ -3875,10 +4690,13 @@ export class BlockyWorld3D {
           const voxelHits = this.raycaster.intersectObjects(this.voxelGroup.children, true);
           if (voxelHits.length > 0 && voxelHits[0].distance <= 9.5) {
             const ud = voxelHits[0].object.userData || {};
-            if ((ud.voxelKind === 'door' || ud.voxelKind === 'window') && ud.voxelCoords) {
+            if (
+              (ud.voxelKind === 'door' || ud.voxelKind === 'double_door' || ud.voxelKind === 'window') &&
+              ud.voxelCoords
+            ) {
               const p = this.selfAvatar.group.position;
               const d = Math.hypot(p.x - ud.voxelCoords.x, p.y + 0.9 - ud.voxelCoords.y, p.z - ud.voxelCoords.z);
-              if (d <= 5.5) {
+              if (d <= 6.2) {
                 this.onToggleBlock(ud.voxelCoords);
                 return;
               }
@@ -3968,15 +4786,22 @@ export class BlockyWorld3D {
       }
       const { x, y, z } = hit.object.userData.voxelCoords;
       const hitKind = hit.object.userData.voxelKind || 'block';
-      const hitTwoTall = hitKind === 'door' || hitKind === 'kitchen_fridge' || hitKind === 'wardrobe';
+      const hitTwoTall =
+        hitKind === 'door' ||
+        hitKind === 'double_door' ||
+        hitKind === 'kitchen_fridge' ||
+        hitKind === 'wardrobe';
+      const hitDoubleWide = hitKind === 'double_door';
+      const hitSaved = this.savedBlocksByKey.get(`${x},${y},${z}`);
+      const hitRot = hitSaved ? hitSaved.rot || 0 : 0;
       if (wireBox) {
-        wireBox.scale.set(1, hitTwoTall ? 2 : 1, 1);
-        wireBox.position.y = hitTwoTall ? 1.0 : 0.5;
+        wireBox.scale.set(hitDoubleWide ? 2 : 1, hitTwoTall ? 2 : 1, 1);
+        wireBox.position.set(hitDoubleWide ? 0.5 : 0, hitTwoTall ? 1.0 : 0.5, 0);
         wireBox.material.color.set('#ef4444');
       }
       if (dirArrow) dirArrow.visible = false;
       this.ghostMesh.position.set(x, y - 1, z);
-      this.ghostMesh.rotation.y = 0;
+      this.ghostMesh.rotation.y = hitDoubleWide ? hitRot * (Math.PI / 2) : 0;
       this.ghostMesh.visible = true;
       return;
     }
@@ -3990,12 +4815,14 @@ export class BlockyWorld3D {
     const gz = Math.round(p.z);
     const isTwoTall =
       this.selectedBuildKind === 'door' ||
+      this.selectedBuildKind === 'double_door' ||
       this.selectedBuildKind === 'kitchen_fridge' ||
       this.selectedBuildKind === 'wardrobe';
+    const isDoubleWide = this.selectedBuildKind === 'double_door';
 
     if (wireBox) {
-      wireBox.scale.set(1, isTwoTall ? 2 : 1, 1);
-      wireBox.position.y = isTwoTall ? 1.0 : 0.5;
+      wireBox.scale.set(isDoubleWide ? 2 : 1, isTwoTall ? 2 : 1, 1);
+      wireBox.position.set(isDoubleWide ? 0.5 : 0, isTwoTall ? 1.0 : 0.5, 0);
       wireBox.material.color.set(
         this.selectedBuildKind === 'loot_decor' ? '#22d3ee' : this.selectedBlockColor
       );
@@ -4130,9 +4957,11 @@ export class BlockyWorld3D {
         if (Math.abs(diff) > 0.002) {
           hObj.currentAngle += diff * Math.min(1, dt * 11.5);
           hObj.pivot.rotation.y = hObj.currentAngle;
+          if (hObj.secondaryPivot) hObj.secondaryPivot.rotation.y = -hObj.currentAngle;
         } else if (hObj.currentAngle !== hObj.targetAngle) {
           hObj.currentAngle = hObj.targetAngle;
           hObj.pivot.rotation.y = hObj.targetAngle;
+          if (hObj.secondaryPivot) hObj.secondaryPivot.rotation.y = -hObj.targetAngle;
         }
       }
 
@@ -4158,9 +4987,53 @@ export class BlockyWorld3D {
         mp.maxZ = nz + mp.d / 2;
       }
 
+      // Server-synced Blinking / Disappearing Star Tiles (Pro Obby Stage 2 & Stage 5)
+      for (const bp of this.blinkingPlatforms) {
+        const phase = ((serverNowMs + bp.phaseOffsetMs) % bp.cycleMs + bp.cycleMs) % bp.cycleMs;
+        if (phase < bp.solidMs) {
+          bp.passable = false;
+          bp.noStand = false;
+          bp.mesh.visible = true;
+          bp.mesh.material.opacity = 1.0;
+          bp.mesh.material.emissiveIntensity = 0.35;
+        } else if (phase < bp.solidMs + bp.warnMs) {
+          bp.passable = false;
+          bp.noStand = false;
+          bp.mesh.visible = true;
+          const pulse = 0.35 + 0.65 * Math.abs(Math.sin(phase * 0.025));
+          bp.mesh.material.opacity = pulse;
+          bp.mesh.material.emissiveIntensity = 0.85;
+        } else {
+          bp.passable = true;
+          bp.noStand = true;
+          bp.mesh.visible = false;
+        }
+      }
+
+      // Server-synced Spinning Sweeper Beams (Pro Obby Stage 4)
+      for (const sw of this.sweeperHazards) {
+        sw.angle = (tSec * sw.speed) % (Math.PI * 2);
+        sw.group.rotation.y = sw.angle;
+      }
+
+      // Blossom Park Crystal Fountain Shimmer
+      for (const sh of this.fountainShimmers) {
+        if (sh.userData.shimmerPhase !== undefined) {
+          const s = 0.92 + Math.sin(tSec * 2.4 + sh.userData.shimmerPhase) * 0.1;
+          sh.scale.set(s, s, 1);
+        } else {
+          sh.rotation.y = tSec * 1.4;
+          sh.position.y = 4.9 + Math.sin(tSec * 2.8) * 0.16;
+        }
+      }
+
       if (this.trophyMesh) {
         this.trophyMesh.rotation.y = tSec * 1.8;
         this.trophyMesh.position.y = 17.3 + Math.sin(tSec * 3) * 0.18;
+      }
+      if (this.hardTrophyMesh) {
+        this.hardTrophyMesh.rotation.y = -tSec * 1.9;
+        this.hardTrophyMesh.position.y = 41.3 + Math.sin(tSec * 3.2) * 0.22;
       }
       if (this.runwayStarCrest) {
         this.runwayStarCrest.children[0].rotation.y = tSec * 1.4;
@@ -4254,12 +5127,39 @@ export class BlockyWorld3D {
         this.selfAvatar.anim = this.isGrounded ? 'idle' : 'jump';
       }
 
-      // Substepped horizontal movement + solid wall push-out + 2-story stair auto-stepping + unstuck guard
       const horizDist = Math.hypot(totalDx, totalDz);
+
+      // Check if player is walking through an open door or double door for snag-free passage
+      let inOpenDoorway = false;
+      if (this.currentZone === 0 && this.openDoorPortals.length > 0) {
+        for (const dp of this.openDoorPortals) {
+          if (pos.y + playerHeight <= dp.bottomY + 0.05 || pos.y >= dp.topY - 0.15) continue;
+          const throughDist = dp.isEW ? Math.abs(pos.x - dp.centerX) : Math.abs(pos.z - dp.centerZ);
+          const lateralOffset = dp.isEW ? pos.z - dp.centerZ : pos.x - dp.centerX;
+          if (throughDist <= 1.1 && Math.abs(lateralOffset) <= dp.halfOpening + 0.22) {
+            inOpenDoorway = true;
+            // Gentle lateral centering assist while actively walking toward/through an open single doorway
+            if (horizDist > 0.001) {
+              const movingThrough = dp.isEW ? Math.abs(totalDx) > Math.abs(totalDz) * 0.5 : Math.abs(totalDz) > Math.abs(totalDx) * 0.5;
+              const maxLateralFree = Math.max(0.02, dp.halfOpening - 0.28);
+              if (movingThrough && Math.abs(lateralOffset) > maxLateralFree) {
+                const targetLat = Math.sign(lateralOffset) * maxLateralFree;
+                const nudge = (targetLat - lateralOffset) * Math.min(1, dt * 14);
+                if (dp.isEW) pos.z += nudge;
+                else pos.x += nudge;
+              }
+            }
+            break;
+          }
+        }
+      }
+
+      const activeRadius = inOpenDoorway ? 0.26 : playerRadius;
+      // Substepped horizontal movement + solid wall push-out + 2-story stair auto-stepping + unstuck guard
       const substeps = Math.max(1, Math.ceil(horizDist / 0.22));
       const stepDx = totalDx / substeps;
       const stepDz = totalDz / substeps;
-      const rSq = playerRadius * playerRadius;
+      const rSq = activeRadius * activeRadius;
 
       for (let s = 0; s < substeps; s++) {
         pos.x += stepDx;
@@ -4288,7 +5188,7 @@ export class BlockyWorld3D {
               !col.noStand &&
               col.topY > pos.y + 0.01 &&
               col.topY <= pos.y + stepHeight &&
-              this._hasHeadroomAt(pos.x, pos.z, col.topY, playerRadius, playerHeight)
+              this._hasHeadroomAt(pos.x, pos.z, col.topY, activeRadius, playerHeight)
             ) {
               pos.y = col.topY;
               if (this.velocity.y < 0) this.velocity.y = 0;
@@ -4297,20 +5197,20 @@ export class BlockyWorld3D {
 
             if (dSq > 1e-6) {
               const d = Math.sqrt(dSq);
-              const pen = playerRadius - d;
+              const pen = activeRadius - d;
               pos.x += (dx / d) * pen;
               pos.z += (dz / d) * pen;
             } else {
               // Center is inside collider (e.g. friend placed a wall on top of avatar): push out cleanly
-              const pushLeft = pos.x - col.minX + playerRadius;
-              const pushRight = col.maxX - pos.x + playerRadius;
-              const pushBack = pos.z - col.minZ + playerRadius;
-              const pushFront = col.maxZ - pos.z + playerRadius;
+              const pushLeft = pos.x - col.minX + activeRadius;
+              const pushRight = col.maxX - pos.x + activeRadius;
+              const pushBack = pos.z - col.minZ + activeRadius;
+              const pushFront = col.maxZ - pos.z + activeRadius;
               const minPush = Math.min(pushLeft, pushRight, pushBack, pushFront);
-              if (minPush === pushLeft) pos.x = col.minX - playerRadius;
-              else if (minPush === pushRight) pos.x = col.maxX + playerRadius;
-              else if (minPush === pushBack) pos.z = col.minZ - playerRadius;
-              else pos.z = col.maxZ + playerRadius;
+              if (minPush === pushLeft) pos.x = col.minX - activeRadius;
+              else if (minPush === pushRight) pos.x = col.maxX + activeRadius;
+              else if (minPush === pushBack) pos.z = col.minZ - activeRadius;
+              else pos.z = col.maxZ + activeRadius;
             }
           }
         }
@@ -4377,29 +5277,87 @@ export class BlockyWorld3D {
             this.selfAvatar.anim = 'jump';
           }
 
-          if (col.type === 'checkpoint' && col.checkpointIndex > this.currentCheckpoint.index) {
-            this.currentCheckpoint = {
-              x: col.mesh.position.x,
-              y: col.topY,
-              z: col.mesh.position.z,
-              index: col.checkpointIndex
-            };
-            col.mesh.material.color.set('#22c55e');
-            this.onObbyCheckpoint(col.checkpointIndex);
+          if (col.type === 'checkpoint') {
+            const tier = col.obbyTier === 'hard' ? 'hard' : 'easy';
+            this.lastActiveObby = tier;
+            const track = this.obbyCheckpoints[tier];
+            if (col.checkpointIndex > track.index) {
+              const nextCp = {
+                x: col.mesh.position.x,
+                y: col.topY,
+                z: col.mesh.position.z,
+                index: col.checkpointIndex
+              };
+              this.obbyCheckpoints[tier] = nextCp;
+              if (tier === 'easy') this.currentCheckpoint = nextCp;
+              col.mesh.material.color.set('#22c55e');
+              this.onObbyCheckpoint(col.checkpointIndex, tier);
+            }
           }
 
           if (col.type === 'trophy-pad' && now - this.lastTrophyWinAt > 12000) {
             this.lastTrophyWinAt = now;
-            this.currentCheckpoint = {
+            this.lastActiveObby = 'easy';
+            const nextCp = {
               x: col.mesh.position.x,
               y: col.topY,
               z: col.mesh.position.z,
               index: 3
             };
+            this.obbyCheckpoints.easy = nextCp;
+            this.currentCheckpoint = nextCp;
             this.spawnCelebrationConfetti(pos);
-            this.onTrophyWin();
+            this.onTrophyWin('easy');
+          }
+
+          if (col.type === 'gauntlet-trophy-pad' && now - this.lastHardTrophyWinAt > 12000) {
+            this.lastHardTrophyWinAt = now;
+            this.lastActiveObby = 'hard';
+            this.obbyCheckpoints.hard = {
+              x: col.mesh.position.x,
+              y: col.topY,
+              z: col.mesh.position.z,
+              index: 6
+            };
+            this.spawnCelebrationConfetti(pos);
+            this.onTrophyWin('hard');
           }
         }
+      }
+
+      // Spinning Sweeper Beam Collision (Pro Obby Stage 4 — Jump Over!)
+      if (this.currentZone === 0 && this.sweeperHazards.length > 0 && now - this.lastSweeperHitAt > 480) {
+        for (const sw of this.sweeperHazards) {
+          if (pos.y > sw.cy + 0.14 || pos.y + playerHeight < sw.cy - 0.22) continue;
+          const relX = pos.x - sw.cx;
+          const relZ = pos.z - sw.cz;
+          const cosA = Math.cos(sw.angle);
+          const sinA = Math.sin(sw.angle);
+          // Bar lies along local X axis rotated around Y by sw.angle => world dir = (cosA, -sinA)
+          const along = relX * cosA - relZ * sinA;
+          const perp = relX * sinA + relZ * cosA;
+          if (Math.abs(along) <= sw.radius + 0.25 && Math.abs(perp) <= 0.42) {
+            this.lastSweeperHitAt = now;
+            // Push along tangent sweep direction + small upward pop
+            const sweepSign = sw.speed >= 0 ? 1 : -1;
+            const tangX = -sinA * sweepSign * (along >= 0 ? 1 : -1);
+            const tangZ = -cosA * sweepSign * (along >= 0 ? 1 : -1);
+            pos.x += tangX * 1.45;
+            pos.z += tangZ * 1.45;
+            this.velocity.y = Math.max(this.velocity.y, 7.2);
+            this.isGrounded = false;
+            this.spawnSparkleBurst(pos, '#fb7185');
+            break;
+          }
+        }
+      }
+
+      // Keep directional sun shadow frustum centered around player across the 210×210 Plaza
+      if (this.currentZone === 0 && this.sunLight) {
+        const snapX = Math.round(pos.x / 2) * 2;
+        const snapZ = Math.round(pos.z / 2) * 2;
+        this.sunLight.target.position.set(snapX, 0, snapZ);
+        this.sunLight.position.set(snapX + 28, 52, snapZ + 24);
       }
 
       if (pos.y < -14) {
@@ -4411,6 +5369,8 @@ export class BlockyWorld3D {
           pos.set(0, 0.6, 3.5);
           this.velocity.set(0, 0, 0);
           this._emitMoveNow();
+        } else if (this.lastActiveObby === 'hard' && pos.x > 36 && pos.z > 36) {
+          this.warpToHardObbyCheckpoint();
         } else {
           this.warpToPlaza();
         }
@@ -4431,14 +5391,21 @@ export class BlockyWorld3D {
           this.onRequestZonePortal(1);
         } else if (dPortal < 5.5) {
           nextHint = '🌀 Step In or Press E — Enter Crystal Cavern Dungeon!';
-        } else if (!this.buildMode) {
+        } else {
           const nearToggle = this._findNearestToggleableBlock(3.8);
           if (nearToggle) {
-            const noun = nearToggle.kind === 'door' ? 'Door' : 'Window';
+            const noun =
+              nearToggle.kind === 'double_door'
+                ? 'Double Door'
+                : nearToggle.kind === 'door'
+                  ? 'Door'
+                  : 'Window';
             const verb = nearToggle.open ? 'Close' : 'Open';
-            const icon = nearToggle.kind === 'door' ? '🚪' : '🪟';
-            nextHint = `${icon} Press E or Click — ${verb} ${noun}`;
-          } else if (hasRayGun) {
+            const icon = nearToggle.kind === 'window' ? '🪟' : '🚪';
+            nextHint = this.buildMode
+              ? `${icon} Press E — ${verb} ${noun}`
+              : `${icon} Press E or Click — ${verb} ${noun}`;
+          } else if (!this.buildMode && hasRayGun) {
             nextHint = '🔫 Ray Gun Equipped — Press E or Click to Zap Starlight Beam!';
           }
         }

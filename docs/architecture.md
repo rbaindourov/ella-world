@@ -217,3 +217,19 @@ To prevent penalized players from signing out, opening an Incognito window, or l
   - **`🎮 Touch Pad`** (`#toggle-touch-controls-btn` → `.touch-controls`, auto-enabled on `(pointer: coarse)` touchscreens, default off on desktop)
   - **`💬 Chat`** (`#toggle-chat-panel-btn` → `.hud-chat-panel`, default on)
 - **Miniaturized Runway Voting Pill (`#runway-hud-bar`)**: Stacked cleanly below `#hud-top-bar` inside `.hud-top-stack` (preventing vertical overlap) as a compact single-row pill featuring the truncated theme name, dice button (`🎲`), friend selector, compact `1★`–`5★` rating buttons, and compact leader badge (`🏆 <name> (<avg>★)`).
+
+---
+
+## 12. 2.5× Larger Starlight Plaza, Walkable Single/Double Doors & Starlight Sky Gauntlet (`src/udp_wire.rs`, `src/models.rs`, `src/world.rs`, `public/js/world3d.js`)
+
+- **2.5× Expanded Starlight Plaza (`210 × 210`)**:
+  - Ground collider expanded from `84 × 84` (`[-42, 42]`) to `210 × 210` (`[-105, 105]`), preserving all original central landmarks & saved blocks intact.
+  - Backend bounds expanded: binary UDP state clamps widened to `[-120, 120]` (`src/udp_wire.rs`), saved `last_pos` widened to `[-110, 110]`, voxel building unlocked across `x/z ∈ [-100, 100], y ∈ [1, 80]` with a `12,000`-block cap (`src/world.rs`).
+  - Outer districts added via paved Starlight Boulevards & Central Plaza 3D signposts: 6 labeled neighborhood build plots (**Sunset Build Meadow** East & **Westside Villa Estates** West), **Blossom Fountain Park** (South glowing koi pond, tiered crystal fountain & benches), and player-following directional shadow frustum for crisp shadows across the entire map.
+- **Walkable Single & 2×2 Double Doors (`door`, `double_door`)**:
+  - Open doors register in `openDoorPortals` so walking through an open doorway uses a narrowed `0.26` effective horizontal radius + gentle lateral centering assist—eliminating adjacent-wall snagging on `1×2` doors while keeping closed doors and walls solid.
+  - Pressing `E` toggles nearby doors/double-doors/windows even while **Build Mode** is active.
+  - Added `double_door` (`2×2` counter-swinging French double door) using `block_occupied_cells` (`src/models.rs`) so placement, overlap, toggling, and removal work seamlessly from either half.
+- **Second, More Difficult Obby — Starlight Sky Gauntlet (Pro Obby)**:
+  - Located in the expanded Southeast sector (`x ∈ [48, 92], z ∈ [48, 92], y ∈ [0, 44]`) with 5 checkpoints and a spinning **Diamond Crown** summit: narrow zig-zag steps, faster split-axis movers, server-synced blinking/disappearing tiles (`type: 'blinking'`), chained high-arc bounce pads, and jump-over spinning sweeper beams (`sweeperHazards`).
+  - Independent checkpoint tracks for Sky Obby (`R` / `🏃‍♀️ Obby`) and Pro Obby (`T` / `🔥 Pro Obby`), plus a server-authoritative **+25 🪙** completion reward (`POST /api/ella-world/chat` with `isTrophyWin: true, trophyTier: "hard"`, 60-second anti-farm cooldown).

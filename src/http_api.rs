@@ -681,6 +681,8 @@ struct ChatPostPayload {
     text: Option<String>,
     #[serde(default)]
     is_trophy_win: bool,
+    #[serde(default)]
+    trophy_tier: Option<String>,
 }
 
 async fn chat_handler(State(st): State<AppState>, Json(body): Json<ChatPostPayload>) -> Response {
@@ -698,12 +700,14 @@ async fn chat_handler(State(st): State<AppState>, Json(body): Json<ChatPostPaylo
             &username,
             body.text.as_deref(),
             body.is_trophy_win,
+            body.trophy_tier.as_deref(),
         )
         .await
     {
-        Ok(message) => Json(json!({
+        Ok((message, coins_awarded)) => Json(json!({
             "ok": true,
-            "message": message
+            "message": message,
+            "coinsAwarded": coins_awarded
         }))
         .into_response(),
         Err(reason) => json_err(StatusCode::BAD_REQUEST, &reason),

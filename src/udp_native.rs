@@ -431,7 +431,11 @@ pub async fn handle_client_event_command(
                 .get("isTrophyWin")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if let Err(err) = world.post_chat(self_id, username, text, trophy).await {
+            let trophy_tier = cmd.get("trophyTier").and_then(|v| v.as_str());
+            if let Err(err) = world
+                .post_chat(self_id, username, text, trophy, trophy_tier)
+                .await
+            {
                 emit_action_error(world, self_id, cmd_type, &err).await;
             }
         }

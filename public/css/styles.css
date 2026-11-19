@@ -1433,6 +1433,12 @@ input[type="range"]:focus-visible {
   color: #fdf2f8;
 }
 
+.hud-chip-btn.hard-obby-chip {
+  border-color: rgba(251, 146, 60, 0.72);
+  background: linear-gradient(135deg, rgba(249, 115, 22, 0.3), rgba(236, 72, 153, 0.32));
+  color: #fff7ed;
+}
+
 .runway-hud-bar {
   align-self: center;
   display: inline-flex;

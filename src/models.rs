@@ -738,6 +738,7 @@ pub const ALLOWED_BLOCK_KINDS: &[&str] = &[
     "block",
     "stairs",
     "door",
+    "double_door",
     "window",
     "kitchen_counter",
     "kitchen_sink",
@@ -764,11 +765,36 @@ pub fn is_valid_block_kind(kind: &str) -> bool {
 }
 
 pub fn is_two_tall_block_kind(kind: &str) -> bool {
-    matches!(kind, "door" | "kitchen_fridge" | "wardrobe")
+    matches!(kind, "door" | "double_door" | "kitchen_fridge" | "wardrobe")
 }
 
 pub fn is_toggleable_block_kind(kind: &str) -> bool {
-    matches!(kind, "door" | "window")
+    matches!(kind, "door" | "double_door" | "window")
+}
+
+/// Deterministic horizontal partner cell `(dx, dz)` for a 2-block-wide `double_door`
+/// based on its 90° rotation (`rot % 4`).
+pub fn double_door_partner_offset(rot: u8) -> (i32, i32) {
+    match rot % 4 {
+        0 => (1, 0),
+        1 => (0, -1),
+        2 => (-1, 0),
+        _ => (0, 1),
+    }
+}
+
+/// All integer voxel cells `(x, y, z)` occupied by a placed block, furniture prop, or door.
+pub fn block_occupied_cells(x: i32, y: i32, z: i32, kind: &str, rot: u8) -> Vec<(i32, i32, i32)> {
+    let mut cells = vec![(x, y, z)];
+    if is_two_tall_block_kind(kind) {
+        cells.push((x, y + 1, z));
+    }
+    if kind == "double_door" {
+        let (dx, dz) = double_door_partner_offset(rot);
+        cells.push((x + dx, y, z + dz));
+        cells.push((x + dx, y + 1, z + dz));
+    }
+    cells
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

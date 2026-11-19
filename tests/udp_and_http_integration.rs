@@ -4245,3 +4245,255 @@ async fn parent_exclusive_item_gift_and_authorized_cloning_end_to_end() {
 
     running.http_task.abort();
 }
+
+#[tokio::test]
+async fn expanded_plaza_double_doors_and_pro_obby_gauntlet_end_to_end() {
+    let cfg = make_test_config("expanded_plaza_doors_gauntlet");
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (st_login, login_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({
+            "username": "ella",
+            "password": "changeme-starlight",
+            "clientId": "peer_ella_map210"
+        })),
+    )
+    .await;
+    assert_eq!(st_login, 200);
+    let token = login_res["token"].as_str().unwrap().to_string();
+    let initial_coins = login_res["economy"]["coins"].as_i64().unwrap_or(0);
+
+    // 1. Expanded 210x210 Plaza build bounds (-100..=100, y 1..=80)
+    let (st_outer_ok, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": token,
+            "action": "place",
+            "x": 92,
+            "y": 1,
+            "z": -88,
+            "color": "#f472b6",
+            "kind": "block"
+        })),
+    )
+    .await;
+    assert_eq!(st_outer_ok, 200, "Outer 210x210 plot coords must succeed");
+
+    let (st_tall_ok, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": token,
+            "action": "place",
+            "x": 70,
+            "y": 72,
+            "z": 70,
+            "color": "#38bdf8",
+            "kind": "block"
+        })),
+    )
+    .await;
+    assert_eq!(st_tall_ok, 200, "Expanded y=72 height must succeed");
+
+    let (st_oob_x, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": token,
+            "action": "place",
+            "x": 101,
+            "y": 1,
+            "z": 0,
+            "color": "#38bdf8",
+            "kind": "block"
+        })),
+    )
+    .await;
+    assert_eq!(st_oob_x, 400, "x=101 must be rejected outside -100..=100");
+
+    let (st_oob_y, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": token,
+            "action": "place",
+            "x": 0,
+            "y": 81,
+            "z": 0,
+            "color": "#38bdf8",
+            "kind": "block"
+        })),
+    )
+    .await;
+    assert_eq!(st_oob_y, 400, "y=81 must be rejected outside 1..=80");
+
+    // 2. Walkable 2x2 Double Door footprint, partner-cell toggle, edge-bounds guard, and partner-cell remove
+    let (st_dd_edge, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": token,
+            "action": "place",
+            "x": 100,
+            "y": 1,
+            "z": 0,
+            "color": "#fbbf24",
+            "kind": "double_door",
+            "rot": 0
+        })),
+    )
+    .await;
+    assert_eq!(
+        st_dd_edge, 400,
+        "double_door whose partner cell (101,1,0) crosses map edge must be rejected"
+    );
+
+    let (st_dd_place, dd_place_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": token,
+            "action": "place",
+            "x": 52,
+            "y": 1,
+            "z": -26,
+            "color": "#ec4899",
+            "kind": "double_door",
+            "rot": 0
+        })),
+    )
+    .await;
+    assert_eq!(st_dd_place, 200);
+    assert!(
+        dd_place_res["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["x"] == 52
+                && b["y"] == 1
+                && b["z"] == -26
+                && b["kind"] == "double_door"
+                && b["open"] == false),
+        "Placed double_door should start closed"
+    );
+
+    // Toggle via partner upper cell (53, 2, -26)
+    let (st_dd_toggle, dd_toggle_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": token,
+            "action": "toggle",
+            "x": 53,
+            "y": 2,
+            "z": -26
+        })),
+    )
+    .await;
+    assert_eq!(
+        st_dd_toggle, 200,
+        "Toggling double_door via partner upper cell must succeed"
+    );
+    assert!(
+        dd_toggle_res["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["x"] == 52
+                && b["y"] == 1
+                && b["z"] == -26
+                && b["kind"] == "double_door"
+                && b["open"] == true),
+        "double_door must swing open when toggled from partner cell"
+    );
+
+    // Remove via partner lower cell (53, 1, -26)
+    let (st_dd_rem, dd_rem_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": token,
+            "action": "remove",
+            "x": 53,
+            "y": 1,
+            "z": -26
+        })),
+    )
+    .await;
+    assert_eq!(st_dd_rem, 200);
+    assert!(
+        !dd_rem_res["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["x"] == 52 && b["y"] == 1 && b["z"] == -26 && b["kind"] == "double_door"),
+        "Removing via partner cell must remove the entire double_door"
+    );
+
+    // 3. Starlight Sky Gauntlet (Pro Obby) +25 coin win reward & 60s anti-farm cooldown
+    let (st_win1, win1_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/chat",
+        Some(json!({
+            "token": token,
+            "isTrophyWin": true,
+            "trophyTier": "hard"
+        })),
+    )
+    .await;
+    assert_eq!(st_win1, 200);
+    assert_eq!(win1_res["coinsAwarded"], 25);
+    assert!(
+        win1_res["message"]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Starlight Sky Gauntlet"),
+        "Hard obby win must announce Starlight Sky Gauntlet"
+    );
+
+    let (st_win2, win2_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/chat",
+        Some(json!({
+            "token": token,
+            "isTrophyWin": true,
+            "trophyTier": "hard"
+        })),
+    )
+    .await;
+    assert_eq!(st_win2, 200);
+    assert_eq!(
+        win2_res["coinsAwarded"], 0,
+        "Immediate repeat hard obby win must not double-award coins during 60s cooldown"
+    );
+
+    let final_coins = {
+        let cfg = running.world.users_cfg.read().await;
+        cfg.users
+            .iter()
+            .find(|u| u.username == "ella")
+            .unwrap()
+            .coins
+    };
+    assert_eq!(
+        final_coins,
+        initial_coins + 25,
+        "Persistent balance must increase by exactly +25 coins"
+    );
+
+    running.http_task.abort();
+}

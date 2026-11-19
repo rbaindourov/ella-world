@@ -170,9 +170,9 @@ pub fn decode_c2s_state(raw: &[u8]) -> Option<DecodedC2SState> {
     Some(DecodedC2SState {
         seq,
         client_time_ms,
-        x: x.clamp(-80.0, 80.0),
-        y: y.clamp(-20.0, 80.0),
-        z: z.clamp(-80.0, 80.0),
+        x: x.clamp(-120.0, 120.0),
+        y: y.clamp(-20.0, 120.0),
+        z: z.clamp(-120.0, 120.0),
         ry,
         anim,
         emote,

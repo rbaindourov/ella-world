@@ -704,17 +704,36 @@ const world3d = new BlockyWorld3D({
       buildFacingStatusEl.textContent = formatFacingLabel(rot);
     }
   },
-  onObbyCheckpoint: (cpIndex) => {
-    showToast(`⭐ Checkpoint ${cpIndex} Reached! Press R anytime to warp here.`);
+  onObbyCheckpoint: (cpIndex, tier = 'easy') => {
+    if (tier === 'hard') {
+      showToast(`🔥 Sky Gauntlet Checkpoint ${cpIndex}/5 Reached! Press T anytime to warp here.`);
+    } else {
+      showToast(`⭐ Sky Obby Checkpoint ${cpIndex} Reached! Press R anytime to warp here.`);
+    }
   },
-  onTrophyWin: async () => {
-    showToast('🏆 YOU CONQUERED THE SKY OBBY! Celebration sent to all friends! 🎉', 6000);
+  onTrophyWin: async (tier = 'easy') => {
+    const isHard = tier === 'hard';
     const res = await fetch('/api/ella-world/chat', {
       method: 'POST',
       headers: JSON_HEADERS,
-      body: JSON.stringify({ token: sessionToken, isTrophyWin: true })
+      body: JSON.stringify({ token: sessionToken, isTrophyWin: true, trophyTier: tier })
     }).catch(() => null);
-    await handleHttpAuthCheck(res);
+    if (await handleHttpAuthCheck(res)) return;
+    let coinsAwarded = 0;
+    if (res && res.ok) {
+      const data = await res.json().catch(() => null);
+      coinsAwarded = Number(data?.coinsAwarded || 0);
+    }
+    if (isHard) {
+      showToast(
+        coinsAwarded > 0
+          ? `💎👑 YOU CONQUERED THE STARLIGHT SKY GAUNTLET! +${coinsAwarded} 🪙 awarded! 🎉`
+          : '💎👑 YOU CONQUERED THE STARLIGHT SKY GAUNTLET! Celebration sent to all friends! 🎉',
+        6500
+      );
+    } else {
+      showToast('🏆 YOU CONQUERED THE SKY OBBY! Celebration sent to all friends! 🎉', 6000);
+    }
   },
   onRunwayProximity: (isNear) => {
     if (runwayHudBar) {
@@ -2016,6 +2035,11 @@ function applyLocalZoneTransition(payload) {
       showToast('🏃‍♀️ Returned to Starlight Plaza & teleported to the Sky Obby!');
       return;
     }
+    if (target === 'hard_obby') {
+      world3d.warpToHardObbyCheckpoint();
+      showToast('🔥 Returned to Starlight Plaza & teleported to the Starlight Sky Gauntlet!');
+      return;
+    }
   }
 
   if (changed) {
@@ -3122,6 +3146,19 @@ document.getElementById('warp-obby-btn').addEventListener('click', () => {
   }
 });
 
+const warpHardObbyBtn = document.getElementById('warp-hard-obby-btn');
+if (warpHardObbyBtn) {
+  warpHardObbyBtn.addEventListener('click', () => {
+    if (currentZone !== ZONE_PLAZA) {
+      pendingPostPortalWarp = 'hard_obby';
+      requestZoneTransition(ZONE_PLAZA);
+    } else {
+      world3d.warpToHardObbyCheckpoint();
+      showToast('🔥 Teleported to Starlight Sky Gauntlet (Pro Obby)!');
+    }
+  });
+}
+
 if (openBackpackBtn) {
   openBackpackBtn.addEventListener('click', () => {
     openBackpackModal();
@@ -3266,6 +3303,8 @@ function syncBuildItemSelectionUi() {
   if (buildHintTextEl) {
     if (isLoot) {
       buildHintTextEl.textContent = 'Pedestal tint:';
+    } else if (world3d.selectedBuildKind === 'double_door') {
+      buildHintTextEl.textContent = '2×2 Double Door tint (press Q to rotate, E to open/close):';
     } else if (world3d.selectedBuildKind === 'door' || world3d.selectedBuildKind === 'window') {
       buildHintTextEl.textContent = 'Frame tint (press E to open/close):';
     } else {
@@ -3297,11 +3336,13 @@ for (const entry of BUILD_CATALOG) {
   btn.setAttribute('data-build-kind', entry.kind);
   btn.setAttribute('aria-pressed', String(entry.kind === 'block'));
   btn.title =
-    entry.kind === 'door' || entry.kind === 'window'
-      ? `${entry.label} — Click or press E after placing to swing open/shut!`
-      : entry.height === 2
-        ? `${entry.label} (2 blocks tall • Press Q to rotate)`
-        : `${entry.label} (Press Q to rotate)`;
+    entry.kind === 'double_door'
+      ? `${entry.label} (2×2 grand doorway • Press Q to rotate, E or Click either side to swing open!)`
+      : entry.kind === 'door' || entry.kind === 'window'
+        ? `${entry.label} — Click or press E after placing to swing open/shut!`
+        : entry.height === 2
+          ? `${entry.label} (2 blocks tall • Press Q to rotate)`
+          : `${entry.label} (Press Q to rotate)`;
   btn.textContent = `${entry.icon} ${entry.label}`;
   btn.addEventListener('click', () => {
     selectBuildCatalogKind(entry.kind);
@@ -3758,6 +3799,14 @@ window.addEventListener('keydown', (e) => {
     } else {
       world3d.warpToObbyCheckpoint();
       showToast('🏃‍♀️ Teleported to Sky Obby!');
+    }
+  } else if (!isSalonOpen && k === 't') {
+    if (currentZone !== ZONE_PLAZA) {
+      pendingPostPortalWarp = 'hard_obby';
+      requestZoneTransition(ZONE_PLAZA);
+    } else {
+      world3d.warpToHardObbyCheckpoint();
+      showToast('🔥 Teleported to Starlight Sky Gauntlet (Pro Obby)!');
     }
   } else if (['1', '2', '3', '4', '5', '6', '7', '8'].includes(k)) {
     const emoteMap = {
