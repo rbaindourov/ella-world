@@ -85,6 +85,74 @@ let propsPackPromise = null;
 let propsPackAsset = null;
 const propsTemplates = new Map();
 
+// Shared singleton loader for the Blender 5.2 Realistic Trees & DTI Fashion Runway Stage Pack
+let envPackPromise = null;
+let envPackAsset = null;
+const envTemplates = new Map();
+
+export function loadEnvironmentPack() {
+  if (envPackAsset) return Promise.resolve(envPackAsset);
+  if (!envPackPromise) {
+    const loader = new GLTFLoader();
+    envPackPromise = new Promise((resolve, reject) => {
+      loader.load(
+        '/ella-world/models/ella_world_environment.glb',
+        (gltf) => {
+          envPackAsset = gltf;
+          envTemplates.clear();
+          for (const child of gltf.scene.children) {
+            if (child.name) {
+              envTemplates.set(child.name, child);
+            }
+          }
+          gltf.scene.traverse((node) => {
+            if (node.name && !envTemplates.has(node.name)) {
+              envTemplates.set(node.name, node);
+            }
+          });
+          resolve(gltf);
+        },
+        undefined,
+        (err) => {
+          console.warn('[EllaWorld] Could not load ella_world_environment.glb, using procedural env:', err);
+          reject(err);
+        }
+      );
+    });
+  }
+  return envPackPromise;
+}
+
+function cloneEnvTemplate(templateName) {
+  const tpl = envTemplates.get(templateName);
+  if (!tpl) return null;
+  const clone = tpl.clone(true);
+  clone.position.set(0, 0, 0);
+  clone.rotation.set(0, 0, 0);
+  clone.scale.set(1, 1, 1);
+  clone.traverse((sub) => {
+    if (sub.isMesh) {
+      sub.castShadow = true;
+      sub.receiveShadow = true;
+      const fixMat = (m) => {
+        if (!m) return;
+        if (m.alphaTest > 0 || (m.name && m.name.includes('Leaves'))) {
+          m.alphaTest = 0.42;
+          m.side = THREE.DoubleSide;
+          m.transparent = false;
+          m.depthWrite = true;
+        }
+      };
+      if (Array.isArray(sub.material)) {
+        sub.material.forEach(fixMat);
+      } else {
+        fixMat(sub.material);
+      }
+    }
+  });
+  return clone;
+}
+
 export function loadPropsAndLootPack() {
   if (propsPackAsset) return Promise.resolve(propsPackAsset);
   if (!propsPackPromise) {
@@ -1690,6 +1758,11 @@ export class BlockyWorld3D {
         this._upgradeLoadedPropsAndAvatars();
       })
       .catch(() => {});
+    loadEnvironmentPack()
+      .then(() => {
+        this._upgradeEnvironmentModels();
+      })
+      .catch(() => {});
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color('#7dd3fc');
@@ -1708,6 +1781,13 @@ export class BlockyWorld3D {
     this.currentZone = 0; // 0 = Starlight Plaza, 1 = Crystal Cavern Dungeon, 2 = Debtor's Prison
     this.plazaGroup = new THREE.Group();
     this.scene.add(this.plazaGroup);
+    this.plazaTreeGroup = new THREE.Group();
+    this.plazaGroup.add(this.plazaTreeGroup);
+    this.plazaTreeSpecs = [];
+    this.dtiStageDecorGroup = new THREE.Group();
+    this.plazaGroup.add(this.dtiStageDecorGroup);
+    this.campfireAnchor = new THREE.Group();
+    this.plazaGroup.add(this.campfireAnchor);
     this.dungeonGroup = new THREE.Group();
     this.dungeonGroup.visible = false;
     this.scene.add(this.dungeonGroup);
@@ -2100,6 +2180,7 @@ export class BlockyWorld3D {
     const fireCore = new THREE.Mesh(new THREE.ConeGeometry(0.85, 1.5, 6), fireMat);
     fireCore.position.set(-6, 0.75, 11);
     this.plazaGroup.add(fireCore);
+    this.campfireAnchor.position.set(-6, 0, 11);
     this._addBoxPlatform({ x: -6, y: 0.35, z: 14.2, w: 4.2, h: 0.7, d: 1.1, color: '#92400e' });
     this._addBoxPlatform({ x: -9.2, y: 0.35, z: 11, w: 1.1, h: 0.7, d: 4.2, color: '#92400e' });
 
@@ -2152,13 +2233,21 @@ export class BlockyWorld3D {
       [-34, -18], [28, -22], [28, 10], [-16, -22]
     ];
     treePositions.forEach(([tx, tz], idx) => {
+      const variant = idx % 2 === 0 ? 'Env_Tree_Blossom' : 'Env_Tree_Emerald';
+      this.plazaTreeSpecs.push({
+        x: tx,
+        z: tz,
+        variant,
+        scale: 0.92 + (idx % 3) * 0.08,
+        yaw: (idx * 1.17) % (Math.PI * 2)
+      });
       const trunk = new THREE.Mesh(trunkGeo, logMat);
       trunk.position.set(tx, 1.4, tz);
       trunk.castShadow = true;
       const leaves = new THREE.Mesh(leavesGeo, idx % 2 === 0 ? blossomMat : greenLeafMat);
       leaves.position.set(tx, 3.6, tz);
       leaves.castShadow = true;
-      this.plazaGroup.add(trunk, leaves);
+      this.plazaTreeGroup.add(trunk, leaves);
     });
 
     this._addBoxPlatform({
@@ -2465,14 +2554,22 @@ export class BlockyWorld3D {
       [-88, -36], [-72, -62], [-38, -62], [-18, -74], [18, -72], [46, -64],
       [78, -64], [94, -44], [95, 2], [95, 38], [34, -44], [-40, -40]
     ];
+    const outerVariants = ['Env_Tree_Blossom', 'Env_Tree_Emerald', 'Env_Tree_Lilac'];
     outerTrees.forEach(([tx, tz], idx) => {
+      this.plazaTreeSpecs.push({
+        x: tx,
+        z: tz,
+        variant: outerVariants[idx % outerVariants.length],
+        scale: 0.96 + (idx % 4) * 0.08,
+        yaw: (idx * 1.41) % (Math.PI * 2)
+      });
       const trunk = new THREE.Mesh(trunkGeo, logMat);
       trunk.position.set(tx, 1.6, tz);
       trunk.castShadow = true;
       const leaves = new THREE.Mesh(leavesGeo, leafMats[idx % leafMats.length]);
       leaves.position.set(tx, 4.0, tz);
       leaves.castShadow = true;
-      this.plazaGroup.add(trunk, leaves);
+      this.plazaTreeGroup.add(trunk, leaves);
     });
 
     // Subtle perimeter lantern fence markers at ±103 so players see the 210×210 world edge
@@ -2924,7 +3021,7 @@ export class BlockyWorld3D {
     for (const az of [-5.2, 1.5, 8.2]) {
       const arch = new THREE.Mesh(new THREE.TorusGeometry(3.4, 0.18, 12, 32, Math.PI), archMat);
       arch.position.set(rx, 0.5, az);
-      this.plazaGroup.add(arch);
+      this.dtiStageDecorGroup.add(arch);
     }
 
     const wallMat = new THREE.MeshStandardMaterial({
@@ -2935,11 +3032,11 @@ export class BlockyWorld3D {
     const wall = new THREE.Mesh(new THREE.BoxGeometry(10.2, 6.2, 0.55), wallMat);
     wall.position.set(rx, 3.3, -12.4);
     wall.castShadow = true;
-    this.plazaGroup.add(wall);
+    this.dtiStageDecorGroup.add(wall);
 
     const frameTrim = new THREE.Mesh(new THREE.BoxGeometry(10.6, 6.6, 0.35), goldRailMat);
     frameTrim.position.set(rx, 3.3, -12.55);
-    this.plazaGroup.add(frameTrim);
+    this.dtiStageDecorGroup.add(frameTrim);
 
     const crestGroup = new THREE.Group();
     const starCore = new THREE.Mesh(new THREE.OctahedronGeometry(1.15, 0), goldRailMat);
@@ -2949,8 +3046,120 @@ export class BlockyWorld3D {
     );
     crestGroup.add(starCore, starHalo);
     crestGroup.position.set(rx, 4.1, -11.95);
-    this.plazaGroup.add(crestGroup);
+    this.dtiStageDecorGroup.add(crestGroup);
     this.runwayStarCrest = crestGroup;
+  }
+
+  _upgradeEnvironmentModels() {
+    if (envTemplates.size === 0) return;
+
+    // 1. Replace all 32 procedural box trees with realistic Blender/PolyHaven CC0 botanical trees
+    if (this.plazaTreeSpecs.length > 0 && envTemplates.has('Env_Tree_Blossom')) {
+      this.plazaTreeGroup.clear();
+      for (const spec of this.plazaTreeSpecs) {
+        const treeObj = cloneEnvTemplate(spec.variant) || cloneEnvTemplate('Env_Tree_Blossom');
+        if (!treeObj) continue;
+        treeObj.position.set(spec.x, 0, spec.z);
+        treeObj.rotation.y = spec.yaw;
+        treeObj.scale.setScalar(spec.scale);
+        this.plazaTreeGroup.add(treeObj);
+      }
+    }
+
+    // 2. Upgrade DTI Fashion Runway Stage to Couture Blender Models + CC0 Studio Spotlights, Chandeliers, Benches & Lamps
+    const rx = -24;
+    if (envTemplates.has('Env_DTI_Arch') && envTemplates.has('Env_DTI_Backdrop')) {
+      this.dtiStageDecorGroup.clear();
+
+      // 3 Couture Fluted Marble & Rose-Gold Arches + Hanging Crystal Chandeliers
+      for (const az of [-5.2, 1.5, 8.2]) {
+        const arch = cloneEnvTemplate('Env_DTI_Arch');
+        if (arch) {
+          arch.position.set(rx, 0.0, az);
+          this.dtiStageDecorGroup.add(arch);
+        }
+        const chandelier = cloneEnvTemplate('Env_DTI_Chandelier');
+        if (chandelier) {
+          chandelier.position.set(rx, 6.75, az);
+          this.dtiStageDecorGroup.add(chandelier);
+        }
+      }
+
+      // Pleated Royal Velvet Couture Backstage Photo Wall + Spinning Faceted Starlight Crest
+      const backdrop = cloneEnvTemplate('Env_DTI_Backdrop');
+      if (backdrop) {
+        backdrop.position.set(rx, 0.45, -12.4);
+        this.dtiStageDecorGroup.add(backdrop);
+      }
+      const crest = cloneEnvTemplate('Env_DTI_StarCrest');
+      if (crest) {
+        crest.position.set(rx, 4.15, -11.78);
+        crest.userData.isGlbCrest = true;
+        this.dtiStageDecorGroup.add(crest);
+        this.runwayStarCrest = crest;
+      }
+
+      // Draped Velvet Rope Gold Stanchions lining both catwalk edges
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 7; i++) {
+          const st = cloneEnvTemplate('Env_DTI_Stanchion');
+          if (st) {
+            st.position.set(rx + side * 2.95, 0.0, -5.2 + i * 2.0);
+            this.dtiStageDecorGroup.add(st);
+          }
+        }
+      }
+
+      // 4 PolyHaven CC0 Studio Tripod Spotlights flanking the runway aimed inward
+      const spotSpecs = [
+        { x: rx - 4.8, z: -2.0, ry: Math.PI * 0.35 },
+        { x: rx + 4.8, z: -2.0, ry: -Math.PI * 0.35 },
+        { x: rx - 4.8, z: 7.5, ry: Math.PI * 0.65 },
+        { x: rx + 4.8, z: 7.5, ry: -Math.PI * 0.65 }
+      ];
+      for (const sp of spotSpecs) {
+        const spot = cloneEnvTemplate('Env_DTI_Spotlight');
+        if (spot) {
+          spot.position.set(sp.x, 0.0, sp.z);
+          spot.rotation.y = sp.ry;
+          this.dtiStageDecorGroup.add(spot);
+        }
+      }
+
+      // 4 VIP Front-Row Audience Seating Benches flanking the catwalk
+      const benchSpecs = [
+        { x: rx - 5.2, z: 0.6, ry: Math.PI * 0.5 },
+        { x: rx - 5.2, z: 4.4, ry: Math.PI * 0.5 },
+        { x: rx + 5.2, z: 0.6, ry: -Math.PI * 0.5 },
+        { x: rx + 5.2, z: 4.4, ry: -Math.PI * 0.5 }
+      ];
+      for (const bs of benchSpecs) {
+        const bench = cloneEnvTemplate('Env_DTI_Bench');
+        if (bench) {
+          bench.position.set(bs.x, 0.0, bs.z);
+          bench.rotation.y = bs.ry;
+          this.dtiStageDecorGroup.add(bench);
+        }
+      }
+
+      // 2 Ornate Streetlamps framing the Runway Podium Entrance
+      for (const side of [-1, 1]) {
+        const lamp = cloneEnvTemplate('Env_DTI_Lamp');
+        if (lamp) {
+          lamp.position.set(rx + side * 4.5, 0.0, 13.6);
+          this.dtiStageDecorGroup.add(lamp);
+        }
+      }
+    }
+
+    // 3. Upgrade Plaza Campfire with CC0 Stone Fire Pit
+    if (envTemplates.has('Env_Campfire_Pit')) {
+      this.campfireAnchor.clear();
+      const pit = cloneEnvTemplate('Env_Campfire_Pit');
+      if (pit) {
+        this.campfireAnchor.add(pit);
+      }
+    }
   }
 
   _buildDungeonEnvironment() {
@@ -5036,8 +5245,12 @@ export class BlockyWorld3D {
         this.hardTrophyMesh.position.y = 41.3 + Math.sin(tSec * 3.2) * 0.22;
       }
       if (this.runwayStarCrest) {
-        this.runwayStarCrest.children[0].rotation.y = tSec * 1.4;
-        this.runwayStarCrest.children[1].rotation.z = -tSec * 0.8;
+        if (this.runwayStarCrest.userData?.isGlbCrest) {
+          this.runwayStarCrest.rotation.z = tSec * 0.55;
+        } else {
+          if (this.runwayStarCrest.children[0]) this.runwayStarCrest.children[0].rotation.y = tSec * 1.4;
+          if (this.runwayStarCrest.children[1]) this.runwayStarCrest.children[1].rotation.z = -tSec * 0.8;
+        }
       }
       if (Math.floor(tSec * 3) !== this._lastDiscoTick) {
         this._lastDiscoTick = Math.floor(tSec * 3);
