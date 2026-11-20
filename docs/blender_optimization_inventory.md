@@ -8,7 +8,7 @@ Canonical inventory of all Blender `.blend`/`.glb` asset packs and remaining pro
 
 | Pack | Native `.blend` | Shipped `.glb` | Meshes | Total Polys | Total Verts | Optimization Status |
 | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
-| **`ella_world_environment`** *(New — Trees, DTI Stage & Campfire)* | `assets/blender/ella_world_environment.blend` (`17.2 MB`) | `public/models/ella_world_environment.glb` (`2.47 MB`, WebP 78%) | 12 | 23,920 | 21,675 | **P0 Shipped** — replaces 32 cube trees, bare DTI stage primitives & campfire |
+| **`ella_world_environment`** *(Trees, DTI Stage, Stargate & Camping)* | `assets/blender/ella_world_environment.blend` (`24.9 MB`) | `public/models/ella_world_environment.glb` (`3.43 MB`, WebP 78%) | 21 | 32,414 | 29,215 | **P0 + Stargate/Camp Shipped** — replaces 32 cube trees, DTI stage, Stargate portals & full glamping clearing |
 | **`ella_world_props_loot`** *(Home Interiors, Doors, Loot & Ray Gun)* | `assets/blender/ella_world_props_loot.blend` (`627 KB`) | `public/models/ella_world_props_loot.glb` (`881 KB`) | 25 | 21,691 | 20,082 | **Well-Optimized** — add `Prop_Double_Door` (`2×2`) in P1 |
 | **`ella_dti_wardrobe`** *(Rigged Characters & DTI Closet)* | `assets/blender/ella_dti_wardrobe.blend` (`7.32 MB`) | `public/models/ella_dti_wardrobe.glb` (`6.85 MB`) | 47 | 167,499 | 105,772 | **P1 Decimation Target** — heaviest meshes can drop ~60% with Draco/Meshopt |
 
@@ -32,6 +32,21 @@ Built via headless Blender 5.2 LTS (`scripts/build_environment_pack.py`), sourci
 | `Env_DTI_Bench` | PolyHaven CC0 `painted_wooden_bench` | 374 | 315 | `2.25 × 0.96 × 1.72` | 4 VIP front-row runway audience benches |
 | `Env_DTI_Lamp` | PolyHaven CC0 `street_lamp_01` | 2,699 | 1,482 | `0.77 × 0.42 × 4.20` | 2 ornate entrance promenade streetlamps |
 | `Env_Campfire_Pit` | PolyHaven CC0 `stone_fire_pit` | 853 | 470 | `2.30 × 2.28 × 0.61` | Central Plaza campfire stone ring |
+| `Env_Stargate_Frame` | Blender 5.2 Stargate Architecture | 1,158 | 1,440 | `6.51 × 2.60 × 6.48` | Stepped naquadah outer ring, 9 glowing chevrons & boarding ramp (both portals) |
+| `Env_Stargate_InnerRing` | Blender 5.2 Stargate Architecture | 648 | 864 | `5.26 × 0.44 × 5.26` | Continuously spinning constellation glyph ring inside Stargate aperture |
+| `Env_Camp_Tent` | Blender 5.2 Glamping Tent | 246 | 338 | `4.45 × 4.18 × 2.58` | Striped A-frame canvas glamping tent with cedar poles, sleeping mat & lantern |
+| `Env_Camp_LogBench` | Blender 5.2 Cedar Log Bench | 102 | 156 | `4.09 × 0.64 × 0.77` | 2 sculpted natural cedar log benches around campfire (preserving walkable colliders) |
+| `Env_Camp_Lantern` | PolyHaven CC0 `Lantern_01` | 1,865 | 926 | `0.22 × 0.17 × 0.52` | Glowing brass camp lantern atop stump side-table |
+| `Env_Camp_Stool` | PolyHaven CC0 `folding_wooden_stool` | 1,344 | 841 | `0.69 × 0.72 × 0.58` | Campfire wooden folding stool |
+| `Env_Camp_Stump` | PolyHaven CC0 `tree_stump_01` | 1,231 | 637 | `1.78 × 1.98 × 0.72` | Rustic stump side-table beside campfire |
+| `Env_Camp_Pot` | PolyHaven CC0 `pot_enamel_01` | 1,288 | 642 | `0.42 × 0.29 × 0.29` | Enamel camp kettle/pot beside fire pit |
+| `Env_Camp_Boulder` | PolyHaven CC0 `rock_07` | 612 | 312 | `1.65 × 3.12 × 1.39` | 2 woodland clearing boulders framing the campsite |
+
+### Obby PBR Texture Pack (`public/textures/obby/`, `450.6 KB` total `512×512` progressive JPEG)
+- **`red_brick`** (PolyHaven CC0 `red_brick` diff/nor/rough) — Red & warm floating obby blocks on both Sky Obby & Pro Obby Gauntlet.
+- **`hex_scifi`** (PolyHaven CC0 `hexagonal_concrete_paving` diff/nor/rough) — Sci-fi hexagonal floating tiles & blinking star tiles with animated anti-grav plasma thruster rings & perimeter holo-bars.
+- **`metal_plate`** (PolyHaven CC0 `blue_metal_plate` diff/nor/rough) — Moving platforms & jump pads with counter-rotating hover thrusters.
+- **`marble_tiles`** (PolyHaven CC0 `marble_tiles` diff/nor/rough) — Checkpoints, trophy pads & pastel stepping tiles.
 
 ---
 

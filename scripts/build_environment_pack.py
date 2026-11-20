@@ -29,6 +29,7 @@ OUT_GLB = REPO_ROOT / "public/models/ella_world_environment.glb"
 OUT_TELEMETRY = REPO_ROOT / "scratch/env_pack_telemetry.json"
 PREVIEW_TREES = REPO_ROOT / "scratch/env_trees_preview.png"
 PREVIEW_DTI = REPO_ROOT / "scratch/env_dti_stage_preview.png"
+PREVIEW_STARGATE_CAMP = REPO_ROOT / "scratch/env_stargate_camp_preview.png"
 
 
 def clear_scene():
@@ -606,6 +607,295 @@ def build_dti_stanchion():
     return obj
 
 
+def build_stargate_frame():
+    """
+    High-craft Blender 5.2 Stargate Outer Ring, 9 Sculpted Glowing Chevron Housings,
+    and Beveled Boarding Ramp (origin at ground center (0,0,0), aperture center at z=2.95m).
+    """
+    bm = bmesh.new()
+    m_naquadah = make_pbr_mat(
+        "Mat_Stargate_Naquadah",
+        base_color=(0.18, 0.21, 0.28, 1.0),
+        roughness=0.34,
+        metallic=0.76,
+    )
+    m_trim = make_pbr_mat(
+        "Mat_Stargate_Trim",
+        base_color=(0.42, 0.48, 0.60, 1.0),
+        roughness=0.25,
+        metallic=0.86,
+    )
+    m_chevron = make_pbr_mat(
+        "Mat_Stargate_ChevronGlow",
+        base_color=(1.0, 0.62, 0.16, 1.0),
+        roughness=0.14,
+        emissive=(1.0, 0.45, 0.08),
+        emissive_strength=3.2,
+    )
+    m_ramp = make_pbr_mat(
+        "Mat_Stargate_Ramp",
+        base_color=(0.14, 0.15, 0.22, 1.0),
+        roughness=0.48,
+        metallic=0.42,
+    )
+    m_cyan_strip = make_pbr_mat(
+        "Mat_Stargate_CyanGlow",
+        base_color=(0.45, 0.92, 1.0, 1.0),
+        roughness=0.14,
+        emissive=(0.18, 0.78, 1.0),
+        emissive_strength=2.6,
+    )
+
+    center_z = 2.95
+    outer_r = 2.86
+    segs = 36
+    # Outer stepped naquadah ring housing (36 beveled radial segments)
+    for i in range(segs):
+        a0 = i * (math.tau / segs)
+        a1 = (i + 1) * (math.tau / segs)
+        am = 0.5 * (a0 + a1)
+        seg_len = outer_r * (a1 - a0) * 1.06
+        cx = math.cos(am) * outer_r
+        cz = center_z + math.sin(am) * outer_r
+        rot_y = am - math.pi * 0.5
+        # Main heavy ring block
+        append_box(bm, 0, (seg_len, 0.56, 0.52), (cx, 0, cz), rot=(0, -rot_y, 0))
+        # Outer rim stepped bevel flange
+        ox = math.cos(am) * (outer_r + 0.28)
+        oz = center_z + math.sin(am) * (outer_r + 0.28)
+        append_box(bm, 1, (seg_len * 1.04, 0.34, 0.14), (ox, 0, oz), rot=(0, -rot_y, 0))
+        # Inner aperture lip ring
+        ix = math.cos(am) * (outer_r - 0.54)
+        iz = center_z + math.sin(am) * (outer_r - 0.54)
+        append_box(bm, 1, (seg_len * 0.86, 0.44, 0.12), (ix, 0, iz), rot=(0, -rot_y, 0))
+
+    # 9 Iconic Sculpted Stargate Chevrons spaced every 40° (top chevron at 90°)
+    for c in range(9):
+        ang = math.pi * 0.5 + c * (math.tau / 9.0)
+        cx = math.cos(ang) * (outer_r + 0.06)
+        cz = center_z + math.sin(ang) * (outer_r + 0.06)
+        rot_y = ang - math.pi * 0.5
+        # Outer armored chevron clamp
+        append_box(bm, 1, (0.58, 0.72, 0.68), (cx, 0, cz), rot=(0, -rot_y, 0), bevel_width=0.03)
+        # Inner pointing V-tip housing
+        tx = math.cos(ang) * (outer_r - 0.24)
+        tz = center_z + math.sin(ang) * (outer_r - 0.24)
+        append_box(bm, 0, (0.34, 0.66, 0.32), (tx, 0, tz), rot=(0, -rot_y, 0))
+        # Glowing crystal chevron lens (front & back faces visible!)
+        gx = math.cos(ang) * (outer_r + 0.04)
+        gz = center_z + math.sin(ang) * (outer_r + 0.04)
+        append_box(bm, 2, (0.28, 0.78, 0.36), (gx, 0, gz), rot=(0, -rot_y, 0))
+
+    # Stepped Boarding Plinth & Sci-Fi Ramp at base (z = 0..0.42)
+    append_box(bm, 3, (5.2, 2.6, 0.22), (0, 0, 0.11), bevel_width=0.03)
+    append_box(bm, 0, (4.2, 1.8, 0.16), (0, 0, 0.28), bevel_width=0.02)
+    # Glowing cyan guide rails along the boarding ramp
+    for side in (-1.0, 1.0):
+        append_box(bm, 3, (0.52, 2.4, 0.68), (side * 2.38, 0, 0.34), bevel_width=0.03)
+        append_box(bm, 4, (0.12, 2.2, 0.08), (side * 2.02, 0, 0.36))
+
+    mesh = bpy.data.meshes.new("Env_Stargate_Frame_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Stargate_Frame", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_naquadah, m_trim, m_chevron, m_ramp, m_cyan_strip):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_stargate_inner_ring():
+    """
+    Separate spinning Stargate Inner Glyph Track Ring (centered at (0,0,0) in X-Z plane)
+    so Three.js can rotate it smoothly inside Env_Stargate_Frame.
+    """
+    bm = bmesh.new()
+    m_track = make_pbr_mat(
+        "Mat_Stargate_GlyphTrack",
+        base_color=(0.24, 0.28, 0.38, 1.0),
+        roughness=0.28,
+        metallic=0.82,
+    )
+    m_glyph = make_pbr_mat(
+        "Mat_Stargate_GlyphGlow",
+        base_color=(0.62, 0.90, 1.0, 1.0),
+        roughness=0.16,
+        emissive=(0.35, 0.75, 1.0),
+        emissive_strength=1.55,
+    )
+
+    ring_r = 2.48
+    segs = 36
+    for i in range(segs):
+        a0 = i * (math.tau / segs)
+        a1 = (i + 1) * (math.tau / segs)
+        am = 0.5 * (a0 + a1)
+        seg_len = ring_r * (a1 - a0) * 1.04
+        cx = math.cos(am) * ring_r
+        cz = math.sin(am) * ring_r
+        rot_y = am - math.pi * 0.5
+        # Track ring segment
+        append_box(bm, 0, (seg_len, 0.36, 0.28), (cx, 0, cz), rot=(0, -rot_y, 0))
+        # Raised radial glyph divider rib
+        dx = math.cos(a0) * ring_r
+        dz = math.sin(a0) * ring_r
+        append_box(bm, 0, (0.045, 0.44, 0.30), (dx, 0, dz), rot=(0, -(a0 - math.pi * 0.5), 0))
+        # Illuminated constellation glyph dot/bar on each bay
+        append_box(
+            bm,
+            1,
+            (seg_len * 0.42, 0.42, 0.09 if i % 2 == 0 else 0.14),
+            (cx, 0, cz),
+            rot=(0, -rot_y, 0),
+        )
+
+    mesh = bpy.data.meshes.new("Env_Stargate_InnerRing_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Stargate_InnerRing", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_track, m_glyph):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_camp_tent():
+    """
+    Cozy Starlight A-Frame Glamping Tent (3.6m wide x 4.0m long x 2.55m tall)
+    with striped canvas walls, cedar ridge poles, rolled open front flaps,
+    sleeping mat, cozy pillow, warm interior hanging lantern, and guy-lines.
+    """
+    bm = bmesh.new()
+    m_canvas = make_pbr_mat("Mat_Camp_Canvas", base_color=(0.97, 0.94, 0.88, 1.0), roughness=0.82)
+    m_stripe = make_pbr_mat("Mat_Camp_Stripe", base_color=(0.94, 0.42, 0.65, 1.0), roughness=0.78)
+    m_wood = make_pbr_mat("Mat_Camp_Wood", base_color=(0.44, 0.26, 0.13, 1.0), roughness=0.76)
+    m_blanket = make_pbr_mat("Mat_Camp_Blanket", base_color=(0.32, 0.62, 0.88, 1.0), roughness=0.85)
+    m_glow = make_pbr_mat(
+        "Mat_Camp_LanternGlow",
+        base_color=(1.0, 0.92, 0.62, 1.0),
+        roughness=0.15,
+        emissive=(1.0, 0.78, 0.32),
+        emissive_strength=3.0,
+    )
+
+    # Ground tarp / floor mat
+    append_box(bm, 3, (3.2, 3.6, 0.06), (0, 0, 0.03), bevel_width=0.015)
+
+    # True pitched A-frame roof slopes meeting at apex (0, y, 2.32) down to eaves (±1.62, y, 0.06)
+    apex_z = 2.34
+    half_w = 1.64
+    slope_len = math.hypot(half_w, apex_z)
+    tilt = math.atan2(half_w, apex_z)  # ~0.61 rad (~35°)
+    for side in (-1.0, 1.0):
+        # Negative sign on side * tilt leans the top INWARD toward X=0 to form a crisp /\ peak!
+        rot_y = -side * tilt
+        # Main cream canvas roof/wall panel
+        append_box(
+            bm,
+            0,
+            (0.08, 3.72, slope_len),
+            (side * half_w * 0.5, 0, apex_z * 0.5),
+            rot=(0, rot_y, 0),
+        )
+        # Decorative pastel-pink glamping accent band along lower eaves
+        append_box(
+            bm,
+            1,
+            (0.10, 3.76, 0.42),
+            (side * half_w * 0.86, 0, apex_z * 0.16),
+            rot=(0, rot_y, 0),
+        )
+        # Front rolled entrance canvas flaps tucked cleanly along the /\ door edges
+        append_cyl(
+            bm,
+            1,
+            0.13,
+            0.12,
+            slope_len * 0.86,
+            10,
+            (side * half_w * 0.52, -1.86, apex_z * 0.48),
+            rot=(0, rot_y, 0),
+        )
+        # Guy-line stakes
+        append_cyl(bm, 2, 0.04, 0.025, 0.32, 6, (side * 2.15, -1.5, 0.14), rot=(0, -side * 0.25, 0))
+        append_cyl(bm, 2, 0.04, 0.025, 0.32, 6, (side * 2.15, 1.5, 0.14), rot=(0, -side * 0.25, 0))
+
+    # Crisp solid triangular back gable wall (true 3-vertex extruded wedge, zero stair-stepping!)
+    v_bl = bm.verts.new((-half_w + 0.04, 1.80, 0.04))
+    v_br = bm.verts.new((half_w - 0.04, 1.80, 0.04))
+    v_top = bm.verts.new((0.0, 1.80, apex_z - 0.04))
+    v_bl2 = bm.verts.new((-half_w + 0.04, 1.88, 0.04))
+    v_br2 = bm.verts.new((half_w - 0.04, 1.88, 0.04))
+    v_top2 = bm.verts.new((0.0, 1.88, apex_z - 0.04))
+    for tri in (
+        (v_bl, v_br, v_top),
+        (v_br2, v_bl2, v_top2),
+        (v_bl, v_bl2, v_top2, v_top),
+        (v_br, v_top, v_top2, v_br2),
+    ):
+        try:
+            f = bm.faces.new(tri)
+            f.material_index = 0
+        except ValueError:
+            pass
+
+    # Crossed Cedar Ridge & A-Frame Entrance Poles
+    append_cyl(bm, 2, 0.06, 0.06, 4.18, 10, (0, 0, apex_z), rot=(math.pi * 0.5, 0, 0))
+    for y_end in (-1.92, 1.92):
+        for side in (-1.0, 1.0):
+            append_cyl(
+                bm,
+                2,
+                0.055,
+                0.05,
+                slope_len + 0.22,
+                8,
+                (side * half_w * 0.5, y_end, apex_z * 0.52),
+                rot=(0, -side * tilt, 0),
+            )
+
+    # Cozy interior sleeping pad, fluffy pillow & warm hanging lantern
+    append_box(bm, 1, (1.35, 2.15, 0.14), (0, 0.35, 0.13), bevel_width=0.04)
+    append_box(bm, 0, (0.78, 0.42, 0.18), (0, 1.15, 0.24), bevel_width=0.06)
+    append_cyl(bm, 2, 0.02, 0.02, 0.36, 6, (0, -0.55, apex_z - 0.18))
+    append_cyl(bm, 4, 0.13, 0.11, 0.24, 10, (0, -0.55, apex_z - 0.44))
+
+    mesh = bpy.data.meshes.new("Env_Camp_Tent_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Camp_Tent", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_canvas, m_stripe, m_wood, m_blanket, m_glow):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_camp_log_bench():
+    """Sculpted split-cedar natural log bench with rich cedar bark & sawn wood grain ends (4.1m wide)."""
+    bm = bmesh.new()
+    m_bark = make_pbr_mat("Mat_Camp_Bark", base_color=(0.34, 0.19, 0.09, 1.0), roughness=0.88)
+    m_cutwood = make_pbr_mat("Mat_Camp_CutWood", base_color=(0.76, 0.57, 0.36, 1.0), roughness=0.66)
+
+    # Main horizontal split log seat with warm cedar bark
+    append_cyl(bm, 0, 0.32, 0.30, 4.05, 14, (0, 0, 0.46), rot=(0, math.pi * 0.5, 0))
+    # Flattened smooth top seat plank inlay
+    append_box(bm, 1, (4.02, 0.54, 0.12), (0, 0, 0.68), bevel_width=0.025)
+    # Pale sawn wood end caps
+    for side in (-1.0, 1.0):
+        append_cyl(bm, 1, 0.27, 0.27, 0.04, 14, (side * 2.025, 0, 0.46), rot=(0, math.pi * 0.5, 0))
+        # Notched timber support feet
+        append_cyl(bm, 0, 0.22, 0.26, 0.42, 10, (side * 1.38, 0, 0.21))
+
+    mesh = bpy.data.meshes.new("Env_Camp_LogBench_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Camp_LogBench", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_bark, m_cutwood):
+        obj.data.materials.append(m)
+    return obj
+
+
 def build_cc0_prop(name, src_subdir, pred, target_polys, target_height=None, target_width=None, anchor_z="bottom", diff_tex=None, mat_override=None):
     bp = SRC_DIR / src_subdir / f"{src_subdir}.blend"
     objs = append_objects_from_blend(bp, pred)
@@ -826,6 +1116,73 @@ def main():
     built["Env_DTI_StarCrest"] = build_dti_star_crest()
     built["Env_DTI_Stanchion"] = build_dti_stanchion()
 
+    # 3. Stargate Portal Assembly (Outer Ring + Spinning Inner Glyph Track)
+    built["Env_Stargate_Frame"] = build_stargate_frame()
+    built["Env_Stargate_InnerRing"] = build_stargate_inner_ring()
+
+    # 4. Cozy Glamping & Campfire Clearing Pack (CC0 Props + Custom Tent & Log Bench)
+    built["Env_Camp_Tent"] = build_camp_tent()
+    built["Env_Camp_LogBench"] = build_camp_log_bench()
+
+    built["Env_Camp_Lantern"] = build_cc0_prop(
+        name="Env_Camp_Lantern",
+        src_subdir="Lantern_01",
+        pred=lambda n: not n.endswith("_LOD1"),
+        target_polys=950,
+        target_height=0.52,
+        anchor_z="bottom",
+        mat_override=make_pbr_mat(
+            "Mat_Camp_CC0Lantern",
+            base_color=(0.92, 0.72, 0.28, 1.0),
+            roughness=0.28,
+            metallic=0.68,
+            emissive=(1.0, 0.78, 0.28),
+            emissive_strength=0.65,
+            diff_path=SRC_DIR / "Lantern_01/textures/Lantern_01_brass_diff_1k.png",
+            max_tex=512,
+        ),
+    )
+
+    built["Env_Camp_Stool"] = build_cc0_prop(
+        name="Env_Camp_Stool",
+        src_subdir="folding_wooden_stool",
+        pred=lambda n: not n.endswith("_LOD1"),
+        target_polys=700,
+        target_height=0.58,
+        anchor_z="bottom",
+        diff_tex=SRC_DIR / "folding_wooden_stool/textures/folding_wooden_stool_diff_1k.jpg",
+    )
+
+    built["Env_Camp_Stump"] = build_cc0_prop(
+        name="Env_Camp_Stump",
+        src_subdir="tree_stump_01",
+        pred=lambda n: not n.endswith("_LOD1"),
+        target_polys=850,
+        target_height=0.72,
+        anchor_z="bottom",
+        diff_tex=SRC_DIR / "tree_stump_01/textures/tree_stump_01_diff_1k.jpg",
+    )
+
+    built["Env_Camp_Pot"] = build_cc0_prop(
+        name="Env_Camp_Pot",
+        src_subdir="pot_enamel_01",
+        pred=lambda n: not n.endswith("_LOD1"),
+        target_polys=650,
+        target_width=0.42,
+        anchor_z="bottom",
+        diff_tex=SRC_DIR / "pot_enamel_01/textures/pot_enamel_01_diff_1k.jpg",
+    )
+
+    built["Env_Camp_Boulder"] = build_cc0_prop(
+        name="Env_Camp_Boulder",
+        src_subdir="rock_07",
+        pred=lambda n: not n.endswith("_LOD1"),
+        target_polys=600,
+        target_width=1.65,
+        anchor_z="bottom",
+        diff_tex=SRC_DIR / "rock_07/textures/rock_07_diff_1k.jpg",
+    )
+
     # Reset all asset transforms to origin before saving .blend and exporting .glb
     for o in built.values():
         o.location = Vector((0, 0, 0))
@@ -864,6 +1221,36 @@ def main():
         PREVIEW_DTI,
         cam_loc=(6.8, -11.8, 4.8),
         cam_target=(0, 2.2, 2.8),
+        spacing=0.0,
+    )
+
+    # Compose Stargate + Camping Clearing preview
+    built["Env_Stargate_Frame"].location = Vector((-4.2, 0.5, 0))
+    built["Env_Stargate_InnerRing"].location = Vector((-4.2, 0.5, 2.95))
+    built["Env_Camp_Tent"].location = Vector((4.2, 1.5, 0))
+    built["Env_Campfire_Pit"].location = Vector((2.6, -2.5, 0))
+    built["Env_Camp_LogBench"].location = Vector((2.6, -5.0, 0))
+    built["Env_Camp_Stump"].location = Vector((5.2, -2.5, 0))
+    built["Env_Camp_Lantern"].location = Vector((5.2, -2.5, 0.72))
+    built["Env_Camp_Stool"].location = Vector((0.6, -2.6, 0))
+    built["Env_Camp_Pot"].location = Vector((3.8, -2.2, 0))
+    built["Env_Camp_Boulder"].location = Vector((6.6, -1.2, 0))
+    render_studio_preview(
+        [
+            built["Env_Stargate_Frame"],
+            built["Env_Stargate_InnerRing"],
+            built["Env_Camp_Tent"],
+            built["Env_Campfire_Pit"],
+            built["Env_Camp_LogBench"],
+            built["Env_Camp_Stump"],
+            built["Env_Camp_Lantern"],
+            built["Env_Camp_Stool"],
+            built["Env_Camp_Pot"],
+            built["Env_Camp_Boulder"],
+        ],
+        PREVIEW_STARGATE_CAMP,
+        cam_loc=(0.5, -13.5, 4.8),
+        cam_target=(0.5, -0.5, 2.0),
         spacing=0.0,
     )
 

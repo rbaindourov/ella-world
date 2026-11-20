@@ -85,6 +85,82 @@ let propsPackPromise = null;
 let propsPackAsset = null;
 const propsTemplates = new Map();
 
+// Shared singleton loader for PolyHaven CC0 Obby PBR textures (512x512 seamless maps)
+const obbyTexLoader = new THREE.TextureLoader();
+const obbyTextureSets = {};
+
+function getObbyTextureSet(style) {
+  if (!style) return null;
+  if (obbyTextureSets[style]) return obbyTextureSets[style];
+  const base = `/ella-world/textures/obby/${style}`;
+  const loadMap = (url, isColor) => {
+    const tex = obbyTexLoader.load(url);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    if (isColor) tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  };
+  const set = {
+    map: loadMap(`${base}_diff.jpg`, true),
+    normalMap: loadMap(`${base}_nor.jpg`, false),
+    roughnessMap: loadMap(`${base}_rough.jpg`, false)
+  };
+  obbyTextureSets[style] = set;
+  return set;
+}
+
+function createStargateEventHorizonMaterial(primaryHex = '#38bdf8', secondaryHex = '#7c3aed') {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uSurge: { value: 0 },
+      uColorA: { value: new THREE.Color(primaryHex) },
+      uColorB: { value: new THREE.Color(secondaryHex) }
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      uniform float uTime;
+      uniform float uSurge;
+      void main() {
+        vUv = uv;
+        vec2 c = uv * 2.0 - 1.0;
+        float r = length(c);
+        float wave = sin(r * 18.0 - uTime * 4.2) * 0.055 * (1.0 - r * 0.65);
+        float wave2 = cos(c.x * 11.0 + uTime * 3.1) * sin(c.y * 11.0 - uTime * 2.7) * 0.035;
+        float surgeBulge = uSurge * (1.0 - r * r) * 0.52 * sin(uTime * 8.0 - r * 6.0);
+        vec3 displaced = position + vec3(0.0, 0.0, wave + wave2 + surgeBulge);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform float uTime;
+      uniform float uSurge;
+      uniform vec3 uColorA;
+      uniform vec3 uColorB;
+      void main() {
+        vec2 p = vUv * 2.0 - 1.0;
+        float r = length(p);
+        if (r > 1.0) discard;
+        float ang = atan(p.y, p.x);
+        float ripple1 = sin(r * 22.0 - uTime * 4.6 + sin(ang * 4.0 + uTime * 1.4) * 1.1);
+        float ripple2 = cos(r * 14.0 - uTime * 3.1 - ang * 3.0);
+        float caustic = pow(clamp(0.5 + 0.5 * (ripple1 * 0.6 + ripple2 * 0.4), 0.0, 1.0), 2.4);
+        float core = exp(-r * 2.2) * (0.45 + 0.45 * uSurge);
+        float rim = smoothstep(0.68, 0.99, r);
+        vec3 col = mix(uColorB * 0.55, uColorA, caustic);
+        col += vec3(0.85, 0.96, 1.0) * (caustic * 0.48 + core + rim * 0.65);
+        col += vec3(0.45, 0.85, 1.0) * uSurge * 0.55;
+        float alpha = clamp(0.76 + rim * 0.22 + core * 0.2, 0.0, 0.97);
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+}
+
 // Shared singleton loader for the Blender 5.2 Realistic Trees & DTI Fashion Runway Stage Pack
 let envPackPromise = null;
 let envPackAsset = null;
@@ -1788,6 +1864,12 @@ export class BlockyWorld3D {
     this.plazaGroup.add(this.dtiStageDecorGroup);
     this.campfireAnchor = new THREE.Group();
     this.plazaGroup.add(this.campfireAnchor);
+    this.campBenchPlaceholders = [];
+    this.campFlames = [];
+    this.campEmbers = [];
+    this.campLight = null;
+    this.stargateInstances = [];
+    this.scifiThrusters = [];
     this.dungeonGroup = new THREE.Group();
     this.dungeonGroup.visible = false;
     this.scene.add(this.dungeonGroup);
@@ -2013,6 +2095,71 @@ export class BlockyWorld3D {
     this.scene.add(this.fillLight);
   }
 
+  _attachSciFiPlatformFx(mesh, w, h, d, accentHex = '#38bdf8') {
+    const fxGroup = new THREE.Group();
+    const minSpan = Math.min(w, d);
+    const ringR = Math.max(0.42, minSpan * 0.34);
+
+    // Glowing anti-grav thruster emitter ring beneath floating platform
+    const outerRingMat = new THREE.MeshBasicMaterial({
+      color: accentHex,
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide
+    });
+    const outerRing = new THREE.Mesh(new THREE.TorusGeometry(ringR, 0.055, 8, 24), outerRingMat);
+    outerRing.rotation.x = Math.PI / 2;
+    outerRing.position.y = -h * 0.5 - 0.08;
+    fxGroup.add(outerRing);
+
+    // Secondary smaller counter-rotating holo ring
+    const innerRingMat = new THREE.MeshBasicMaterial({
+      color: '#ffffff',
+      transparent: true,
+      opacity: 0.72,
+      side: THREE.DoubleSide
+    });
+    const innerRing = new THREE.Mesh(new THREE.TorusGeometry(ringR * 0.62, 0.032, 6, 18), innerRingMat);
+    innerRing.rotation.x = Math.PI / 2;
+    innerRing.position.y = -h * 0.5 - 0.22;
+    fxGroup.add(innerRing);
+
+    // Translucent downward ion plasma thruster cone
+    const coneMat = new THREE.MeshBasicMaterial({
+      color: accentHex,
+      transparent: true,
+      opacity: 0.28,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(ringR * 0.68, 0.82, 14, 1, true), coneMat);
+    cone.rotation.x = Math.PI;
+    cone.position.y = -h * 0.5 - 0.45;
+    fxGroup.add(cone);
+
+    // Glowing corner edge holo-bars along the platform perimeter
+    const rimMat = new THREE.MeshBasicMaterial({ color: accentHex, transparent: true, opacity: 0.78 });
+    const barZ = new THREE.BoxGeometry(w + 0.06, 0.06, 0.06);
+    const barX = new THREE.BoxGeometry(0.06, 0.06, d + 0.06);
+    for (const s of [-1, 1]) {
+      const bz = new THREE.Mesh(barZ, rimMat);
+      bz.position.set(0, -h * 0.5 + 0.04, s * (d * 0.5 + 0.02));
+      const bx = new THREE.Mesh(barX, rimMat);
+      bx.position.set(s * (w * 0.5 + 0.02), -h * 0.5 + 0.04, 0);
+      fxGroup.add(bz, bx);
+    }
+
+    mesh.add(fxGroup);
+    this.scifiThrusters.push({
+      outerRing,
+      innerRing,
+      cone,
+      coneMat,
+      outerRingMat,
+      phase: Math.random() * Math.PI * 2
+    });
+  }
+
   _addBoxPlatform(
     {
       x,
@@ -2027,16 +2174,59 @@ export class BlockyWorld3D {
       checkpointIndex = 0,
       obbyTier = 'easy',
       emissive = null,
-      emissiveIntensity = 0
+      emissiveIntensity = 0,
+      textureStyle = null,
+      scifiFx = null
     },
     targetGroup = this.plazaGroup,
     targetColliders = this.plazaColliders
   ) {
-    const mat = new THREE.MeshStandardMaterial({
-      color,
-      roughness: type === 'ice' || type === 'runway' ? 0.18 : 0.55,
-      metalness: type === 'trophy-pad' || type === 'gauntlet-trophy-pad' || type === 'runway' ? 0.28 : 0.08
-    });
+    // Automatically choose rich PolyHaven CC0 PBR textures for floating obby platforms
+    let resolvedTex = textureStyle;
+    const colLow = String(color || '').toLowerCase();
+    const isFloatingObby = targetGroup === this.plazaGroup && y > 0.75 && type !== 'runway';
+    if (!resolvedTex && isFloatingObby) {
+      if (colLow === '#ef4444' || colLow === '#f97316' || colLow === '#fb923c' || colLow === '#ec4899') {
+        resolvedTex = 'red_brick';
+      } else if (type === 'moving' || type === 'jumppad') {
+        resolvedTex = 'metal_plate';
+      } else if (type === 'blinking' || colLow === '#38bdf8' || colLow === '#a78bfa' || colLow === '#a855f7' || colLow === '#8b5cf6' || colLow === '#1e1b4b' || colLow === '#312e81') {
+        resolvedTex = 'hex_scifi';
+      } else {
+        resolvedTex = 'marble_tiles';
+      }
+    } else if (!resolvedTex && targetGroup === this.plazaGroup && (type === 'checkpoint' || type === 'trophy-pad' || type === 'gauntlet-trophy-pad')) {
+      resolvedTex = 'marble_tiles';
+    }
+
+    const matOpts = {
+      color: resolvedTex === 'red_brick' && colLow === '#ef4444' ? '#ffffff' : color,
+      roughness: type === 'ice' || type === 'runway' ? 0.18 : resolvedTex === 'metal_plate' ? 0.34 : 0.58,
+      metalness:
+        resolvedTex === 'metal_plate'
+          ? 0.52
+          : type === 'trophy-pad' || type === 'gauntlet-trophy-pad' || type === 'runway'
+            ? 0.28
+            : 0.08
+    };
+
+    const texSet = getObbyTextureSet(resolvedTex);
+    if (texSet) {
+      const repX = Math.max(1, Math.round(w / 1.8));
+      const repY = Math.max(1, Math.round(d / 1.8));
+      const cloneRep = (t) => {
+        const c = t.clone();
+        c.needsUpdate = true;
+        c.repeat.set(repX, repY);
+        return c;
+      };
+      matOpts.map = cloneRep(texSet.map);
+      matOpts.normalMap = cloneRep(texSet.normalMap);
+      matOpts.normalScale = new THREE.Vector2(0.7, 0.7);
+      matOpts.roughnessMap = cloneRep(texSet.roughnessMap);
+    }
+
+    const mat = new THREE.MeshStandardMaterial(matOpts);
     if (emissive) {
       mat.emissive = new THREE.Color(emissive);
       mat.emissiveIntensity = emissiveIntensity || 0.3;
@@ -2046,6 +2236,21 @@ export class BlockyWorld3D {
     mesh.receiveShadow = true;
     mesh.castShadow = y > 0.5;
     targetGroup.add(mesh);
+
+    // Attach sci-fi anti-grav thruster & holographic ring effects on floating movers, blinkers, and tech platforms
+    const enableSciFi =
+      scifiFx !== null
+        ? Boolean(scifiFx)
+        : isFloatingObby && (type === 'moving' || type === 'blinking' || resolvedTex === 'hex_scifi' || resolvedTex === 'metal_plate');
+    if (enableSciFi) {
+      const fxColor =
+        type === 'blinking'
+          ? '#f472b6'
+          : colLow === '#c084fc' || colLow === '#a855f7' || colLow === '#a78bfa'
+            ? '#c084fc'
+            : '#38bdf8';
+      this._attachSciFiPlatformFx(mesh, w, h, d, fxColor);
+    }
 
     const entry = {
       mesh,
@@ -2071,6 +2276,10 @@ export class BlockyWorld3D {
     const portal = new THREE.Group();
     portal.position.set(x, y, z);
 
+    const frameHost = new THREE.Group();
+    portal.add(frameHost);
+
+    // Procedural fallback arch (upgraded cleanly to Blender Stargate Ring once GLB finishes loading)
     const stoneMat = new THREE.MeshStandardMaterial({ color: '#1e1b4b', roughness: 0.35, metalness: 0.45 });
     const runeMat = new THREE.MeshStandardMaterial({
       color: primaryHex,
@@ -2085,7 +2294,7 @@ export class BlockyWorld3D {
     const runeRing = new THREE.Mesh(new THREE.TorusGeometry(2.45, 0.09, 10, 32), runeMat);
     runeRing.rotation.x = Math.PI / 2;
     runeRing.position.y = 0.22;
-    portal.add(pad, runeRing);
+    frameHost.add(pad, runeRing);
 
     for (const side of [-1, 1]) {
       const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.68, 4.1, 0.68), stoneMat);
@@ -2093,33 +2302,68 @@ export class BlockyWorld3D {
       pillar.castShadow = true;
       const runeStrip = new THREE.Mesh(new THREE.BoxGeometry(0.2, 3.5, 0.74), runeMat);
       runeStrip.position.set(side * 1.85, 2.15, 0);
-      portal.add(pillar, runeStrip);
+      frameHost.add(pillar, runeStrip);
     }
 
     const lintel = new THREE.Mesh(new THREE.BoxGeometry(4.65, 0.72, 0.88), stoneMat);
     lintel.position.set(0, 4.35, 0);
     const keystone = new THREE.Mesh(new THREE.OctahedronGeometry(0.46, 0), runeMat);
     keystone.position.set(0, 4.95, 0);
-    portal.add(lintel, keystone);
+    frameHost.add(lintel, keystone);
 
-    const vortexMat = new THREE.MeshBasicMaterial({
-      color: secondaryHex,
-      transparent: true,
-      opacity: 0.68,
-      side: THREE.DoubleSide
-    });
-    const vortexDisc = new THREE.Mesh(new THREE.CircleGeometry(1.75, 28), vortexMat);
+    // Live Custom GLSL Shimmering Wormhole Event Horizon (active immediately & rescaled on Stargate upgrade)
+    const horizonMat = createStargateEventHorizonMaterial(primaryHex, secondaryHex);
+    const vortexDisc = new THREE.Mesh(new THREE.CircleGeometry(1.78, 40), horizonMat);
     vortexDisc.position.set(0, 2.28, 0);
+
     const swirlRing = new THREE.Mesh(
-      new THREE.TorusGeometry(1.25, 0.08, 10, 28),
-      new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.75 })
+      new THREE.TorusGeometry(1.32, 0.06, 10, 32),
+      new THREE.MeshBasicMaterial({ color: '#e0f2fe', transparent: true, opacity: 0.65 })
     );
     swirlRing.position.set(0, 2.28, 0.04);
-    portal.add(vortexDisc, swirlRing);
-    this.portalVortices.push({ disc: vortexDisc, ring: swirlRing, keystone });
+
+    // Swirling quantum energy motes orbiting the Stargate aperture
+    const moteCount = 28;
+    const moteGeo = new THREE.BufferGeometry();
+    const motePositions = new Float32Array(moteCount * 3);
+    for (let i = 0; i < moteCount; i++) {
+      const ang = (i / moteCount) * Math.PI * 2;
+      const rad = 1.65 + (i % 4) * 0.16;
+      motePositions[i * 3] = Math.cos(ang) * rad;
+      motePositions[i * 3 + 1] = Math.sin(ang) * rad;
+      motePositions[i * 3 + 2] = ((i % 3) - 1) * 0.22;
+    }
+    moteGeo.setAttribute('position', new THREE.BufferAttribute(motePositions, 3));
+    const moteMat = new THREE.PointsMaterial({
+      color: primaryHex,
+      size: 0.22,
+      transparent: true,
+      opacity: 0.88,
+      depthWrite: false
+    });
+    const motes = new THREE.Points(moteGeo, moteMat);
+    motes.position.set(0, 2.28, 0);
+
+    portal.add(vortexDisc, swirlRing, motes);
+    const portalRec = {
+      portal,
+      frameHost,
+      disc: vortexDisc,
+      horizonMat,
+      ring: swirlRing,
+      motes,
+      keystone,
+      innerGlyphRing: null,
+      worldPos: new THREE.Vector3(x, y, z),
+      primaryHex,
+      secondaryHex,
+      surge: 0
+    };
+    this.portalVortices.push(portalRec);
+    this.stargateInstances.push(portalRec);
 
     const banner = createWorldBannerSprite(title, subtitle, primaryHex);
-    banner.position.set(0, 6.05, 0);
+    banner.position.set(0, 6.75, 0);
     portal.add(banner);
 
     targetGroup.add(portal);
@@ -2172,32 +2416,101 @@ export class BlockyWorld3D {
     this._buildDtiFashionRunway();
 
     const logMat = new THREE.MeshStandardMaterial({ color: '#78350f', roughness: 0.8 });
-    const fireMat = new THREE.MeshStandardMaterial({
-      color: '#fb923c',
-      emissive: '#ef4444',
-      emissiveIntensity: 0.75
-    });
-    const fireCore = new THREE.Mesh(new THREE.ConeGeometry(0.85, 1.5, 6), fireMat);
-    fireCore.position.set(-6, 0.75, 11);
-    this.plazaGroup.add(fireCore);
     this.campfireAnchor.position.set(-6, 0, 11);
-    this._addBoxPlatform({ x: -6, y: 0.35, z: 14.2, w: 4.2, h: 0.7, d: 1.1, color: '#92400e' });
-    this._addBoxPlatform({ x: -9.2, y: 0.35, z: 11, w: 1.1, h: 0.7, d: 4.2, color: '#92400e' });
+
+    // Cozy gravel/dirt campfire clearing pad flush with grass
+    const clearingMat = new THREE.MeshStandardMaterial({ color: '#a89f91', roughness: 0.92 });
+    const clearingDisc = new THREE.Mesh(new THREE.CylinderGeometry(5.8, 6.2, 0.06, 28), clearingMat);
+    clearingDisc.position.set(-6, 0.03, 11);
+    clearingDisc.receiveShadow = true;
+    this.plazaGroup.add(clearingDisc);
+
+    // Crossed firewood logs & multi-layer dancing campfire flames + marshmallow sticks + rising embers
+    for (let li = 0; li < 4; li++) {
+      const fLog = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 1.35, 8), logMat);
+      fLog.position.set(-6, 0.24, 11);
+      fLog.rotation.z = Math.PI * 0.42;
+      fLog.rotation.y = li * (Math.PI * 0.25);
+      this.plazaGroup.add(fLog);
+    }
+
+    const flameSpecs = [
+      { r: 0.62, h: 1.45, y: 0.72, color: '#ea580c', emissive: '#ef4444', speed: 7.5, phase: 0 },
+      { r: 0.44, h: 1.15, y: 0.64, color: '#f59e0b', emissive: '#f97316', speed: 9.2, phase: 1.8 },
+      { r: 0.26, h: 0.82, y: 0.54, color: '#fef08a', emissive: '#fde047', speed: 11.4, phase: 3.4 }
+    ];
+    for (const fs of flameSpecs) {
+      const fm = new THREE.MeshStandardMaterial({
+        color: fs.color,
+        emissive: fs.emissive,
+        emissiveIntensity: 0.95,
+        transparent: true,
+        opacity: 0.88
+      });
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(fs.r, fs.h, 7), fm);
+      cone.position.set(-6, fs.y, 11);
+      this.plazaGroup.add(cone);
+      this.campFlames.push({ mesh: cone, baseY: fs.y, speed: fs.speed, phase: fs.phase });
+    }
+
+    // Two cozy marshmallow roasting sticks leaning over the fire
+    const stickMat = new THREE.MeshStandardMaterial({ color: '#92400e', roughness: 0.8 });
+    const mallowMat = new THREE.MeshStandardMaterial({ color: '#fffbeb', roughness: 0.45 });
+    for (const [sx, sz, rotY] of [
+      [-5.1, 12.15, 0.55],
+      [-7.1, 11.75, -0.78]
+    ]) {
+      const stickGrp = new THREE.Group();
+      stickGrp.position.set(sx, 0.25, sz);
+      stickGrp.rotation.y = rotY;
+      const twig = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.028, 1.35, 6), stickMat);
+      twig.rotation.x = -0.68;
+      twig.position.set(0, 0.45, -0.35);
+      const mallow = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.11, 8), mallowMat);
+      mallow.position.set(0, 0.92, -0.78);
+      stickGrp.add(twig, mallow);
+      this.plazaGroup.add(stickGrp);
+    }
+
+    // Rising glowing fire embers
+    const emberMat = new THREE.MeshBasicMaterial({ color: '#fde047', transparent: true, opacity: 0.9 });
+    const emberGeo = new THREE.BoxGeometry(0.075, 0.075, 0.075);
+    for (let ei = 0; ei < 14; ei++) {
+      const em = new THREE.Mesh(emberGeo, emberMat);
+      em.position.set(-6, 0.6, 11);
+      this.plazaGroup.add(em);
+      this.campEmbers.push({
+        mesh: em,
+        angle: (ei / 14) * Math.PI * 2,
+        radius: 0.15 + (ei % 4) * 0.14,
+        phase: (ei / 14) * 2.8,
+        speed: 0.85 + (ei % 3) * 0.28
+      });
+    }
+
+    // Warm flickering campfire PointLight
+    this.campLight = new THREE.PointLight('#fb923c', 2.4, 15, 1.8);
+    this.campLight.position.set(-6, 1.85, 11);
+    this.plazaGroup.add(this.campLight);
+
+    const benchS = this._addBoxPlatform({ x: -6, y: 0.35, z: 14.2, w: 4.2, h: 0.7, d: 1.1, color: '#92400e' });
+    const benchW = this._addBoxPlatform({ x: -9.2, y: 0.35, z: 11, w: 1.1, h: 0.7, d: 4.2, color: '#92400e' });
+    this.campBenchPlaceholders.push(benchS.mesh, benchW.mesh);
 
     const buildGridFloor = new THREE.GridHelper(16, 16, '#38bdf8', '#94a3b8');
     buildGridFloor.position.set(18, 0.06, -4);
     this.plazaGroup.add(buildGridFloor);
 
-    // Crystal Cavern Dungeon Portal in Starlight Plaza
+    // Crystal Cavern Stargate Portal in Starlight Plaza
     this.plazaPortalGroup = this._createPortalArch(
       {
         x: this.plazaPortalPos.x,
         y: this.plazaPortalPos.y,
         z: this.plazaPortalPos.z,
-        title: '🌀 CRYSTAL CAVERN',
-        subtitle: 'Step In or Press E • Farm Coins & Loot!',
-        primaryHex: '#c084fc',
-        secondaryHex: '#7c3aed'
+        title: '🌀 STARGATE — CRYSTAL CAVERN',
+        subtitle: 'Step Through Wormhole or Press E • Farm Coins & Loot!',
+        primaryHex: '#38bdf8',
+        secondaryHex: '#6366f1'
       },
       this.plazaGroup
     );
@@ -2255,14 +2568,24 @@ export class BlockyWorld3D {
     });
 
     const stage1Steps = [
-      { x: 0, y: 1.4, z: -16.5, color: '#f472b6' },
-      { x: -3.2, y: 2.5, z: -20.0, color: '#38bdf8' },
-      { x: 0, y: 3.6, z: -23.5, color: '#34d399' },
-      { x: 3.4, y: 4.8, z: -27.0, color: '#a78bfa' },
-      { x: 0, y: 6.0, z: -30.5, color: '#fb923c' }
+      { x: 0, y: 1.4, z: -16.5, color: '#ef4444', textureStyle: 'red_brick' },
+      { x: -3.2, y: 2.5, z: -20.0, color: '#38bdf8', textureStyle: 'hex_scifi', scifiFx: true },
+      { x: 0, y: 3.6, z: -23.5, color: '#34d399', textureStyle: 'marble_tiles' },
+      { x: 3.4, y: 4.8, z: -27.0, color: '#a78bfa', textureStyle: 'hex_scifi', scifiFx: true },
+      { x: 0, y: 6.0, z: -30.5, color: '#ef4444', textureStyle: 'red_brick' }
     ];
     for (const s of stage1Steps) {
-      this._addBoxPlatform({ x: s.x, y: s.y, z: s.z, w: 3.1, h: 0.6, d: 3.1, color: s.color });
+      this._addBoxPlatform({
+        x: s.x,
+        y: s.y,
+        z: s.z,
+        w: 3.1,
+        h: 0.6,
+        d: 3.1,
+        color: s.color,
+        textureStyle: s.textureStyle,
+        scifiFx: s.scifiFx || false
+      });
     }
 
     this._addBoxPlatform({
@@ -2622,11 +2945,11 @@ export class BlockyWorld3D {
       obbyTier: 'hard'
     });
 
-    // Stage 1 -> CP 2: Narrow Zig-Zag Steps + Fast Split-Axis Movers
+    // Stage 1 -> CP 2: Narrow Zig-Zag Steps (Red Brick & Sci-Fi Hex) + Fast Split-Axis Movers
     const s1Steps = [
-      { x: 56.2, y: 2.0, z: 52.0, w: 2.0, d: 2.0, color: '#ec4899' },
-      { x: 59.8, y: 3.5, z: 49.2, w: 1.85, d: 1.85, color: '#a855f7' },
-      { x: 63.6, y: 5.0, z: 52.4, w: 1.85, d: 1.85, color: '#38bdf8' }
+      { x: 56.2, y: 2.0, z: 52.0, w: 2.0, d: 2.0, color: '#ef4444', textureStyle: 'red_brick', scifiFx: false },
+      { x: 59.8, y: 3.5, z: 49.2, w: 1.85, d: 1.85, color: '#a855f7', textureStyle: 'hex_scifi', scifiFx: true },
+      { x: 63.6, y: 5.0, z: 52.4, w: 1.85, d: 1.85, color: '#38bdf8', textureStyle: 'metal_plate', scifiFx: true }
     ];
     for (const s of s1Steps) {
       this._addBoxPlatform({
@@ -2637,8 +2960,10 @@ export class BlockyWorld3D {
         h: 0.5,
         d: s.d,
         color: s.color,
-        emissive: s.color,
-        emissiveIntensity: 0.18
+        emissive: s.textureStyle === 'red_brick' ? null : s.color,
+        emissiveIntensity: s.textureStyle === 'red_brick' ? 0 : 0.18,
+        textureStyle: s.textureStyle,
+        scifiFx: s.scifiFx
       });
     }
 
@@ -3152,12 +3477,105 @@ export class BlockyWorld3D {
       }
     }
 
-    // 3. Upgrade Plaza Campfire with CC0 Stone Fire Pit
+    // 3. Upgrade Plaza Campfire & Glamping Clearing with Blender & PolyHaven CC0 Models
     if (envTemplates.has('Env_Campfire_Pit')) {
       this.campfireAnchor.clear();
       const pit = cloneEnvTemplate('Env_Campfire_Pit');
-      if (pit) {
-        this.campfireAnchor.add(pit);
+      if (pit) this.campfireAnchor.add(pit);
+
+      // Replace the 2 plain box bench meshes with sculpted cedar log benches (keeping exact walkable colliders!)
+      if (envTemplates.has('Env_Camp_LogBench')) {
+        for (const ph of this.campBenchPlaceholders) {
+          if (ph) ph.visible = false;
+        }
+        const logBenchS = cloneEnvTemplate('Env_Camp_LogBench');
+        if (logBenchS) {
+          logBenchS.position.set(0, 0, 3.2);
+          this.campfireAnchor.add(logBenchS);
+        }
+        const logBenchW = cloneEnvTemplate('Env_Camp_LogBench');
+        if (logBenchW) {
+          logBenchW.position.set(-3.2, 0, 0);
+          logBenchW.rotation.y = Math.PI * 0.5;
+          this.campfireAnchor.add(logBenchW);
+        }
+      }
+
+      // Cozy Striped A-Frame Glamping Tent beside the clearing
+      const tent = cloneEnvTemplate('Env_Camp_Tent');
+      if (tent) {
+        tent.position.set(-4.6, 0, 5.2);
+        tent.rotation.y = Math.PI * 0.24;
+        this.campfireAnchor.add(tent);
+      }
+
+      // Tree Stump Side Table + Glowing Brass Lantern + Enamel Camp Pot + Folding Stool + Boulders
+      const stump = cloneEnvTemplate('Env_Camp_Stump');
+      if (stump) {
+        stump.position.set(2.6, 0, 0.6);
+        this.campfireAnchor.add(stump);
+      }
+      const lantern = cloneEnvTemplate('Env_Camp_Lantern');
+      if (lantern) {
+        lantern.position.set(2.6, 0.72, 0.6);
+        this.campfireAnchor.add(lantern);
+      }
+      const pot = cloneEnvTemplate('Env_Camp_Pot');
+      if (pot) {
+        pot.position.set(1.55, 0, -0.75);
+        pot.rotation.y = 0.6;
+        this.campfireAnchor.add(pot);
+      }
+      const stool = cloneEnvTemplate('Env_Camp_Stool');
+      if (stool) {
+        stool.position.set(2.3, 0, 2.75);
+        stool.rotation.y = -0.5;
+        this.campfireAnchor.add(stool);
+      }
+      const b1 = cloneEnvTemplate('Env_Camp_Boulder');
+      if (b1) {
+        b1.position.set(-4.8, 0, -2.6);
+        b1.rotation.y = 0.85;
+        b1.scale.setScalar(0.85);
+        this.campfireAnchor.add(b1);
+      }
+      const b2 = cloneEnvTemplate('Env_Camp_Boulder');
+      if (b2) {
+        b2.position.set(3.8, 0, -2.2);
+        b2.rotation.y = -1.2;
+        b2.scale.setScalar(0.72);
+        this.campfireAnchor.add(b2);
+      }
+    }
+
+    // 4. Upgrade All Portals (Plaza -> Cavern & Cavern -> Plaza) to Blender Stargate Rings!
+    if (envTemplates.has('Env_Stargate_Frame') && envTemplates.has('Env_Stargate_InnerRing')) {
+      for (const sg of this.stargateInstances) {
+        sg.frameHost.clear();
+        const frame = cloneEnvTemplate('Env_Stargate_Frame');
+        if (frame) sg.frameHost.add(frame);
+
+        const innerRing = cloneEnvTemplate('Env_Stargate_InnerRing');
+        if (innerRing) {
+          innerRing.position.set(0, 2.95, 0);
+          sg.frameHost.add(innerRing);
+          sg.innerGlyphRing = innerRing;
+        }
+        sg.keystone = null;
+
+        // Align Event Horizon shader disc, swirl halo & quantum motes cleanly to the 2.28m Stargate aperture
+        if (sg.disc) {
+          sg.disc.position.set(0, 2.95, 0);
+          sg.disc.scale.setScalar(1.3);
+        }
+        if (sg.ring) {
+          sg.ring.position.set(0, 2.95, 0.08);
+          sg.ring.scale.setScalar(1.42);
+        }
+        if (sg.motes) {
+          sg.motes.position.set(0, 2.95, 0);
+          sg.motes.scale.setScalar(1.22);
+        }
       }
     }
   }
@@ -5126,10 +5544,61 @@ export class BlockyWorld3D {
     const serverNowMs = Date.now() + this.serverClockOffsetMs;
     const tSec = serverNowMs * 0.001;
 
+    const selfPos = this.selfAvatar ? this.selfAvatar.group.position : null;
     for (const pv of this.portalVortices) {
-      pv.ring.rotation.z = tSec * 2.4;
-      pv.disc.material.opacity = 0.56 + Math.sin(tSec * 4.2) * 0.16;
-      pv.keystone.rotation.y = tSec * 1.9;
+      if (pv.ring) pv.ring.rotation.z = tSec * 2.1;
+      if (pv.motes) pv.motes.rotation.z = -tSec * 1.15;
+      if (pv.innerGlyphRing) pv.innerGlyphRing.rotation.z = -tSec * 0.42;
+      if (pv.horizonMat && pv.horizonMat.uniforms) {
+        pv.horizonMat.uniforms.uTime.value = tSec;
+        let targetSurge = 0.0;
+        if (selfPos && pv.worldPos) {
+          const dGate = Math.hypot(selfPos.x - pv.worldPos.x, selfPos.z - pv.worldPos.z);
+          if (dGate < 7.0) {
+            targetSurge = Math.max(0, 1.0 - dGate / 7.0);
+          }
+        }
+        pv.surge = (pv.surge || 0) + (targetSurge - (pv.surge || 0)) * Math.min(1, dt * 4.5);
+        pv.horizonMat.uniforms.uSurge.value = pv.surge;
+      } else if (pv.disc?.material && typeof pv.disc.material.opacity === 'number') {
+        pv.disc.material.opacity = 0.56 + Math.sin(tSec * 4.2) * 0.16;
+      }
+      if (pv.keystone) pv.keystone.rotation.y = tSec * 1.9;
+    }
+
+    // Sci-Fi Floating Obby Platform Anti-Grav Thrusters & Holographic Rings
+    for (const tf of this.scifiThrusters) {
+      tf.outerRing.rotation.z = tSec * 1.6 + tf.phase;
+      tf.innerRing.rotation.z = -tSec * 2.8 + tf.phase;
+      const pulse = 0.78 + Math.sin(tSec * 5.2 + tf.phase) * 0.22;
+      tf.cone.scale.set(pulse, 0.85 + pulse * 0.25, pulse);
+      tf.coneMat.opacity = 0.18 + pulse * 0.16;
+    }
+
+    // Cozy Campfire Dancing Flames, Warm Flickering Glow & Rising Sparks
+    if (this.currentZone === 0) {
+      for (const fl of this.campFlames) {
+        const flicker = Math.sin(tSec * fl.speed + fl.phase) * 0.14 + Math.cos(tSec * (fl.speed * 1.37) + fl.phase) * 0.08;
+        fl.mesh.scale.set(1.0 - flicker * 0.35, 1.0 + flicker, 1.0 - flicker * 0.35);
+        fl.mesh.position.y = fl.baseY + flicker * 0.16;
+        fl.mesh.rotation.y = tSec * 1.8 + fl.phase;
+      }
+      if (this.campLight) {
+        this.campLight.intensity = 2.2 + Math.sin(tSec * 13.0) * 0.35 + Math.cos(tSec * 7.5) * 0.22;
+      }
+      for (const em of this.campEmbers) {
+        const life = (tSec * em.speed + em.phase) % 2.8;
+        const frac = life / 2.8;
+        const swirlAng = em.angle + tSec * 1.6;
+        const r = em.radius * (1 + frac * 1.4);
+        em.mesh.position.set(
+          -6 + Math.cos(swirlAng) * r,
+          0.55 + frac * 2.4,
+          11 + Math.sin(swirlAng) * r
+        );
+        const s = Math.max(0.05, 1.0 - frac * 0.85);
+        em.mesh.scale.setScalar(s);
+      }
     }
 
     for (let i = this.sparkleRings.length - 1; i >= 0; i--) {
