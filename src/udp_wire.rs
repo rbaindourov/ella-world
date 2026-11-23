@@ -30,6 +30,7 @@ pub const ZONE_FLAG_MASK: u8 = 0b1111_1100;
 pub const ZONE_PLAZA: u8 = 0;
 pub const ZONE_DUNGEON: u8 = 1;
 pub const ZONE_PRISON: u8 = 2;
+pub const ZONE_ARENA: u8 = 3;
 
 pub fn pack_state_flags(muted: bool, speaking: bool, zone: u8) -> u8 {
     let mut flags = (zone << ZONE_FLAG_SHIFT) & ZONE_FLAG_MASK;
@@ -165,6 +166,7 @@ pub fn decode_c2s_state(raw: &[u8]) -> Option<DecodedC2SState> {
     let zone = match raw_zone {
         ZONE_DUNGEON => ZONE_DUNGEON,
         ZONE_PRISON => ZONE_PRISON,
+        ZONE_ARENA => ZONE_ARENA,
         _ => ZONE_PLAZA,
     };
     Some(DecodedC2SState {
@@ -490,6 +492,14 @@ mod tests {
         let prison_decoded =
             decode_c2s_state(&encode_c2s_state(&prison_input)).expect("valid prison C2S state");
         assert_eq!(prison_decoded.zone, ZONE_PRISON);
+
+        let arena_input = DecodedC2SState {
+            zone: ZONE_ARENA,
+            ..input.clone()
+        };
+        let arena_decoded =
+            decode_c2s_state(&encode_c2s_state(&arena_input)).expect("valid arena C2S state");
+        assert_eq!(arena_decoded.zone, ZONE_ARENA);
 
         let players = vec![
             PlayerRuntimeState {

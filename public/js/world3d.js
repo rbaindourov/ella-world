@@ -1876,6 +1876,12 @@ export class BlockyWorld3D {
     this.dungeonEntitiesGroup = new THREE.Group();
     this.dungeonGroup.add(this.dungeonEntitiesGroup);
 
+    this.arenaGroup = new THREE.Group();
+    this.arenaGroup.visible = false;
+    this.scene.add(this.arenaGroup);
+    this.arenaEntitiesGroup = new THREE.Group();
+    this.arenaGroup.add(this.arenaEntitiesGroup);
+
     this.prisonGroup = new THREE.Group();
     this.prisonGroup.visible = false;
     this.scene.add(this.prisonGroup);
@@ -1885,7 +1891,9 @@ export class BlockyWorld3D {
     this.plazaColliders = [];
     this.voxelColliders = [];
     this.dungeonColliders = [];
+    this.arenaColliders = [];
     this.prisonColliders = [];
+    this.arenaLavaMeshes = [];
     this.colliders = [];
     this.cameraOccluders = [];
     this.openDoorPortals = [];
@@ -1907,15 +1915,21 @@ export class BlockyWorld3D {
 
     this.plazaPortalPos = { x: 18, y: 0, z: 16 };
     this.dungeonReturnPortalPos = { x: 0, y: 0, z: 28 };
+    this.plazaArenaPortalPos = { x: -22, y: 0, z: 28 };
+    this.arenaReturnPortalPos = { x: 0, y: 0, z: 30 };
     this.prisonReleasePortalPos = { x: 0, y: 0, z: 11.5 };
     this.prisonReleaseEligible = false;
     this.prisonGateRefs = null;
+    this.arenaDead = false;
     this.lastPortalTriggerAt = 0;
     this.lastHintText = '';
 
     this.dungeonNodesMap = new Map();
     this.dungeonMobsMap = new Map();
     this.dungeonDropsMap = new Map();
+    this.arenaNodesMap = new Map();
+    this.arenaMobsMap = new Map();
+    this.arenaDropsMap = new Map();
     this.prisonNodesMap = new Map();
 
     this.speedBoostUntilMs = 0;
@@ -1972,6 +1986,7 @@ export class BlockyWorld3D {
     this._setupLights();
     this._buildEnvironment();
     this._buildDungeonEnvironment();
+    this._buildArenaEnvironment();
     this._buildPrisonEnvironment();
     this._rebuildActiveColliders();
     this._bindEvents();
@@ -2028,6 +2043,8 @@ export class BlockyWorld3D {
       this.colliders = this.dungeonColliders;
     } else if (this.currentZone === 2) {
       this.colliders = this.prisonColliders;
+    } else if (this.currentZone === 3) {
+      this.colliders = this.arenaColliders;
     } else {
       this.colliders = [...this.plazaColliders, ...this.voxelColliders];
     }
@@ -2515,6 +2532,20 @@ export class BlockyWorld3D {
       this.plazaGroup
     );
 
+    // Shadow Rift Mortal Arena Stargate Portal in Southwest Starlight Plaza
+    this.plazaArenaPortalGroup = this._createPortalArch(
+      {
+        x: this.plazaArenaPortalPos.x,
+        y: this.plazaArenaPortalPos.y,
+        z: this.plazaArenaPortalPos.z,
+        title: '⚔️ SHADOW RIFT — MORTAL ARENA',
+        subtitle: 'Step In or Press E • Watch HP & Lava! Respawn at Sanctuary!',
+        primaryHex: '#ef4444',
+        secondaryHex: '#f97316'
+      },
+      this.plazaGroup
+    );
+
     const jumpPadCoords = [
       { x: 7.5, y: 0.2, z: -7.5, bounceVel: 20 },
       { x: -7.5, y: 0.2, z: -7.5, bounceVel: 20 },
@@ -2734,14 +2765,17 @@ export class BlockyWorld3D {
     addPath(26, 48, 52, 4.4);
     // West Boulevard -> Westside Villa Estates
     addPath(-56, 12, 52, 4.8);
+    // Southwest Obsidian Connector -> Shadow Rift Mortal Arena Stargate
+    addPath(-11, 28, 22, 4.4);
 
     // 2. Central Plaza 3D Directional Signposts
     this._createSignpost(9.5, 9.5, -Math.PI * 0.25, '🔥 PRO OBBY GAUNTLET', 'Southeast Path • Press T', '#f472b6');
-    this._createSignpost(-9.5, 9.5, Math.PI * 0.25, '🌸 BLOSSOM PARK', 'Walk South for Fountain', '#38bdf8');
-    this._createSignpost(10.5, -6.5, -Math.PI * 0.5, '🏡 BUILD MEADOW', 'East Neighborhood Plots', '#34d399');
+    this._createSignpost(-9.5, 9.5, Math.PI * 0.25, '⚔️ SHADOW RIFT & PARK', 'SW Mortal Portal (K) • Park', '#ef4444');
+    this._createSignpost(10.5, -6.5, -Math.PI * 0.5, '🏡 VILLAGE & PLOTS', 'Prebuilt Homes & Build Lots', '#34d399');
     this._createSignpost(-10.5, -9.5, Math.PI * 0.75, '🏃‍♀️ SKY OBBY & RUNWAY', 'North (R) • West (F)', '#fbbf24');
+    this._createSignpost(-16.0, 24.5, 0.35, '⚔️ MORTAL SHADOW RIFT', 'Chasing Bosses & Lava (Press K)', '#ef4444');
 
-    // 3. Labeled Neighborhood Build Plots (Sunset Meadow East + Westside Villas West)
+    // 3. Labeled Neighborhood Build Plots & Prebuilt Model Homes
     const lanternPostMat = new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.45, metalness: 0.35 });
     const lanternGlowMat = new THREE.MeshStandardMaterial({
       color: '#fef08a',
@@ -2749,12 +2783,12 @@ export class BlockyWorld3D {
       emissiveIntensity: 0.85
     });
     const buildPlots = [
-      { x: 52, z: -26, size: 18, name: '🏡 Sunset Plot #1', accent: '#38bdf8' },
-      { x: 82, z: -26, size: 18, name: '🏡 Sunset Plot #2', accent: '#f472b6' },
-      { x: 52, z: 20, size: 18, name: '🏡 Starlight Plot #3', accent: '#a78bfa' },
-      { x: 82, z: 20, size: 18, name: '🏡 Starlight Plot #4', accent: '#34d399' },
-      { x: -64, z: -16, size: 20, name: '🏡 West Villa Plot #5', accent: '#fb923c' },
-      { x: -64, z: 32, size: 20, name: '🏡 West Villa Plot #6', accent: '#f472b6' }
+      { x: 52, z: -26, size: 18, name: '🏡 Sunset Plot #1', sub: 'Open Build Lot (Press B)', accent: '#38bdf8' },
+      { x: 82, z: -26, size: 18, name: '🌸 Rosewater Villa', sub: '2-Story Prebuilt Home (Press E!)', accent: '#f472b6' },
+      { x: 52, z: 20, size: 18, name: '🌊 Starlight Cottage', sub: 'Prebuilt Beach Home (Walk In!)', accent: '#38bdf8' },
+      { x: 82, z: 20, size: 18, name: '🏡 Starlight Plot #4', sub: 'Open Build Lot (Press B)', accent: '#34d399' },
+      { x: -64, z: -16, size: 20, name: '🌲 Woodland Chalet', sub: 'Prebuilt Pine Home (Press E!)', accent: '#34d399' },
+      { x: -64, z: 32, size: 20, name: '🏡 West Villa Plot #6', sub: 'Open Build Lot (Press B)', accent: '#f472b6' }
     ];
     for (const plot of buildPlots) {
       const grid = new THREE.GridHelper(plot.size, plot.size, plot.accent, '#94a3b8');
@@ -2774,7 +2808,7 @@ export class BlockyWorld3D {
         orb.position.set(plot.x + cx, 2.42, plot.z + cz);
         this.plazaGroup.add(p, orb);
       }
-      this._createSignpost(plot.x, plot.z + half + 1.4, 0, plot.name, 'Open Build Lot (Press B)', plot.accent);
+      this._createSignpost(plot.x, plot.z + half + 1.4, 0, plot.name, plot.sub, plot.accent);
     }
 
     // 4. Blossom Fountain Park & Koi Pond (South: x ∈ [-28, 28], z ∈ [54, 92])
@@ -3578,6 +3612,14 @@ export class BlockyWorld3D {
         }
       }
     }
+
+    // 5. Upgrade all active Crystal Cavern & Shadow Rift Arena Mobs to Sculpted Blender 5.2 Models!
+    for (const entry of this.dungeonMobsMap.values()) {
+      this._populateMobVisual(entry);
+    }
+    for (const entry of this.arenaMobsMap.values()) {
+      this._populateMobVisual(entry);
+    }
   }
 
   _buildDungeonEnvironment() {
@@ -3694,6 +3736,186 @@ export class BlockyWorld3D {
       cluster.add(mainSpire, sideSpire);
       cluster.position.set(sx, 0, sz);
       this.dungeonGroup.add(cluster);
+    });
+  }
+
+  _buildArenaEnvironment() {
+    // Sunken catch floor beneath molten lava river & outer lava moat
+    const magmaBedMat = new THREE.MeshStandardMaterial({
+      color: '#450a0a',
+      roughness: 0.85,
+      metalness: 0.1
+    });
+    const magmaBed = new THREE.Mesh(new THREE.BoxGeometry(120, 2, 120), magmaBedMat);
+    magmaBed.position.set(0, -1.65, 0);
+    this.arenaGroup.add(magmaBed);
+    this.arenaColliders.push({
+      mesh: magmaBed,
+      w: 120,
+      h: 2,
+      d: 120,
+      minX: -60,
+      maxX: 60,
+      minZ: -60,
+      maxZ: 60,
+      topY: -0.65,
+      bottomY: -2.65,
+      type: 'ground'
+    });
+
+    // Glowing Molten Lava Sea (Outer Moat + Central Lava River at z ∈ [-7, -3])
+    const lavaSurfaceMat = new THREE.MeshStandardMaterial({
+      color: '#ff4500',
+      emissive: '#ea580c',
+      emissiveIntensity: 1.35,
+      roughness: 0.25,
+      metalness: 0.1
+    });
+    const lavaSea = new THREE.Mesh(new THREE.PlaneGeometry(116, 116), lavaSurfaceMat);
+    lavaSea.rotation.x = -Math.PI / 2;
+    lavaSea.position.set(0, -0.45, 0);
+    this.arenaGroup.add(lavaSea);
+    this.arenaLavaMeshes.push(lavaSea);
+
+    // South Basalt Mainland (x ∈ [-30, 30], z ∈ [-3, 33], topY = 0)
+    this._addBoxPlatform(
+      {
+        x: 0,
+        y: -0.5,
+        z: 15,
+        w: 60,
+        h: 1.0,
+        d: 36,
+        color: '#1c1917',
+        emissive: '#450a0a',
+        emissiveIntensity: 0.14
+      },
+      this.arenaGroup,
+      this.arenaColliders
+    );
+
+    // North Basalt Citadel Mainland (x ∈ [-30, 30], z ∈ [-33, -7], topY = 0)
+    this._addBoxPlatform(
+      {
+        x: 0,
+        y: -0.5,
+        z: -20,
+        w: 60,
+        h: 1.0,
+        d: 26,
+        color: '#18181b',
+        emissive: '#7f1d1d',
+        emissiveIntensity: 0.18
+      },
+      this.arenaGroup,
+      this.arenaColliders
+    );
+
+    // 3 Basalt Stone Bridges spanning the Molten Lava River (x = -16, 0, +16; z ∈ [-7.4, -2.6])
+    const bridgeRuneMat = new THREE.MeshStandardMaterial({
+      color: '#fb923c',
+      emissive: '#ea580c',
+      emissiveIntensity: 0.85,
+      roughness: 0.25
+    });
+    for (const bx of [-16, 0, 16]) {
+      this._addBoxPlatform(
+        {
+          x: bx,
+          y: 0.08,
+          z: -5.0,
+          w: 5.2,
+          h: 0.36,
+          d: 5.2,
+          color: '#292524',
+          emissive: '#9a3412',
+          emissiveIntensity: 0.22
+        },
+        this.arenaGroup,
+        this.arenaColliders
+      );
+      for (const side of [-1, 1]) {
+        const curb = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.28, 5.2), bridgeRuneMat);
+        curb.position.set(bx + side * 2.5, 0.32, -5.0);
+        this.arenaGroup.add(curb);
+      }
+    }
+
+    // Safe Sanctuary Shield Pad around Spawn (0, 0, 25) & Return Stargate (0, 0, 30)
+    const sanctDisc = new THREE.Mesh(
+      new THREE.CylinderGeometry(6.8, 7.1, 0.1, 40),
+      new THREE.MeshStandardMaterial({
+        color: '#064e3b',
+        emissive: '#10b981',
+        emissiveIntensity: 0.42,
+        roughness: 0.3
+      })
+    );
+    sanctDisc.position.set(0, 0.05, 25);
+    const sanctHalo = new THREE.Mesh(
+      new THREE.TorusGeometry(6.85, 0.1, 10, 48),
+      new THREE.MeshBasicMaterial({ color: '#34d399', transparent: true, opacity: 0.82 })
+    );
+    sanctHalo.rotation.x = Math.PI / 2;
+    sanctHalo.position.set(0, 0.12, 25);
+    const sanctBanner = createWorldBannerSprite(
+      '🛡️ SAFE SANCTUARY CIRCLE',
+      'Monsters Cannot Enter Here • Drink Potions or Return to Plaza!',
+      '#34d399'
+    );
+    sanctBanner.position.set(0, 3.1, 20.2);
+    this.arenaGroup.add(sanctDisc, sanctHalo, sanctBanner);
+
+    // Return Stargate to Starlight Plaza at (0, 0, 30)
+    this._createPortalArch(
+      {
+        x: this.arenaReturnPortalPos.x,
+        y: this.arenaReturnPortalPos.y,
+        z: this.arenaReturnPortalPos.z,
+        title: '🌟 STARLIGHT PLAZA',
+        subtitle: 'Step In or Press E • Return Safely to Plaza',
+        primaryHex: '#34d399',
+        secondaryHex: '#38bdf8'
+      },
+      this.arenaGroup
+    );
+
+    // Atmospheric Volcanic Point Lights
+    const southGlow = new THREE.PointLight('#fb923c', 2.6, 54);
+    southGlow.position.set(0, 8.5, 6);
+    const northBossGlow = new THREE.PointLight('#ef4444', 3.0, 58);
+    northBossGlow.position.set(0, 10.5, -22);
+    this.arenaGroup.add(southGlow, northBossGlow);
+
+    // Jagged Obsidian Perimeter Spires & Magma Pillars
+    const obsidianMat = new THREE.MeshStandardMaterial({
+      color: '#0f172a',
+      roughness: 0.35,
+      metalness: 0.55
+    });
+    const crimsonCrystalMat = new THREE.MeshStandardMaterial({
+      color: '#f87171',
+      emissive: '#dc2626',
+      emissiveIntensity: 0.82,
+      roughness: 0.18,
+      metalness: 0.35
+    });
+    const spireSpots = [
+      [-26, 22], [26, 22], [-27, 4], [27, 4],
+      [-27, -12], [27, -12], [-25, -29], [25, -29],
+      [0, -31]
+    ];
+    spireSpots.forEach(([sx, sz], idx) => {
+      const grp = new THREE.Group();
+      const tall = new THREE.Mesh(new THREE.ConeGeometry(1.5, 7.2, 5), obsidianMat);
+      tall.position.y = 3.5;
+      tall.rotation.z = idx % 2 === 0 ? 0.1 : -0.1;
+      const shard = new THREE.Mesh(new THREE.ConeGeometry(0.82, 4.1, 5), crimsonCrystalMat);
+      shard.position.set(idx % 2 === 0 ? 1.15 : -1.15, 1.9, 0.5);
+      shard.rotation.z = idx % 2 === 0 ? -0.26 : 0.26;
+      grp.add(tall, shard);
+      grp.position.set(sx, 0, sz);
+      this.arenaGroup.add(grp);
     });
   }
 
@@ -4534,16 +4756,31 @@ export class BlockyWorld3D {
     }
   }
 
+  setArenaDead(isDead) {
+    this.arenaDead = Boolean(isDead);
+    if (this.arenaDead && this.selfAvatar) {
+      this.velocity.set(0, 0, 0);
+      this.selfAvatar.anim = 'idle';
+      this.selfAvatar.emote = 'sit';
+    } else if (!this.arenaDead && this.selfAvatar && this.selfAvatar.emote === 'sit') {
+      this.selfAvatar.emote = null;
+    }
+  }
+
   setZone(zone, spawnCoords = null) {
     const zNum = Number(zone);
-    const nextZone = zNum === 1 ? 1 : zNum === 2 ? 2 : 0;
+    const nextZone = zNum === 1 ? 1 : zNum === 2 ? 2 : zNum === 3 ? 3 : 0;
     this.currentZone = nextZone;
+    if (nextZone !== 3) {
+      this.arenaDead = false;
+    }
     this.lastPortalTriggerAt = performance.now();
 
     if (nextZone === 1) {
       this.plazaGroup.visible = false;
       this.voxelGroup.visible = false;
       this.dungeonGroup.visible = true;
+      this.arenaGroup.visible = false;
       this.prisonGroup.visible = false;
       this.ghostMesh.visible = false;
       this.scene.background.set('#0f0a28');
@@ -4560,10 +4797,32 @@ export class BlockyWorld3D {
         this.nearRunway = false;
         this.onRunwayProximity(false);
       }
+    } else if (nextZone === 3) {
+      this.plazaGroup.visible = false;
+      this.voxelGroup.visible = false;
+      this.dungeonGroup.visible = false;
+      this.arenaGroup.visible = true;
+      this.prisonGroup.visible = false;
+      this.ghostMesh.visible = false;
+      this.scene.background.set('#1a0812');
+      this.scene.fog.color.set('#2b0c18');
+      this.scene.fog.density = 0.0135;
+      this.hemiLight.color.set('#fca5a5');
+      this.hemiLight.groundColor.set('#450a0a');
+      this.hemiLight.intensity = 0.8;
+      this.sunLight.color.set('#fdba74');
+      this.sunLight.intensity = 0.95;
+      this.fillLight.color.set('#ef4444');
+      this.fillLight.intensity = 0.62;
+      if (this.nearRunway) {
+        this.nearRunway = false;
+        this.onRunwayProximity(false);
+      }
     } else if (nextZone === 2) {
       this.plazaGroup.visible = false;
       this.voxelGroup.visible = false;
       this.dungeonGroup.visible = false;
+      this.arenaGroup.visible = false;
       this.prisonGroup.visible = true;
       this.ghostMesh.visible = false;
       this.scene.background.set('#1e293b');
@@ -4584,6 +4843,7 @@ export class BlockyWorld3D {
       this.plazaGroup.visible = true;
       this.voxelGroup.visible = true;
       this.dungeonGroup.visible = false;
+      this.arenaGroup.visible = false;
       this.prisonGroup.visible = false;
       this.scene.background.set('#7dd3fc');
       this.scene.fog.color.set('#bae6fd');
@@ -4605,7 +4865,7 @@ export class BlockyWorld3D {
         this.selfAvatar.group.position.set(spawnCoords.x, (spawnCoords.y || 0) + 0.15, spawnCoords.z || 0);
         this.velocity.set(0, 0, 0);
         this.selfAvatar.emote = null;
-        if (nextZone === 1 || nextZone === 2) {
+        if (nextZone === 1 || nextZone === 2 || nextZone === 3) {
           this.selfAvatar.group.rotation.y = Math.PI;
           this.cameraYaw = 0;
         }
@@ -4618,7 +4878,7 @@ export class BlockyWorld3D {
     }
   }
 
-  _buildDungeonNodeEntry(node) {
+  _buildDungeonNodeEntry(node, targetEntitiesGroup = this.dungeonEntitiesGroup, isArena = false) {
     const group = new THREE.Group();
     group.position.set(node.x, node.y, node.z);
     let bodyGroup = new THREE.Group();
@@ -4627,16 +4887,16 @@ export class BlockyWorld3D {
     if (node.kind === 'wooden_chest' || node.kind === 'golden_chest') {
       const isGold = node.kind === 'golden_chest';
       const boxMat = new THREE.MeshStandardMaterial({
-        color: isGold ? '#f59e0b' : '#92400e',
-        emissive: isGold ? '#b45309' : '#000000',
-        emissiveIntensity: isGold ? 0.32 : 0,
-        metalness: isGold ? 0.68 : 0.18,
-        roughness: isGold ? 0.22 : 0.65
+        color: isGold ? '#f59e0b' : isArena ? '#292524' : '#92400e',
+        emissive: isGold ? '#b45309' : isArena ? '#7f1d1d' : '#000000',
+        emissiveIntensity: isGold ? 0.32 : isArena ? 0.25 : 0,
+        metalness: isGold ? 0.68 : 0.28,
+        roughness: isGold ? 0.22 : 0.55
       });
       const trimMat = new THREE.MeshStandardMaterial({
-        color: isGold ? '#c084fc' : '#fbbf24',
-        emissive: isGold ? '#9333ea' : '#d97706',
-        emissiveIntensity: 0.45,
+        color: isGold ? '#c084fc' : isArena ? '#f87171' : '#fbbf24',
+        emissive: isGold ? '#9333ea' : isArena ? '#dc2626' : '#d97706',
+        emissiveIntensity: 0.48,
         metalness: 0.65,
         roughness: 0.2
       });
@@ -4658,24 +4918,24 @@ export class BlockyWorld3D {
 
       bodyGroup.add(base, strapL, strapR, lockGem, lidPivot);
       const label = createWorldBannerSprite(
-        isGold ? '🗝️ Golden Vault' : '📦 Supply Chest',
+        isGold ? '🗝️ Golden Vault' : isArena ? '🔥 Obsidian Chest' : '📦 Supply Chest',
         'Press E to Open',
-        isGold ? '#fbbf24' : '#38bdf8'
+        isGold ? '#fbbf24' : isArena ? '#f87171' : '#38bdf8'
       );
       label.position.set(0, 1.95, 0);
       group.add(bodyGroup, label);
     } else {
       const crystalMat = new THREE.MeshStandardMaterial({
-        color: '#e879f9',
-        emissive: '#a855f7',
-        emissiveIntensity: 0.68,
+        color: isArena ? '#f87171' : '#e879f9',
+        emissive: isArena ? '#dc2626' : '#a855f7',
+        emissiveIntensity: 0.72,
         roughness: 0.16,
         metalness: 0.32
       });
       const subMat = new THREE.MeshStandardMaterial({
-        color: '#38bdf8',
-        emissive: '#0284c7',
-        emissiveIntensity: 0.55,
+        color: isArena ? '#fb923c' : '#38bdf8',
+        emissive: isArena ? '#ea580c' : '#0284c7',
+        emissiveIntensity: 0.58,
         roughness: 0.18,
         metalness: 0.28
       });
@@ -4690,23 +4950,74 @@ export class BlockyWorld3D {
       c3.rotation.z = -0.3;
       bodyGroup.add(c1, c2, c3);
 
-      const label = createWorldBannerSprite(`✨ ${node.label}`, 'Press E to Mine', '#c084fc');
+      const label = createWorldBannerSprite(
+        `✨ ${node.label}`,
+        'Press E to Mine',
+        isArena ? '#fca5a5' : '#c084fc'
+      );
       label.position.set(0, 2.35, 0);
       group.add(bodyGroup, label);
     }
 
-    this.dungeonEntitiesGroup.add(group);
+    targetEntitiesGroup.add(group);
     return { id: node.id, data: node, group, bodyGroup, lidPivot };
   }
 
-  _buildDungeonMobEntry(mob) {
-    const group = new THREE.Group();
-    group.position.set(mob.x, mob.y, mob.z);
-    const visual = new THREE.Group();
-    let leftWing = null;
-    let rightWing = null;
+  _mobBannerConfig(mob) {
+    const hearts = '♥'.repeat(Math.max(1, mob.hp || 1));
+    if (mob.kind === 'lava_golem') {
+      return {
+        title: `🔥 ${mob.name} ${hearts}`,
+        sub: 'BOSS • Deals 32 DMG! Ray Gun or Stomp!',
+        color: '#fb923c',
+        y: 3.15
+      };
+    }
+    if (mob.kind === 'void_wraith') {
+      return {
+        title: `👻 ${mob.name} ${hearts}`,
+        sub: 'Chases Players (22 DMG) • Press E / Stomp!',
+        color: '#38bdf8',
+        y: 2.65
+      };
+    }
+    if (mob.kind === 'rift_spider') {
+      return {
+        title: `🕷️ ${mob.name} ${hearts}`,
+        sub: 'Chases Players (15 DMG) • Press E / Stomp!',
+        color: '#f87171',
+        y: 1.65
+      };
+    }
+    return {
+      title: `${mob.name} ${hearts}`,
+      sub: 'Jump-Stomp or Press E!',
+      color: '#f472b6',
+      y: 1.92
+    };
+  }
 
-    if (mob.kind === 'crystal_bat') {
+  _populateMobVisual(entry) {
+    if (!entry || !entry.visual) return;
+    entry.visual.clear();
+    entry.leftWing = null;
+    entry.rightWing = null;
+    entry.leftArm = null;
+    entry.rightArm = null;
+    const kind = entry.data.kind;
+
+    if (kind === 'crystal_bat') {
+      const glbBody = cloneEnvTemplate('Env_Mob_CrystalBat_Body');
+      const glbWingL = cloneEnvTemplate('Env_Mob_CrystalBat_WingL');
+      const glbWingR = cloneEnvTemplate('Env_Mob_CrystalBat_WingR');
+      if (glbBody && glbWingL && glbWingR) {
+        glbWingL.position.set(-0.34, 0.68, 0);
+        glbWingR.position.set(0.34, 0.68, 0);
+        entry.leftWing = glbWingL;
+        entry.rightWing = glbWingR;
+        entry.visual.add(glbBody, glbWingL, glbWingR);
+        return;
+      }
       const bodyMat = new THREE.MeshStandardMaterial({
         color: '#312e81',
         emissive: '#4338ca',
@@ -4719,76 +5030,128 @@ export class BlockyWorld3D {
         emissiveIntensity: 0.55,
         side: THREE.DoubleSide
       });
-      const eyeMat = new THREE.MeshBasicMaterial({ color: '#fde047' });
       const body = new THREE.Mesh(new THREE.OctahedronGeometry(0.46, 1), bodyMat);
       body.position.y = 0.55;
-      const earL = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.34, 4), wingMat);
-      earL.position.set(-0.22, 0.96, 0);
-      const earR = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.34, 4), wingMat);
-      earR.position.set(0.22, 0.96, 0);
-      const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 8), eyeMat);
-      eyeL.position.set(-0.15, 0.62, 0.38);
-      const eyeR = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 8), eyeMat);
-      eyeR.position.set(0.15, 0.62, 0.38);
-
-      leftWing = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.42, 0.06), wingMat);
-      leftWing.position.set(-0.62, 0.6, 0);
-      rightWing = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.42, 0.06), wingMat);
-      rightWing.position.set(0.62, 0.6, 0);
-
-      visual.add(body, earL, earR, eyeL, eyeR, leftWing, rightWing);
-    } else {
-      const outerMat = new THREE.MeshStandardMaterial({
-        color: '#7c3aed',
-        emissive: '#6d28d9',
-        emissiveIntensity: 0.38,
-        transparent: true,
-        opacity: 0.84,
-        roughness: 0.2
-      });
-      const coreMat = new THREE.MeshStandardMaterial({
-        color: '#f472b6',
-        emissive: '#ec4899',
-        emissiveIntensity: 0.72
-      });
-      const eyeMat = new THREE.MeshBasicMaterial({ color: '#ffffff' });
-      const pupilMat = new THREE.MeshBasicMaterial({ color: '#0f172a' });
-
-      const slimeCube = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.92, 1.12), outerMat);
-      slimeCube.position.y = 0.46;
-      const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.28, 0), coreMat);
-      core.position.y = 0.46;
-      for (const sx of [-0.22, 0.22]) {
-        const eye = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.06), eyeMat);
-        eye.position.set(sx, 0.56, 0.56);
-        const pupil = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 0.07), pupilMat);
-        pupil.position.set(sx, 0.55, 0.58);
-        visual.add(eye, pupil);
-      }
-      visual.add(slimeCube, core);
+      entry.leftWing = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.42, 0.06), wingMat);
+      entry.leftWing.position.set(-0.62, 0.6, 0);
+      entry.rightWing = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.42, 0.06), wingMat);
+      entry.rightWing.position.set(0.62, 0.6, 0);
+      entry.visual.add(body, entry.leftWing, entry.rightWing);
+      return;
     }
 
-    const hearts = '♥'.repeat(Math.max(1, mob.hp || 1));
-    const label = createWorldBannerSprite(`${mob.name} ${hearts}`, 'Jump-Stomp or Press E!', '#f472b6');
-    label.position.set(0, 1.92, 0);
-    group.add(visual, label);
-    this.dungeonEntitiesGroup.add(group);
+    if (kind === 'lava_golem') {
+      const glbBody = cloneEnvTemplate('Env_Mob_LavaGolem_Body');
+      const glbArmL = cloneEnvTemplate('Env_Mob_LavaGolem_ArmL');
+      const glbArmR = cloneEnvTemplate('Env_Mob_LavaGolem_ArmR');
+      if (glbBody && glbArmL && glbArmR) {
+        glbArmL.position.set(-0.84, 1.72, 0);
+        glbArmR.position.set(0.84, 1.72, 0);
+        entry.leftArm = glbArmL;
+        entry.rightArm = glbArmR;
+        entry.visual.add(glbBody, glbArmL, glbArmR);
+        return;
+      }
+      const rockMat = new THREE.MeshStandardMaterial({ color: '#1c1917', roughness: 0.6 });
+      const magmaMat = new THREE.MeshStandardMaterial({
+        color: '#fb923c',
+        emissive: '#ea580c',
+        emissiveIntensity: 0.9
+      });
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.8, 0.9), rockMat);
+      torso.position.y = 1.2;
+      const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.42, 0), magmaMat);
+      core.position.set(0, 1.35, 0.4);
+      entry.leftArm = new THREE.Mesh(new THREE.BoxGeometry(0.42, 1.25, 0.42), rockMat);
+      entry.leftArm.position.set(-0.95, 1.3, 0);
+      entry.rightArm = new THREE.Mesh(new THREE.BoxGeometry(0.42, 1.25, 0.42), rockMat);
+      entry.rightArm.position.set(0.95, 1.3, 0);
+      entry.visual.add(torso, core, entry.leftArm, entry.rightArm);
+      return;
+    }
 
-    return {
+    if (kind === 'void_wraith') {
+      const glbWraith = cloneEnvTemplate('Env_Mob_VoidWraith');
+      if (glbWraith) {
+        entry.visual.add(glbWraith);
+        return;
+      }
+      const cloakMat = new THREE.MeshStandardMaterial({
+        color: '#1e1b4b',
+        emissive: '#38bdf8',
+        emissiveIntensity: 0.35
+      });
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(0.62, 1.9, 10), cloakMat);
+      cone.position.y = 1.05;
+      entry.visual.add(cone);
+      return;
+    }
+
+    if (kind === 'rift_spider') {
+      const glbSpider = cloneEnvTemplate('Env_Mob_RiftSpider');
+      if (glbSpider) {
+        entry.visual.add(glbSpider);
+        return;
+      }
+      const shellMat = new THREE.MeshStandardMaterial({
+        color: '#18181b',
+        emissive: '#dc2626',
+        emissiveIntensity: 0.45
+      });
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.48, 12, 10), shellMat);
+      body.position.y = 0.48;
+      entry.visual.add(body);
+      return;
+    }
+
+    const glbSlime = cloneEnvTemplate('Env_Mob_ShadowSlime');
+    if (glbSlime) {
+      entry.visual.add(glbSlime);
+      return;
+    }
+    const outerMat = new THREE.MeshStandardMaterial({
+      color: '#7c3aed',
+      emissive: '#6d28d9',
+      emissiveIntensity: 0.38,
+      transparent: true,
+      opacity: 0.84,
+      roughness: 0.2
+    });
+    const slimeCube = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.92, 1.12), outerMat);
+    slimeCube.position.y = 0.46;
+    entry.visual.add(slimeCube);
+  }
+
+  _buildDungeonMobEntry(mob, targetEntitiesGroup = this.dungeonEntitiesGroup) {
+    const group = new THREE.Group();
+    group.position.set(mob.x, mob.y, mob.z);
+    const visual = new THREE.Group();
+
+    const bannerCfg = this._mobBannerConfig(mob);
+    const label = createWorldBannerSprite(bannerCfg.title, bannerCfg.sub, bannerCfg.color);
+    label.position.set(0, bannerCfg.y, 0);
+    group.add(visual, label);
+    targetEntitiesGroup.add(group);
+
+    const entry = {
       id: mob.id,
       data: mob,
       group,
       visual,
-      leftWing,
-      rightWing,
+      leftWing: null,
+      rightWing: null,
+      leftArm: null,
+      rightArm: null,
       label,
       lastHp: mob.hp,
       targetPos: new THREE.Vector3(mob.x, mob.y, mob.z),
       phaseOffset: Math.random() * 6.28
     };
+    this._populateMobVisual(entry);
+    return entry;
   }
 
-  _buildDungeonDropEntry(drop) {
+  _buildDungeonDropEntry(drop, targetEntitiesGroup = this.dungeonEntitiesGroup) {
     const group = new THREE.Group();
     group.position.set(drop.x, drop.y, drop.z);
     const rarityPalette = {
@@ -4856,7 +5219,7 @@ export class BlockyWorld3D {
     );
     label.position.set(0, isLegendary ? 1.62 : 1.38, 0);
     group.add(mesh, ring, label);
-    this.dungeonEntitiesGroup.add(group);
+    targetEntitiesGroup.add(group);
 
     return { id: drop.id, data: drop, group, mesh, lastPickupAttemptAt: 0 };
   }
@@ -4878,7 +5241,7 @@ export class BlockyWorld3D {
     for (const node of dungeon.nodes || []) {
       let entry = this.dungeonNodesMap.get(node.id);
       if (!entry) {
-        entry = this._buildDungeonNodeEntry(node);
+        entry = this._buildDungeonNodeEntry(node, this.dungeonEntitiesGroup, false);
         this.dungeonNodesMap.set(node.id, entry);
       }
       entry.data = node;
@@ -4899,7 +5262,7 @@ export class BlockyWorld3D {
     for (const drop of dungeon.drops || []) {
       nextDropIds.add(drop.id);
       if (!this.dungeonDropsMap.has(drop.id)) {
-        this.dungeonDropsMap.set(drop.id, this._buildDungeonDropEntry(drop));
+        this.dungeonDropsMap.set(drop.id, this._buildDungeonDropEntry(drop, this.dungeonEntitiesGroup));
       } else {
         const existing = this.dungeonDropsMap.get(drop.id);
         existing.data = drop;
@@ -4918,7 +5281,7 @@ export class BlockyWorld3D {
     for (const mob of mobs) {
       let entry = this.dungeonMobsMap.get(mob.id);
       if (!entry) {
-        entry = this._buildDungeonMobEntry(mob);
+        entry = this._buildDungeonMobEntry(mob, this.dungeonEntitiesGroup);
         this.dungeonMobsMap.set(mob.id, entry);
       }
       entry.data = mob;
@@ -4926,10 +5289,81 @@ export class BlockyWorld3D {
       entry.group.visible = Boolean(mob.alive);
       if (entry.lastHp !== mob.hp && mob.alive) {
         entry.lastHp = mob.hp;
-        const hearts = '♥'.repeat(Math.max(1, mob.hp || 1));
+        const bannerCfg = this._mobBannerConfig(mob);
         entry.group.remove(entry.label);
-        entry.label = createWorldBannerSprite(`${mob.name} ${hearts}`, 'Jump-Stomp or Press E!', '#f472b6');
-        entry.label.position.set(0, 1.92, 0);
+        entry.label = createWorldBannerSprite(bannerCfg.title, bannerCfg.sub, bannerCfg.color);
+        entry.label.position.set(0, bannerCfg.y, 0);
+        entry.group.add(entry.label);
+      }
+    }
+  }
+
+  syncArenaSnapshot(arena) {
+    if (!arena) return;
+    if (Array.isArray(arena.portalPos) && arena.portalPos.length === 3) {
+      this.plazaArenaPortalPos = { x: arena.portalPos[0], y: arena.portalPos[1], z: arena.portalPos[2] };
+    }
+    if (Array.isArray(arena.returnPortalPos) && arena.returnPortalPos.length === 3) {
+      this.arenaReturnPortalPos = {
+        x: arena.returnPortalPos[0],
+        y: arena.returnPortalPos[1],
+        z: arena.returnPortalPos[2]
+      };
+    }
+
+    for (const node of arena.nodes || []) {
+      let entry = this.arenaNodesMap.get(node.id);
+      if (!entry) {
+        entry = this._buildDungeonNodeEntry(node, this.arenaEntitiesGroup, true);
+        this.arenaNodesMap.set(node.id, entry);
+      }
+      entry.data = node;
+      entry.group.position.set(node.x, node.y, node.z);
+      if (entry.lidPivot) {
+        entry.lidPivot.rotation.x = node.available ? 0 : -0.92;
+        entry.bodyGroup.scale.setScalar(node.available ? 1.0 : 0.92);
+      } else {
+        entry.bodyGroup.scale.setScalar(node.available ? 1.0 : 0.38);
+      }
+    }
+
+    this.syncArenaMobs(arena.mobs || []);
+
+    const nextDropIds = new Set();
+    for (const drop of arena.drops || []) {
+      nextDropIds.add(drop.id);
+      if (!this.arenaDropsMap.has(drop.id)) {
+        this.arenaDropsMap.set(drop.id, this._buildDungeonDropEntry(drop, this.arenaEntitiesGroup));
+      } else {
+        const existing = this.arenaDropsMap.get(drop.id);
+        existing.data = drop;
+      }
+    }
+    for (const [dropId, entry] of this.arenaDropsMap.entries()) {
+      if (!nextDropIds.has(dropId)) {
+        this.arenaEntitiesGroup.remove(entry.group);
+        this.arenaDropsMap.delete(dropId);
+      }
+    }
+  }
+
+  syncArenaMobs(mobs) {
+    if (!Array.isArray(mobs)) return;
+    for (const mob of mobs) {
+      let entry = this.arenaMobsMap.get(mob.id);
+      if (!entry) {
+        entry = this._buildDungeonMobEntry(mob, this.arenaEntitiesGroup);
+        this.arenaMobsMap.set(mob.id, entry);
+      }
+      entry.data = mob;
+      entry.targetPos.set(mob.x, mob.y, mob.z);
+      entry.group.visible = Boolean(mob.alive);
+      if (entry.lastHp !== mob.hp && mob.alive) {
+        entry.lastHp = mob.hp;
+        const bannerCfg = this._mobBannerConfig(mob);
+        entry.group.remove(entry.label);
+        entry.label = createWorldBannerSprite(bannerCfg.title, bannerCfg.sub, bannerCfg.color);
+        entry.label.position.set(0, bannerCfg.y, 0);
         entry.group.add(entry.label);
       }
     }
@@ -5018,10 +5452,17 @@ export class BlockyWorld3D {
 
   triggerAction() {
     if (!this.selfAvatar || this.salonMirrorMode) return;
+    if (this.currentZone === 3 && this.arenaDead) return;
     const pos = this.selfAvatar.group.position;
     this.spawnSparkleBurst(
       pos,
-      this.currentZone === 2 ? '#fbbf24' : this.currentZone === 1 ? '#c084fc' : '#f472b6'
+      this.currentZone === 3
+        ? '#ef4444'
+        : this.currentZone === 2
+          ? '#fbbf24'
+          : this.currentZone === 1
+            ? '#c084fc'
+            : '#f472b6'
     );
 
     if (this.currentZone === 0) {
@@ -5034,6 +5475,15 @@ export class BlockyWorld3D {
       if (dPortal < 4.2) {
         this.lastPortalTriggerAt = performance.now();
         this.onRequestZonePortal(1);
+        return;
+      }
+      const dArenaPortal = Math.hypot(
+        pos.x - this.plazaArenaPortalPos.x,
+        pos.z - this.plazaArenaPortalPos.z
+      );
+      if (dArenaPortal < 4.2) {
+        this.lastPortalTriggerAt = performance.now();
+        this.onRequestZonePortal(3);
         return;
       }
       if (
@@ -5077,7 +5527,12 @@ export class BlockyWorld3D {
       return;
     }
 
-    const dReturn = Math.hypot(pos.x - this.dungeonReturnPortalPos.x, pos.z - this.dungeonReturnPortalPos.z);
+    const activeReturnPos =
+      this.currentZone === 3 ? this.arenaReturnPortalPos : this.dungeonReturnPortalPos;
+    const activeMobsMap = this.currentZone === 3 ? this.arenaMobsMap : this.dungeonMobsMap;
+    const activeNodesMap = this.currentZone === 3 ? this.arenaNodesMap : this.dungeonNodesMap;
+
+    const dReturn = Math.hypot(pos.x - activeReturnPos.x, pos.z - activeReturnPos.z);
     if (dReturn < 4.0) {
       this.lastPortalTriggerAt = performance.now();
       this.onRequestZonePortal(0);
@@ -5086,8 +5541,8 @@ export class BlockyWorld3D {
 
     const hasRayGun = this.selfAvatar.user?.avatar?.accessory === 'ray_gun';
     let nearestMob = null;
-    let nearestMobDist = hasRayGun ? 14.2 : 5.4;
-    for (const entry of this.dungeonMobsMap.values()) {
+    let nearestMobDist = hasRayGun ? 14.2 : 5.6;
+    for (const entry of activeMobsMap.values()) {
       if (!entry.data.alive) continue;
       const d = pos.distanceTo(entry.group.position);
       if (d < nearestMobDist) {
@@ -5100,7 +5555,7 @@ export class BlockyWorld3D {
         const ry = Math.atan2(nearestMob.x - pos.x, nearestMob.z - pos.z);
         this.selfAvatar.group.rotation.y = ry;
         const fromArr = [pos.x + Math.sin(ry) * 0.55, pos.y + 1.05, pos.z + Math.cos(ry) * 0.55];
-        const toArr = [nearestMob.x, nearestMob.y + 0.65, nearestMob.z];
+        const toArr = [nearestMob.x, nearestMob.y + 0.75, nearestMob.z];
         this.lastLocalBeamAt = performance.now();
         this.spawnRayGunBeam(fromArr, toArr, true);
         this.onAttackMob(nearestMob.id, 'raygun');
@@ -5112,7 +5567,7 @@ export class BlockyWorld3D {
 
     let nearestNode = null;
     let nearestNodeDist = 5.8;
-    for (const entry of this.dungeonNodesMap.values()) {
+    for (const entry of activeNodesMap.values()) {
       if (!entry.data.available) continue;
       const d = pos.distanceTo(entry.group.position);
       if (d < nearestNodeDist) {
@@ -5304,7 +5759,7 @@ export class BlockyWorld3D {
       this.isDraggingCamera = false;
 
       if (wasClick && !this.salonMirrorMode) {
-        if (this.currentZone === 1 || this.currentZone === 2) {
+        if (this.currentZone === 1 || this.currentZone === 2 || this.currentZone === 3) {
           this.triggerAction();
         } else if (this.buildMode) {
           if (e.button === 2 || this.buildTool === 'remove') {
@@ -5338,6 +5793,22 @@ export class BlockyWorld3D {
               if (dPortal <= 6.5 && performance.now() - this.lastPortalTriggerAt > 1200) {
                 this.lastPortalTriggerAt = performance.now();
                 this.onRequestZonePortal(1);
+                return;
+              }
+            }
+          }
+
+          if (this.plazaArenaPortalGroup) {
+            const arenaPortalHits = this.raycaster.intersectObject(this.plazaArenaPortalGroup, true);
+            if (arenaPortalHits.length > 0 && arenaPortalHits[0].distance <= 14.0) {
+              const p = this.selfAvatar.group.position;
+              const dArena = Math.hypot(
+                p.x - this.plazaArenaPortalPos.x,
+                p.z - this.plazaArenaPortalPos.z
+              );
+              if (dArena <= 6.5 && performance.now() - this.lastPortalTriggerAt > 1200) {
+                this.lastPortalTriggerAt = performance.now();
+                this.onRequestZonePortal(3);
                 return;
               }
             }
@@ -5506,7 +5977,7 @@ export class BlockyWorld3D {
   }
 
   jump() {
-    if (!this.selfAvatar) return;
+    if (!this.selfAvatar || (this.currentZone === 3 && this.arenaDead)) return;
     if (this.isGrounded) {
       const serverNow = Date.now() + this.serverClockOffsetMs;
       const jumpMult = serverNow < this.jumpBoostUntilMs ? 1.3 : 1.0;
@@ -5735,16 +6206,41 @@ export class BlockyWorld3D {
         });
       }
     } else {
-      // Animate Crystal Cavern mobs, nodes, and spinning loot orbs
-      for (const entry of this.dungeonMobsMap.values()) {
+      // Animate Crystal Cavern & Shadow Rift Arena mobs, molten lava, and spinning loot orbs
+      if (this.currentZone === 3) {
+        const lavaPulse = 1.2 + Math.sin(tSec * 3.4) * 0.28;
+        for (const lm of this.arenaLavaMeshes) {
+          if (lm.material) lm.material.emissiveIntensity = lavaPulse;
+        }
+      }
+      const activeMobs = this.currentZone === 3 ? this.arenaMobsMap : this.dungeonMobsMap;
+      const activeDrops = this.currentZone === 3 ? this.arenaDropsMap : this.dungeonDropsMap;
+      for (const entry of activeMobs.values()) {
         if (!entry.data.alive) continue;
         entry.group.position.lerp(entry.targetPos, Math.min(1, dt * 8.5));
         entry.group.rotation.y = entry.data.ry || 0;
-        if (entry.data.kind === 'crystal_bat') {
+        const kind = entry.data.kind;
+        if (kind === 'crystal_bat') {
           const flap = Math.sin(tSec * 12 + entry.phaseOffset) * 0.48;
           if (entry.leftWing) entry.leftWing.rotation.z = flap;
           if (entry.rightWing) entry.rightWing.rotation.z = -flap;
           entry.visual.position.y = Math.sin(tSec * 4.2 + entry.phaseOffset) * 0.16;
+          entry.visual.scale.setScalar(1);
+        } else if (kind === 'lava_golem') {
+          const stride = Math.sin(tSec * 4.8 + entry.phaseOffset);
+          entry.visual.position.y = Math.abs(stride) * 0.1;
+          if (entry.leftArm) entry.leftArm.rotation.x = stride * 0.45;
+          if (entry.rightArm) entry.rightArm.rotation.x = -stride * 0.45;
+          entry.visual.scale.setScalar(1);
+        } else if (kind === 'void_wraith') {
+          entry.visual.position.y = 0.18 + Math.sin(tSec * 3.2 + entry.phaseOffset) * 0.18;
+          entry.visual.rotation.z = Math.sin(tSec * 2.2 + entry.phaseOffset) * 0.06;
+          entry.visual.scale.setScalar(1);
+        } else if (kind === 'rift_spider') {
+          const scuttle = Math.sin(tSec * 14 + entry.phaseOffset);
+          entry.visual.position.y = Math.abs(scuttle) * 0.06;
+          entry.visual.rotation.z = scuttle * 0.05;
+          entry.visual.scale.setScalar(1);
         } else {
           const hop = Math.abs(Math.sin(tSec * 4.5 + entry.phaseOffset));
           entry.visual.position.y = hop * 0.34;
@@ -5752,7 +6248,7 @@ export class BlockyWorld3D {
         }
       }
 
-      for (const dropEntry of this.dungeonDropsMap.values()) {
+      for (const dropEntry of activeDrops.values()) {
         dropEntry.mesh.rotation.y = tSec * 2.8;
         dropEntry.mesh.position.y = 0.52 + Math.sin(tSec * 3.6) * 0.14;
       }
@@ -5779,7 +6275,7 @@ export class BlockyWorld3D {
       let moveForward = 0;
       let moveRight = 0;
 
-      if (!this.salonMirrorMode) {
+      if (!this.salonMirrorMode && !(this.currentZone === 3 && this.arenaDead)) {
         if (this.keys.has('KeyW') || this.keys.has('ArrowUp') || this.touchMove.forward) moveForward += 1;
         if (this.keys.has('KeyS') || this.keys.has('ArrowDown') || this.touchMove.backward) moveForward -= 1;
         if (this.keys.has('KeyA') || this.keys.has('ArrowLeft') || this.touchMove.left) moveRight -= 1;
@@ -6047,6 +6543,11 @@ export class BlockyWorld3D {
           pos.set(0, 0.6, 22);
           this.velocity.set(0, 0, 0);
           this._emitMoveNow();
+        } else if (this.currentZone === 3) {
+          // In Shadow Rift Arena, falling into the abyss deals lethal server damage; clamp Y so camera stays framed
+          pos.y = -3.0;
+          this.velocity.set(0, 0, 0);
+          this._emitMoveNow();
         } else if (this.currentZone === 2) {
           pos.set(0, 0.6, 3.5);
           this.velocity.set(0, 0, 0);
@@ -6068,11 +6569,24 @@ export class BlockyWorld3D {
           this.onRunwayProximity(isNowNearRunway);
         }
         const dPortal = Math.hypot(pos.x - this.plazaPortalPos.x, pos.z - this.plazaPortalPos.z);
+        const dArenaPortal = Math.hypot(
+          pos.x - this.plazaArenaPortalPos.x,
+          pos.z - this.plazaArenaPortalPos.z
+        );
         if (dPortal < 2.65 && Math.abs(pos.y - this.plazaPortalPos.y) < 3.5 && now - this.lastPortalTriggerAt > 2600) {
           this.lastPortalTriggerAt = now;
           this.onRequestZonePortal(1);
+        } else if (
+          dArenaPortal < 2.65 &&
+          Math.abs(pos.y - this.plazaArenaPortalPos.y) < 3.5 &&
+          now - this.lastPortalTriggerAt > 2600
+        ) {
+          this.lastPortalTriggerAt = now;
+          this.onRequestZonePortal(3);
         } else if (dPortal < 5.5) {
           nextHint = '🌀 Step In or Press E — Enter Crystal Cavern Dungeon!';
+        } else if (dArenaPortal < 5.5) {
+          nextHint = '⚔️ Step In or Press E — Enter Shadow Rift Mortal Arena (Watch HP & Lava!)';
         } else {
           const nearToggle = this._findNearestToggleableBlock(3.8);
           if (nearToggle) {
@@ -6113,8 +6627,16 @@ export class BlockyWorld3D {
             }
           }
         }
+      } else if (this.currentZone === 3 && this.arenaDead) {
+        nextHint = '💀 You fell in the Shadow Rift! Click ⚡ Respawn at Sanctuary (or press Enter)!';
       } else {
-        const dReturn = Math.hypot(pos.x - this.dungeonReturnPortalPos.x, pos.z - this.dungeonReturnPortalPos.z);
+        const returnPos =
+          this.currentZone === 3 ? this.arenaReturnPortalPos : this.dungeonReturnPortalPos;
+        const activeMobsMap = this.currentZone === 3 ? this.arenaMobsMap : this.dungeonMobsMap;
+        const activeNodesMap = this.currentZone === 3 ? this.arenaNodesMap : this.dungeonNodesMap;
+        const activeDropsMap = this.currentZone === 3 ? this.arenaDropsMap : this.dungeonDropsMap;
+
+        const dReturn = Math.hypot(pos.x - returnPos.x, pos.z - returnPos.z);
         if (dReturn < 2.25 && now - this.lastPortalTriggerAt > 2600) {
           this.lastPortalTriggerAt = now;
           this.onRequestZonePortal(0);
@@ -6123,20 +6645,21 @@ export class BlockyWorld3D {
         }
 
         // Mario-style Jump-Stomp on live mobs + nearest mob hint
-        const mobHintRange = hasRayGun ? 14.0 : 5.0;
-        for (const entry of this.dungeonMobsMap.values()) {
+        const mobHintRange = hasRayGun ? 14.0 : 5.2;
+        for (const entry of activeMobsMap.values()) {
           if (!entry.data.alive) continue;
           const mPos = entry.group.position;
           const hDist = Math.hypot(pos.x - mPos.x, pos.z - mPos.z);
+          const stompHeight = entry.data.kind === 'lava_golem' ? 3.2 : 2.3;
           if (
             this.velocity.y < -1.0 &&
-            hDist < 1.55 &&
+            hDist < 1.65 &&
             pos.y >= mPos.y + 0.15 &&
-            pos.y <= mPos.y + 2.1 &&
+            pos.y <= mPos.y + stompHeight &&
             now - (entry.lastStompAt || 0) > 280
           ) {
             entry.lastStompAt = now;
-            this.velocity.y = 11.8;
+            this.velocity.y = 12.2;
             this.isGrounded = false;
             this.selfAvatar.anim = 'jump';
             this.spawnSparkleBurst(mPos, '#fbbf24');
@@ -6150,7 +6673,7 @@ export class BlockyWorld3D {
 
         // Nearest Crystal Vein / Treasure Chest hint
         if (!nextHint) {
-          for (const entry of this.dungeonNodesMap.values()) {
+          for (const entry of activeNodesMap.values()) {
             if (!entry.data.available) continue;
             if (pos.distanceTo(entry.group.position) < 5.5) {
               nextHint =
@@ -6163,7 +6686,7 @@ export class BlockyWorld3D {
         }
 
         // Auto-pickup Ground Loot Orbs
-        for (const dropEntry of this.dungeonDropsMap.values()) {
+        for (const dropEntry of activeDropsMap.values()) {
           if (
             pos.distanceTo(dropEntry.group.position) < 2.55 &&
             now - dropEntry.lastPickupAttemptAt > 650

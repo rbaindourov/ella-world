@@ -8,7 +8,7 @@ Canonical inventory of all Blender `.blend`/`.glb` asset packs and remaining pro
 
 | Pack | Native `.blend` | Shipped `.glb` | Meshes | Total Polys | Total Verts | Optimization Status |
 | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
-| **`ella_world_environment`** *(Trees, DTI Stage, Stargate & Camping)* | `assets/blender/ella_world_environment.blend` (`24.9 MB`) | `public/models/ella_world_environment.glb` (`3.43 MB`, WebP 78%) | 21 | 32,414 | 29,215 | **P0 + Stargate/Camp Shipped** — replaces 32 cube trees, DTI stage, Stargate portals & full glamping clearing |
+| **`ella_world_environment`** *(Trees, DTI Stage, Stargate, Camping & 5 Mobs)* | `assets/blender/ella_world_environment.blend` (`25.0 MB`) | `public/models/ella_world_environment.glb` (`3.51 MB`, WebP 78%) | 30 | 35,655 | 32,742 | **P0 + Stargate/Camp + 5 Sculpted Mobs Shipped** — replaces cube trees, DTI stage, Stargates, glamping clearing & all 5 dungeon/arena monsters |
 | **`ella_world_props_loot`** *(Home Interiors, Doors, Loot & Ray Gun)* | `assets/blender/ella_world_props_loot.blend` (`627 KB`) | `public/models/ella_world_props_loot.glb` (`881 KB`) | 25 | 21,691 | 20,082 | **Well-Optimized** — add `Prop_Double_Door` (`2×2`) in P1 |
 | **`ella_dti_wardrobe`** *(Rigged Characters & DTI Closet)* | `assets/blender/ella_dti_wardrobe.blend` (`7.32 MB`) | `public/models/ella_dti_wardrobe.glb` (`6.85 MB`) | 47 | 167,499 | 105,772 | **P1 Decimation Target** — heaviest meshes can drop ~60% with Draco/Meshopt |
 
@@ -41,6 +41,11 @@ Built via headless Blender 5.2 LTS (`scripts/build_environment_pack.py`), sourci
 | `Env_Camp_Stump` | PolyHaven CC0 `tree_stump_01` | 1,231 | 637 | `1.78 × 1.98 × 0.72` | Rustic stump side-table beside campfire |
 | `Env_Camp_Pot` | PolyHaven CC0 `pot_enamel_01` | 1,288 | 642 | `0.42 × 0.29 × 0.29` | Enamel camp kettle/pot beside fire pit |
 | `Env_Camp_Boulder` | PolyHaven CC0 `rock_07` | 612 | 312 | `1.65 × 3.12 × 1.39` | 2 woodland clearing boulders framing the campsite |
+| `Env_Mob_ShadowSlime` | Blender 5.2 Sculpted Monster | 1,268 | 1,210 | `1.22 × 1.22 × 1.04` | Crowned translucent jelly Shadow Slime in Crystal Cavern |
+| `Env_Mob_CrystalBat_*` *(Body + WingL/R)* | Blender 5.2 Articulated Monster | 553 | 584 | `2.18 × 0.88 × 1.12` | Articulated flapping Crystal Bat in Crystal Cavern |
+| `Env_Mob_RiftSpider` | Blender 5.2 Sculpted Monster | 502 | 562 | `1.92 × 1.36 × 1.08` | Chasing obsidian & crimson arachnid in Shadow Rift Arena |
+| `Env_Mob_VoidWraith` | Blender 5.2 Sculpted Monster | 438 | 518 | `1.58 × 1.34 × 2.26` | Hovering cyan-eyed phantom wraith with rune halo & twin scythes |
+| `Env_Mob_LavaGolem_*` *(Body + ArmL/R)* | Blender 5.2 Articulated Boss | 480 | 653 | `2.36 × 1.18 × 2.74` | Boss Magma Colossus with swinging stone gauntlets in Shadow Rift Arena |
 
 ### Obby PBR Texture Pack (`public/textures/obby/`, `450.6 KB` total `512×512` progressive JPEG)
 - **`red_brick`** (PolyHaven CC0 `red_brick` diff/nor/rough) — Red & warm floating obby blocks on both Sky Obby & Pro Obby Gauntlet.

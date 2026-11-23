@@ -3697,3 +3697,219 @@ kbd {
   font-weight: 800;
   white-space: nowrap;
 }
+
+/* ============================================================================
+   Shadow Rift Mortal Arena HUD, Native <progress> Health Bar & Respawn Overlay
+   (modern-web-guidance: progress)
+   ============================================================================ */
+
+.hud-chip-btn.arena-chip {
+  background: linear-gradient(135deg, rgba(220, 38, 38, 0.36), rgba(124, 45, 18, 0.42));
+  border-color: rgba(248, 113, 113, 0.68);
+  color: #fecaca;
+}
+
+.hud-chip-btn.arena-chip:hover {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.5), rgba(154, 52, 18, 0.52));
+  border-color: #fca5a5;
+}
+
+.hud-zone-pill.is-arena,
+.friend-zone-tag.in-arena {
+  background: rgba(220, 38, 38, 0.24);
+  border-color: rgba(248, 113, 113, 0.65);
+  color: #fecaca;
+}
+
+.arena-hud-banner {
+  position: absolute;
+  top: 4.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(470px, calc(100vw - 1.5rem));
+  padding: 0.68rem 0.95rem;
+  border-radius: 16px;
+  background: rgba(15, 10, 20, 0.9);
+  border: 1.5px solid rgba(248, 113, 113, 0.62);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.62), 0 0 22px rgba(239, 68, 68, 0.24);
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+  z-index: 26;
+}
+
+.game-hud.is-fullscreen-hud .arena-hud-banner {
+  top: 0.85rem;
+}
+
+.arena-hud-banner.is-hurt-flash {
+  border-color: #ef4444;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.72), 0 0 32px rgba(239, 68, 68, 0.72);
+}
+
+.arena-hud-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.42rem;
+}
+
+.arena-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.14rem 0.56rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  background: rgba(220, 38, 38, 0.3);
+  border: 1px solid rgba(252, 165, 165, 0.6);
+  color: #fecaca;
+}
+
+.arena-shield-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  background: rgba(16, 185, 129, 0.24);
+  border: 1px solid rgba(52, 211, 153, 0.65);
+  color: #a7f3d0;
+}
+
+.arena-hp-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.arena-hp-label {
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: #f8fafc;
+  white-space: nowrap;
+}
+
+/* Native <progress> Health Bar (modern-web-guidance: progress) */
+.arena-hp-progress {
+  --arena-hp-track: #1e293b;
+  --arena-hp-fill: #22c55e;
+  appearance: none;
+  flex: 1;
+  inline-size: 100%;
+  block-size: 0.82rem;
+  border: 0 solid;
+  border-radius: 999px;
+  background-color: var(--arena-hp-track);
+  overflow: clip;
+}
+
+.arena-hp-progress.is-mid {
+  --arena-hp-fill: #f59e0b;
+}
+
+.arena-hp-progress.is-low {
+  --arena-hp-fill: #ef4444;
+}
+
+.arena-hp-progress::-webkit-progress-bar {
+  background-color: var(--arena-hp-track);
+  border-radius: 999px;
+}
+
+.arena-hp-progress::-webkit-progress-value {
+  background-color: var(--arena-hp-fill);
+  border-radius: 999px;
+  transition: inline-size 180ms ease, background-color 180ms ease;
+}
+
+.arena-hp-progress::-moz-progress-bar {
+  background-color: var(--arena-hp-fill);
+  border-radius: 999px;
+  transition: inline-size 180ms ease, background-color 180ms ease;
+}
+
+.arena-hp-text {
+  font-size: 0.8rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #fef2f2;
+  white-space: nowrap;
+  min-width: 5.8rem;
+  text-align: right;
+}
+
+.arena-hud-sub {
+  margin: 0.36rem 0 0;
+  font-size: 0.73rem;
+  color: #cbd5e1;
+}
+
+/* Shadow Rift Death & Respawn Overlay */
+.arena-death-overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: radial-gradient(circle at center, rgba(127, 29, 29, 0.62), rgba(9, 9, 15, 0.88));
+  backdrop-filter: blur(6px);
+  pointer-events: auto;
+  z-index: 48;
+}
+
+.arena-death-overlay[hidden] {
+  display: none;
+}
+
+.arena-death-card {
+  width: min(460px, 100%);
+  padding: 1.7rem 1.5rem;
+  border-radius: 22px;
+  background: rgba(15, 12, 24, 0.96);
+  border: 2px solid rgba(248, 113, 113, 0.78);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.82), 0 0 42px rgba(220, 38, 38, 0.42);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.arena-death-skull {
+  font-size: 3.2rem;
+  line-height: 1;
+  filter: drop-shadow(0 0 16px rgba(239, 68, 68, 0.75));
+}
+
+.arena-death-title {
+  margin: 0;
+  font-size: 1.38rem;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  color: #fecaca;
+}
+
+.arena-death-cause {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #e2e8f0;
+  line-height: 1.45;
+}
+
+.arena-death-actions {
+  margin-top: 0.4rem;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.arena-respawn-btn {
+  width: 100%;
+  font-size: 1rem;
+  background: linear-gradient(135deg, #ef4444, #f97316);
+  box-shadow: 0 8px 24px rgba(239, 68, 68, 0.45);
+}

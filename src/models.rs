@@ -822,6 +822,274 @@ pub struct VoxelBlock {
 pub struct BlocksDataFile {
     pub version: u64,
     pub blocks: Vec<VoxelBlock>,
+    #[serde(default, rename = "prebuiltVillageV1Seeded")]
+    pub prebuilt_village_v1_seeded: bool,
+}
+
+/// Three fully walkable, furnished Prebuilt Homes seeded on Plots #2, #3, and #5
+/// (leaving Plots #1, #4, and #6 completely blank for player custom builds!):
+///   1. 🌸 Rosewater Grand Villa at Sunset Plot #2 (`x = 82, z = -26`) — 2-story `9×9` villa
+///      with `double_door` entrance, walkable `stairs` to 2nd floor + front balcony `door`,
+///      full Kitchen, Bathroom, and upstairs Master Suite!
+///   2. 🌊 Starlight Beach Cottage at Starlight Plot #3 (`x = 52, z = 20`) — airy `7×7` cottage
+///      with front & garden walkable `door`s, `window`s, cozy bedroom, dining nook & rug!
+///   3. 🌲 Whispering Pine Woodland Chalet at West Villa Plot #5 (`x = -64, z = -16`) — warm
+///      `9×7` chalet with `double_door`, kitchen nook, dining table, bed & wardrobe!
+pub fn prebuilt_village_blocks() -> Vec<VoxelBlock> {
+    let mut out: Vec<VoxelBlock> = Vec::with_capacity(420);
+    let mut occupied: HashSet<(i32, i32, i32)> = HashSet::with_capacity(500);
+
+    let mut put = |x: i32, y: i32, z: i32, kind: &str, rot: u8, color: &str, open: bool| {
+        let r = rot % 4;
+        let cells = block_occupied_cells(x, y, z, kind, r);
+        if cells.iter().any(|c| occupied.contains(c)) {
+            return;
+        }
+        for c in cells {
+            occupied.insert(c);
+        }
+        out.push(VoxelBlock {
+            x,
+            y,
+            z,
+            color: color.to_string(),
+            author: "ella".to_string(),
+            placed_at: None,
+            kind: kind.to_string(),
+            rot: r,
+            open,
+            loot_item_id: None,
+        });
+    };
+
+    // ========================================================================
+    // 1. 🌸 Rosewater Grand Villa — Sunset Plot #2 (center x=82, z=-26; 9x9)
+    // ========================================================================
+    let villa_wall = "#fdf2f8";
+    let villa_trim = "#f472b6";
+    let villa_floor = "#fbcfe8";
+
+    // Doors & Windows placed FIRST so wall loops automatically skip their cells!
+    // Front 2x2 French Double Door at South face (z = -22, x = 81..=82, y = 1..=2)
+    put(81, 1, -22, "double_door", 0, villa_trim, false);
+    // 1st-floor Windows
+    put(79, 2, -22, "window", 0, "#ffffff", false);
+    put(85, 2, -22, "window", 0, "#ffffff", false);
+    put(78, 2, -26, "window", 1, "#ffffff", false);
+    put(86, 2, -26, "window", 1, "#ffffff", false);
+    put(82, 2, -30, "window", 0, "#ffffff", false);
+
+    // Walkable 2nd-story staircase along East interior wall (x = 85, climbing -Z)
+    put(85, 1, -24, "stairs", 0, villa_trim, false);
+    put(85, 2, -25, "stairs", 0, villa_trim, false);
+    put(85, 3, -26, "stairs", 0, villa_trim, false);
+    put(85, 4, -27, "stairs", 0, villa_trim, false);
+
+    // 1st-floor exterior walls (x in 78..=86, z in -30..=-22, y in 1..=3)
+    for y in 1..=3 {
+        let col = if y == 1 { villa_trim } else { villa_wall };
+        for x in 78..=86 {
+            put(x, y, -22, "block", 0, col, false);
+            put(x, y, -30, "block", 0, col, false);
+        }
+        for z in -29..=-23 {
+            put(78, y, z, "block", 0, col, false);
+            put(86, y, z, "block", 0, col, false);
+        }
+    }
+
+    // 2nd-story floor slab (y = 4) with stairwell opening at x=85, z=-26..=-24
+    for x in 78..=86 {
+        for z in -30..=-22 {
+            if x == 85 && (-26..=-24).contains(&z) {
+                continue;
+            }
+            let is_edge = x == 78 || x == 86 || z == -30 || z == -22;
+            put(
+                x,
+                4,
+                z,
+                "block",
+                0,
+                if is_edge { villa_trim } else { villa_floor },
+                false,
+            );
+        }
+    }
+    // 2nd-story front sun balcony (z = -21..=-20, x = 80..=84) + low railing (y = 5)
+    for x in 80..=84 {
+        put(x, 4, -21, "block", 0, villa_floor, false);
+        put(x, 4, -20, "block", 0, villa_trim, false);
+        put(x, 5, -20, "block", 0, "#ffffff", false);
+    }
+    put(80, 5, -21, "block", 0, "#ffffff", false);
+    put(84, 5, -21, "block", 0, "#ffffff", false);
+
+    // Upstairs Balcony Door & 2nd-floor Windows
+    put(82, 5, -22, "door", 0, villa_trim, false);
+    put(80, 6, -22, "window", 0, "#ffffff", false);
+    put(84, 6, -22, "window", 0, "#ffffff", false);
+    put(78, 6, -26, "window", 1, "#ffffff", false);
+    put(86, 6, -26, "window", 1, "#ffffff", false);
+    put(82, 6, -30, "window", 0, "#ffffff", false);
+
+    // 2nd-floor exterior walls (y in 5..=7) & flat crown roof (y = 8)
+    for y in 5..=7 {
+        let col = if y == 7 { villa_trim } else { villa_wall };
+        for x in 78..=86 {
+            put(x, y, -22, "block", 0, col, false);
+            put(x, y, -30, "block", 0, col, false);
+        }
+        for z in -29..=-23 {
+            put(78, y, z, "block", 0, col, false);
+            put(86, y, z, "block", 0, col, false);
+        }
+    }
+    for x in 78..=86 {
+        for z in -30..=-22 {
+            let is_edge = x == 78 || x == 86 || z == -30 || z == -22;
+            put(
+                x,
+                8,
+                z,
+                "block",
+                0,
+                if is_edge { villa_trim } else { "#fce7f3" },
+                false,
+            );
+        }
+    }
+
+    // Villa 1st-Floor Interior Furnishings (Kitchen, Dining, Bath & Welcome Rug)
+    put(82, 1, -25, "rug", 0, "#f472b6", false);
+    put(79, 1, -29, "kitchen_fridge", 1, "#ffffff", false);
+    put(79, 1, -28, "kitchen_counter", 1, "#fbcfe8", false);
+    put(79, 1, -27, "kitchen_sink", 1, "#bae6fd", false);
+    put(79, 1, -26, "kitchen_stove", 1, "#e2e8f0", false);
+    put(81, 1, -27, "dining_table", 0, "#ffffff", false);
+    put(81, 1, -26, "chair", 2, villa_trim, false);
+    put(84, 1, -29, "bath_tub", 0, "#bae6fd", false);
+    put(83, 1, -29, "bath_vanity", 0, "#fbcfe8", false);
+
+    // Villa 2nd-Floor Master Suite Furnishings (y = 5 sits flush on y = 4 floor!)
+    put(82, 5, -26, "rug", 0, "#c084fc", false);
+    put(80, 5, -28, "bed", 0, villa_trim, false);
+    put(79, 5, -29, "nightstand_lamp", 0, "#fde047", false);
+    put(79, 5, -24, "wardrobe", 1, "#fbcfe8", false);
+
+    // ========================================================================
+    // 2. 🌊 Starlight Beach Cottage — Starlight Plot #3 (center x=52, z=20; 7x7)
+    // ========================================================================
+    let beach_wall = "#f0f9ff";
+    let beach_trim = "#38bdf8";
+
+    // Front Door (North face z = 17) & Garden Patio Door (South face z = 23)
+    put(52, 1, 17, "door", 0, beach_trim, false);
+    put(52, 1, 23, "door", 0, beach_trim, false);
+    put(50, 2, 17, "window", 0, "#ffffff", false);
+    put(54, 2, 17, "window", 0, "#ffffff", false);
+    put(49, 2, 20, "window", 1, "#ffffff", false);
+    put(55, 2, 20, "window", 1, "#ffffff", false);
+
+    for y in 1..=3 {
+        let col = if y == 1 { "#bae6fd" } else { beach_wall };
+        for x in 49..=55 {
+            put(x, y, 17, "block", 0, col, false);
+            put(x, y, 23, "block", 0, col, false);
+        }
+        for z in 18..=22 {
+            put(49, y, z, "block", 0, col, false);
+            put(55, y, z, "block", 0, col, false);
+        }
+    }
+    // Coastal pitched roof (y = 4 overhang + y = 5 sky-blue ridge)
+    for x in 49..=55 {
+        for z in 17..=23 {
+            let is_edge = x == 49 || x == 55 || z == 17 || z == 23;
+            put(
+                x,
+                4,
+                z,
+                "block",
+                0,
+                if is_edge { beach_trim } else { "#7dd3fc" },
+                false,
+            );
+        }
+    }
+    for x in 50..=54 {
+        for z in 18..=22 {
+            put(x, 5, z, "block", 0, beach_trim, false);
+        }
+    }
+
+    // Cottage Cozy Interior
+    put(52, 1, 20, "rug", 0, "#38bdf8", false);
+    put(50, 1, 21, "bed", 1, "#38bdf8", false);
+    put(50, 1, 22, "nightstand_lamp", 1, "#fde047", false);
+    put(54, 1, 19, "dining_table", 0, "#ffffff", false);
+    put(54, 1, 20, "chair", 2, "#38bdf8", false);
+    put(54, 1, 22, "kitchen_counter", 3, "#bae6fd", false);
+
+    // ========================================================================
+    // 3. 🌲 Whispering Pine Woodland Chalet — West Plot #5 (center x=-64, z=-16; 9x7)
+    // ========================================================================
+    let chalet_wall = "#fef3c7";
+    let chalet_wood = "#d97706";
+    let chalet_roof = "#10b981";
+
+    // Grand Double Door on South face (z = -13, x = -65..=-64)
+    put(-65, 1, -13, "double_door", 0, chalet_wood, false);
+    put(-67, 2, -13, "window", 0, chalet_wood, false);
+    put(-61, 2, -13, "window", 0, chalet_wood, false);
+    put(-68, 2, -16, "window", 1, chalet_wood, false);
+    put(-60, 2, -16, "window", 1, chalet_wood, false);
+    put(-64, 2, -19, "window", 0, chalet_wood, false);
+
+    for y in 1..=3 {
+        let col = if y == 1 { chalet_wood } else { chalet_wall };
+        for x in -68..=-60 {
+            put(x, y, -13, "block", 0, col, false);
+            put(x, y, -19, "block", 0, col, false);
+        }
+        for z in -18..=-14 {
+            put(-68, y, z, "block", 0, col, false);
+            put(-60, y, z, "block", 0, col, false);
+        }
+    }
+    for x in -68..=-60 {
+        for z in -19..=-13 {
+            let is_edge = x == -68 || x == -60 || z == -19 || z == -13;
+            put(
+                x,
+                4,
+                z,
+                "block",
+                0,
+                if is_edge { chalet_wood } else { chalet_roof },
+                false,
+            );
+        }
+    }
+    for x in -67..=-61 {
+        for z in -18..=-14 {
+            put(x, 5, z, "block", 0, "#34d399", false);
+        }
+    }
+
+    // Chalet Interior Furnishings
+    put(-64, 1, -16, "rug", 0, "#fbbf24", false);
+    put(-67, 1, -18, "kitchen_fridge", 0, "#f8fafc", false);
+    put(-66, 1, -18, "kitchen_stove", 0, "#cbd5e1", false);
+    put(-65, 1, -18, "kitchen_sink", 0, "#bae6fd", false);
+    put(-66, 1, -15, "dining_table", 0, chalet_wood, false);
+    put(-65, 1, -15, "chair", 3, "#34d399", false);
+    put(-61, 1, -17, "bed", 3, "#34d399", false);
+    put(-61, 1, -18, "nightstand_lamp", 3, "#fde047", false);
+    put(-61, 1, -14, "wardrobe", 2, chalet_wood, false);
+    put(-63, 1, -18, "bath_toilet", 0, "#ffffff", false);
+
+    out
 }
 
 pub fn default_starter_blocks() -> Vec<VoxelBlock> {
@@ -837,7 +1105,7 @@ pub fn default_starter_blocks() -> Vec<VoxelBlock> {
         open: false,
         loot_item_id: None,
     };
-    vec![
+    let mut blocks = vec![
         mk(16, 1, -6, "#f472b6"),
         mk(16, 2, -6, "#fbbf24"),
         mk(16, 3, -6, "#34d399"),
@@ -849,7 +1117,9 @@ pub fn default_starter_blocks() -> Vec<VoxelBlock> {
         mk(20, 3, -6, "#34d399"),
         mk(20, 2, -6, "#fbbf24"),
         mk(20, 1, -6, "#f472b6"),
-    ]
+    ];
+    blocks.extend(prebuilt_village_blocks());
+    blocks
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1069,5 +1339,47 @@ mod tests {
         jack.apply_patch(&json!({ "bodyType": "female" }));
         assert_eq!(jack.body_type, "female");
         assert_ne!(jack.short_hash(), male_hash);
+    }
+
+    #[test]
+    fn prebuilt_village_homes_have_valid_kinds_walkable_doors_and_zero_overlaps() {
+        let homes = prebuilt_village_blocks();
+        assert!(
+            homes.len() >= 250 && homes.len() <= 800,
+            "Expected 3 furnished prebuilt homes (~300-600 blocks), got {}",
+            homes.len()
+        );
+        let mut seen = HashSet::new();
+        let mut door_count = 0usize;
+        let mut double_door_count = 0usize;
+        let mut stairs_count = 0usize;
+        for b in &homes {
+            assert!(is_valid_block_kind(&b.kind), "Invalid kind: {}", b.kind);
+            assert!(is_valid_hex_color(&b.color), "Invalid color: {}", b.color);
+            assert!(
+                (-100..=100).contains(&b.x)
+                    && (1..=80).contains(&b.y)
+                    && (-100..=100).contains(&b.z)
+            );
+            if b.kind == "door" {
+                door_count += 1;
+            } else if b.kind == "double_door" {
+                double_door_count += 1;
+            } else if b.kind == "stairs" {
+                stairs_count += 1;
+            }
+            for cell in block_occupied_cells(b.x, b.y, b.z, &b.kind, b.rot) {
+                assert!(
+                    seen.insert(cell),
+                    "Duplicate occupied voxel cell in prebuilt village: {cell:?}"
+                );
+            }
+        }
+        assert!(door_count >= 3, "Expected >=3 walkable single doors");
+        assert!(double_door_count >= 2, "Expected >=2 walkable double doors");
+        assert_eq!(
+            stairs_count, 4,
+            "Expected 4-step 2nd-story staircase in Rosewater Villa"
+        );
     }
 }

@@ -137,6 +137,7 @@ impl PersistenceStore {
         let initial = BlocksDataFile {
             version: 1,
             blocks: default_starter_blocks(),
+            prebuilt_village_v1_seeded: true,
         };
         self.save_blocks(&initial)?;
         Ok(initial)

@@ -233,3 +233,27 @@ To prevent penalized players from signing out, opening an Incognito window, or l
 - **Second, More Difficult Obby — Starlight Sky Gauntlet (Pro Obby)**:
   - Located in the expanded Southeast sector (`x ∈ [48, 92], z ∈ [48, 92], y ∈ [0, 44]`) with 5 checkpoints and a spinning **Diamond Crown** summit: narrow zig-zag steps, faster split-axis movers, server-synced blinking/disappearing tiles (`type: 'blinking'`), chained high-arc bounce pads, and jump-over spinning sweeper beams (`sweeperHazards`).
   - Independent checkpoint tracks for Sky Obby (`R` / `🏃‍♀️ Obby`) and Pro Obby (`T` / `🔥 Pro Obby`), plus a server-authoritative **+25 🪙** completion reward (`POST /api/ella-world/chat` with `isTrophyWin: true, trophyTier: "hard"`, 60-second anti-farm cooldown).
+
+---
+
+## 13. Sculpted 3D Enemies, Prebuilt Village Homes & Shadow Rift Mortal Arena (`scripts/build_environment_pack.py`, `src/persistence.rs`, `src/economy.rs`, `src/world.rs`, `public/js/world3d.js`, `public/js/app.js`)
+
+- **Sculpted & Articulated Blender 5.2 3D Monsters (`ella_world_environment.glb`)**:
+  - Replaced primitive geometric dungeon mobs with 5 sculpted/articulated meshes in `assets/blender/ella_world_environment.blend` (`30` meshes, `35,655` polys total):
+    - `Env_Mob_ShadowSlime` (`shadow_slime`): translucent purple slime with suspended crystal core & glowing eyes (squish/hop animation).
+    - `Env_Mob_CrystalBat_Body` + hinged `WingL`/`WingR` (`crystal_bat`): fanged cavern bat with crystal crest & articulated wing-flapping (`±0.34, 0.68, 0`).
+    - `Env_Mob_RiftSpider` (`rift_spider`): 8-legged obsidian arachnid with glowing crimson eyes & segmented abdomen.
+    - `Env_Mob_VoidWraith` (`void_wraith`): tattered floating cloak, horned crown & hovering amethyst runes.
+    - `Env_Mob_LavaGolem_Body` + hinged `ArmL`/`ArmR` (`lava_golem`): cracked volcanic basalt juggernaut with molten magma core & swinging stone gauntlets (`±0.84, 1.72, 0`).
+- **3 Furnished, Walkable Prebuilt Village Homes (`prebuilt_village_blocks()`)**:
+  - Seeded idempotently via `BlocksDataFile.prebuilt_village_v1_seeded` (`prebuiltVillageV1Seeded` in `data/blocks.json`) without overwriting any existing player-built voxels, leaving 3 neighborhood build plots (`Plot #1 (52, -26)`, `Plot #4 (82, 20)`, `Plot #6 (-64, 32)`) completely open:
+    1. **🌸 Rosewater Grand Villa** (`Plot #2` around `(82, -26)`): 2-story pastel villa with walkable `2×2` `double_door` entrance, `window`s, furnished living room/kitchen/bath, `stairs` to 2nd-floor bedroom, and balcony `door`.
+    2. **🌊 Starlight Beach Cottage** (`Plot #3` around `(52, 20)`): cozy wraparound-porch cottage with walkable `door` entrance, `fence` porch rails, kitchen/dining nook, bedroom, and garden lantern arch.
+    3. **🌲 Whispering Pine Woodland Chalet** (`Plot #5` around `(-64, -16)`): rustic brick & timber chalet with walkable `2×2` `double_door`, fireplace hearth, loft `stairs`, and furnished kitchen/bath/bedroom.
+- **Second Stargate Portal & Mortal Combat Zone — Shadow Rift Arena (`ZONE_ARENA = 3`)**:
+  - **Southwest Starlight Plaza Bloodmoon Stargate** (`(-22, 0, 28)`, crimson/obsidian GLSL wormhole shader) + HUD warp button (`⚔️ Shadow Rift`, shortcut `K`).
+  - **Server-Authoritative `ArenaState` (`src/economy.rs`, `src/world.rs`)**:
+    - Tracks `100` max HP (`ARENA_MAX_HP`), `alive: bool`, and `spawn_shield_until` (`2.5s` invulnerability on entry/respawn).
+    - **Safe Sanctuary Circle** around `(0, 0, 25)` (`z >= 19.5 && |x| <= 9.0`) with Return Stargate at `(0, 0, 30)` where mobs cannot enter or deal damage.
+    - **Chasing Aggro AI & Volcanic Lava Hazards**: 8 fierce arena monsters (`rift_spider`, `void_wraith`, `lava_golem`) patrol South (`z ∈ [-2.3, 18.8]`) and North (`z ∈ [-31.5, -7.7]`) basalt islands, chasing nearby players and striking on melee contact (`14`–`28` HP damage). Stepping into the central **Molten Lava River** (`z ∈ (-6.8, -3.2)` outside the 3 stone bridges at `x = -16, 0, +16`) or outer lava moat burns HP (`25` HP/tick), and falling into the abyss (`y < -2.2`) triggers instant KO (`100` HP).
+    - **Zero-Grief Death & Mandatory Respawn**: Reaching `0 HP` sets `alive = false` (locking movement, melee swings, resource harvesting, and loot pickups while keeping 100% of Starlight Coins and Backpack items safe), updates the native `<progress id="arena-hp-bar">` HUD bar, and opens `#arena-death-overlay` (**💀 YOU FELL IN THE SHADOW RIFT!**). Calling `POST /api/ella-world/arena/respawn` (or WS/UDP `"arena_respawn"`) restores `100/100 HP` at Sanctuary `(0, 0, 25)` with a fresh `2.5s` shield; drinking a Starlight Potion heals `+35 HP` in the arena.

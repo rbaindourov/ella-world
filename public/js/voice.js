@@ -34,6 +34,7 @@ const utf8Decoder = new TextDecoder();
 export const ZONE_PLAZA = 0;
 export const ZONE_DUNGEON = 1;
 export const ZONE_PRISON = 2;
+export const ZONE_ARENA = 3;
 
 export function encodeBinaryC2SState(seq, clientTimeMs, state) {
   const buf = new ArrayBuffer(28);

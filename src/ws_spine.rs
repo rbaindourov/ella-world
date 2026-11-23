@@ -299,6 +299,13 @@ async fn run_ws_spine_session(
                             {
                                 continue;
                             }
+                            UdpWorldEvent::ArenaMobs { .. }
+                            | UdpWorldEvent::ArenaSync { .. }
+                                if world.get_peer_zone(&self_id).await
+                                    != crate::udp_wire::ZONE_ARENA =>
+                            {
+                                continue;
+                            }
                             UdpWorldEvent::RayGunBeam { zone, .. }
                                 if world.get_peer_zone(&self_id).await != *zone =>
                             {

@@ -259,6 +259,7 @@ const seenChatIds = new Set();
 const ZONE_PLAZA = 0;
 const ZONE_DUNGEON = 1;
 const ZONE_PRISON = 2;
+const ZONE_ARENA = 3;
 
 function nextOutboundSeq() {
   sharedOutboundSeq = (sharedOutboundSeq + 1) >>> 0;
@@ -311,7 +312,17 @@ let draftTradeCoins = 0;
 let draftTradeItems = {};
 let tradeOfferDebounceTimer = null;
 let zonePortalInFlight = false;
+let arenaRespawnInFlight = false;
 let pendingPostPortalWarp = null;
+let arenaPlayerStatus = {
+  hp: 100,
+  maxHp: 100,
+  alive: true,
+  defeatedBy: null,
+  respawnReadyAtMs: 0,
+  invulnUntilMs: 0
+};
+let lastArenaSrState = '';
 const pickupInFlightIds = new Set();
 
 function isSelfEligibleForPrisonRelease() {
@@ -361,8 +372,20 @@ const udpStatusSr = document.getElementById('udp-status-sr');
 const hudToast = document.getElementById('hud-toast');
 const hudChatPanel = document.querySelector('.hud-chat-panel');
 const warpDungeonBtn = document.getElementById('warp-dungeon-btn');
+const warpArenaBtn = document.getElementById('warp-arena-btn');
 const openBackpackBtn = document.getElementById('open-backpack-btn');
 const touchActionBtn = document.getElementById('touch-action-btn');
+
+const arenaHudBanner = document.getElementById('arena-hud-banner');
+const arenaShieldPill = document.getElementById('arena-shield-pill');
+const arenaHpBar = document.getElementById('arena-hp-bar');
+const arenaHpText = document.getElementById('arena-hp-text');
+const arenaHudSub = document.getElementById('arena-hud-sub');
+const arenaStatusSr = document.getElementById('arena-status-sr');
+const arenaDeathOverlay = document.getElementById('arena-death-overlay');
+const arenaDeathCause = document.getElementById('arena-death-cause');
+const arenaRespawnBtn = document.getElementById('arena-respawn-btn');
+const arenaFleePlazaBtn = document.getElementById('arena-flee-plaza-btn');
 
 const prisonSentenceBanner = document.getElementById('prison-sentence-banner');
 const prisonBannerTitle = document.getElementById('prison-banner-title');
@@ -948,10 +971,21 @@ setInterval(() => {
   }
 }, 50);
 
-// Update active Swiftness / Cloud Leap potion timers at 4Hz
+  // Update active Swiftness / Cloud Leap potion timers & Sanctuary shield indicator at 4Hz
 setInterval(() => {
-  if (!hudBuffPill) return;
   const serverNow = Date.now() + (world3d.serverClockOffsetMs || 0);
+  if (arenaShieldPill && currentZone === ZONE_ARENA) {
+    const pos = world3d.selfAvatar?.group?.position;
+    const inSanct = pos && pos.z >= 19.5 && Math.abs(pos.x) <= 9.0;
+    const invulnRem = Math.ceil(((arenaPlayerStatus.invulnUntilMs || 0) - serverNow) / 1000);
+    if (inSanct || invulnRem > 0) {
+      arenaShieldPill.textContent = invulnRem > 0 ? `🛡️ Spawn Shield ${invulnRem}s` : '🛡️ Safe Sanctuary';
+      arenaShieldPill.hidden = false;
+    } else {
+      arenaShieldPill.hidden = true;
+    }
+  }
+  if (!hudBuffPill) return;
   const speedRem = Math.ceil((activeSpeedBoostUntilMs - serverNow) / 1000);
   const jumpRem = Math.ceil((activeJumpBoostUntilMs - serverNow) / 1000);
   const parts = [];
@@ -1222,6 +1256,12 @@ async function enterGameWorld(loginData) {
   if (loginData.dungeon) {
     world3d.syncDungeonSnapshot(loginData.dungeon);
   }
+  if (loginData.arena) {
+    world3d.syncArenaSnapshot(loginData.arena);
+  }
+  if (loginData.arenaStatus) {
+    applyArenaPlayerStatus(loginData.arenaStatus);
+  }
   if (loginData.prison) {
     world3d.syncPrisonSnapshot(loginData.prison, isSelfEligibleForPrisonRelease());
   }
@@ -1436,6 +1476,12 @@ function handleIncomingUdpWorldEvent(ev) {
       if (ev.dungeon) {
         world3d.syncDungeonSnapshot(ev.dungeon);
       }
+      if (ev.arena) {
+        world3d.syncArenaSnapshot(ev.arena);
+      }
+      if (ev.arenaStatus) {
+        applyArenaPlayerStatus(ev.arenaStatus);
+      }
       if (ev.prison) {
         world3d.syncPrisonSnapshot(ev.prison, isSelfEligibleForPrisonRelease());
       }
@@ -1446,6 +1492,8 @@ function handleIncomingUdpWorldEvent(ev) {
           y: ev.self.y,
           z: ev.self.z,
           dungeon: ev.dungeon,
+          arena: ev.arena,
+          arenaStatus: ev.arenaStatus,
           prison: ev.prison
         });
       }
@@ -1571,6 +1619,27 @@ function handleIncomingUdpWorldEvent(ev) {
       }
       break;
     }
+    case 'arena_mobs': {
+      if (Array.isArray(ev.mobs)) {
+        world3d.syncArenaMobs(ev.mobs);
+      }
+      break;
+    }
+    case 'arena_sync': {
+      if (ev.arena) {
+        world3d.syncArenaSnapshot(ev.arena);
+      }
+      break;
+    }
+    case 'arena_player_status': {
+      if (ev.arena) {
+        world3d.syncArenaSnapshot(ev.arena);
+      }
+      if (ev.arenaStatus) {
+        applyArenaPlayerStatus(ev.arenaStatus, ev);
+      }
+      break;
+    }
     case 'prison_sync': {
       if (ev.prison) {
         world3d.syncPrisonSnapshot(ev.prison, isSelfEligibleForPrisonRelease());
@@ -1635,7 +1704,10 @@ function handleIncomingUdpWorldEvent(ev) {
       if (ev.economy) {
         applyEconomySnapshot(ev.economy);
       }
-      showToast(`🧪 Used ${ev.itemName || 'item'}!`, 3600);
+      if (ev.arenaStatus) {
+        applyArenaPlayerStatus(ev.arenaStatus, { event: 'healed' });
+      }
+      showToast(`🧪 Used ${ev.itemName || 'item'}${currentZone === ZONE_ARENA ? ' (+35 HP Healed!)' : ''}!`, 3600);
       break;
     }
     case 'trade_invite_received': {
@@ -1724,7 +1796,7 @@ function handleIncomingUdpWorldEvent(ev) {
         world3d.spawnRayGunBeam(
           ev.from,
           ev.to,
-          Boolean(ev.hitMobId || ev.zone === ZONE_DUNGEON)
+          Boolean(ev.hitMobId || ev.zone === ZONE_DUNGEON || ev.zone === ZONE_ARENA)
         );
       }
       break;
@@ -1941,17 +2013,144 @@ function renderEconomyHud() {
   renderBuildLootItems();
 }
 
+function applyArenaPlayerStatus(status, meta = null) {
+  if (!status || typeof status !== 'object') return;
+  const maxHp = Math.max(1, Number(status.maxHp) || 100);
+  const hp = Math.max(0, Math.min(maxHp, Number(status.hp ?? maxHp)));
+  const alive = status.alive !== false && hp > 0;
+  arenaPlayerStatus = {
+    hp,
+    maxHp,
+    alive,
+    defeatedBy: status.defeatedBy || null,
+    respawnReadyAtMs: Number(status.respawnReadyAtMs || 0),
+    invulnUntilMs: Number(status.invulnUntilMs || 0)
+  };
+  world3d.setArenaDead(currentZone === ZONE_ARENA && !alive);
+
+  if (arenaHpBar) {
+    arenaHpBar.max = maxHp;
+    arenaHpBar.value = hp;
+    arenaHpBar.classList.toggle('is-low', hp <= 28);
+    arenaHpBar.classList.toggle('is-mid', hp > 28 && hp <= 58);
+  }
+  if (arenaHpText) {
+    arenaHpText.textContent = `${hp} / ${maxHp} HP`;
+  }
+
+  if (meta && (meta.event === 'damaged' || meta.event === 'died')) {
+    if (arenaHudBanner) {
+      arenaHudBanner.classList.add('is-hurt-flash');
+      setTimeout(() => arenaHudBanner.classList.remove('is-hurt-flash'), 360);
+    }
+    if (world3d.selfAvatar) {
+      world3d.spawnSparkleBurst(world3d.selfAvatar.group.position, '#ef4444');
+    }
+    if (meta.event === 'damaged' && meta.damage) {
+      showToast(`💥 -${meta.damage} HP from ${meta.source || 'Shadow Rift'}! (${hp}/${maxHp} HP)`, 2400);
+    }
+  }
+
+  if (meta && meta.event === 'respawned') {
+    if (typeof meta.x === 'number' && world3d.selfAvatar) {
+      world3d.selfAvatar.group.position.set(meta.x, (meta.y || 0) + 0.15, meta.z || 25);
+      world3d.velocity.set(0, 0, 0);
+      world3d.selfAvatar.emote = null;
+      world3d._emitMoveNow();
+      world3d.spawnCelebrationConfetti(world3d.selfAvatar.group.position);
+    }
+    showToast('⚡ Respawned at the Sanctuary Circle with 100 / 100 HP!', 3600);
+  }
+
+  // Discrete screen-reader milestone announcements (modern-web-guidance: progress)
+  if (arenaStatusSr && currentZone === ZONE_ARENA) {
+    let srKey = 'healthy';
+    let srText = '';
+    if (!alive) {
+      srKey = 'dead';
+      srText = `Defeated in Shadow Rift${arenaPlayerStatus.defeatedBy ? ` by ${arenaPlayerStatus.defeatedBy}` : ''}. Press Respawn at Sanctuary to restore 100 health.`;
+    } else if (meta && meta.event === 'respawned') {
+      srKey = 'respawned';
+      srText = 'Respawned at Safe Sanctuary with 100 health.';
+    } else if (hp <= 28) {
+      srKey = 'critical';
+      srText = `Critical health: ${hp} out of ${maxHp}. Retreat to Sanctuary or drink a potion.`;
+    }
+    if (srKey !== lastArenaSrState) {
+      lastArenaSrState = srKey;
+      if (srText) arenaStatusSr.textContent = srText;
+    }
+  }
+
+  renderArenaOverlays();
+}
+
+function renderArenaOverlays() {
+  const inArena = currentZone === ZONE_ARENA;
+  if (arenaHudBanner) {
+    arenaHudBanner.hidden = !inArena;
+  }
+  if (arenaHudSub && inArena) {
+    arenaHudSub.textContent = arenaPlayerStatus.alive
+      ? 'Beware chasing Rift Spiders, Void Wraiths, Magma Colossi & molten lava! Drink potions to heal +35 HP.'
+      : `💀 Defeated by ${arenaPlayerStatus.defeatedBy || 'the Shadow Rift'} — click Respawn below to rise at Sanctuary!`;
+  }
+  if (arenaDeathOverlay) {
+    const showDeath = inArena && !arenaPlayerStatus.alive;
+    const wasHidden = arenaDeathOverlay.hidden;
+    arenaDeathOverlay.hidden = !showDeath;
+    if (showDeath) {
+      if (arenaDeathCause) {
+        arenaDeathCause.textContent = arenaPlayerStatus.defeatedBy
+          ? `Defeated by ${arenaPlayerStatus.defeatedBy} — your coins & Backpack treasures are completely safe!`
+          : 'Defeated in battle — your coins & Backpack treasures are completely safe!';
+      }
+      if (wasHidden && arenaRespawnBtn) {
+        arenaRespawnBtn.focus();
+      }
+    }
+  }
+}
+
+async function respawnInArena() {
+  if (!sessionToken || arenaRespawnInFlight) return;
+  arenaRespawnInFlight = true;
+  try {
+    const res = await fetch('/api/ella-world/arena/respawn', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken })
+    });
+    if (await handleHttpAuthCheck(res)) return;
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      if (data.arena) world3d.syncArenaSnapshot(data.arena);
+      if (data.arenaStatus) applyArenaPlayerStatus(data.arenaStatus, data);
+    } else if (data.error) {
+      showToast(`⚠️ ${data.error}`);
+    }
+  } catch {
+    showToast('⚠️ Could not respawn right now — try again!');
+  } finally {
+    arenaRespawnInFlight = false;
+  }
+}
+
 function renderZoneHud(zone) {
   const inDungeon = zone === ZONE_DUNGEON;
+  const inArena = zone === ZONE_ARENA;
   const inPrison = zone === ZONE_PRISON;
   if (hudZonePill) {
     hudZonePill.classList.toggle('is-dungeon', inDungeon);
+    hudZonePill.classList.toggle('is-arena', inArena);
     hudZonePill.classList.toggle('is-prison', inPrison);
     hudZonePill.textContent = inPrison
       ? "⚖️ Debtor's Prison"
-      : inDungeon
-        ? '🏰 Crystal Cavern'
-        : '⛲ Starlight Plaza';
+      : inArena
+        ? '⚔️ Shadow Rift'
+        : inDungeon
+          ? '🏰 Crystal Cavern'
+          : '⛲ Starlight Plaza';
   }
   if (warpDungeonBtn) {
     warpDungeonBtn.textContent = inPrison
@@ -1960,22 +2159,26 @@ function renderZoneHud(zone) {
         ? '⛲ Exit Dungeon'
         : '🌀 Dungeon';
   }
+  if (warpArenaBtn) {
+    warpArenaBtn.textContent = inArena ? '⛲ Exit Rift' : '⚔️ Shadow Rift';
+  }
   if (touchActionBtn) {
     touchActionBtn.textContent = inPrison ? '🪨 WORK (E)' : '✨ BLAST (E)';
   }
-  if ((inDungeon || inPrison) && world3d.buildMode) {
+  if ((inDungeon || inArena || inPrison) && world3d.buildMode) {
     world3d.buildMode = false;
     world3d.ghostMesh.visible = false;
     if (buildToolbar) buildToolbar.hidden = true;
     if (toggleBuildBtn) toggleBuildBtn.classList.remove('active');
   }
   if (runwayHudBar) {
-    runwayHudBar.hidden = inPrison;
-    if (inDungeon || inPrison) {
+    runwayHudBar.hidden = inPrison || inArena;
+    if (inDungeon || inArena || inPrison) {
       runwayHudBar.classList.remove('near-runway');
     }
   }
   renderPrisonBanner();
+  renderArenaOverlays();
 }
 
 function applyLocalZoneTransition(payload) {
@@ -2000,6 +2203,14 @@ function applyLocalZoneTransition(payload) {
   world3d.setZone(nextZone, payload);
   if (payload.dungeon) {
     world3d.syncDungeonSnapshot(payload.dungeon);
+  }
+  if (payload.arena) {
+    world3d.syncArenaSnapshot(payload.arena);
+  }
+  if (payload.arenaStatus) {
+    applyArenaPlayerStatus(payload.arenaStatus);
+  } else if (nextZone !== ZONE_ARENA) {
+    world3d.setArenaDead(false);
   }
   if (payload.prison) {
     world3d.syncPrisonSnapshot(payload.prison, isSelfEligibleForPrisonRelease());
@@ -2053,6 +2264,11 @@ function applyLocalZoneTransition(payload) {
         world3d.spawnCelebrationConfetti(world3d.selfAvatar.group.position);
       }
       showToast('🕊️ Released from Debtor\'s Prison! Welcome back to Starlight Glam Plaza!', 5200);
+    } else if (nextZone === ZONE_ARENA) {
+      showToast(
+        '⚔️ Entered the Shadow Rift Arena! Stay on the bridges over molten lava — watch your 100 HP against chasing bosses!',
+        5400
+      );
     } else {
       showToast(
         nextZone === ZONE_DUNGEON
@@ -2146,6 +2362,7 @@ async function interactDungeonNode(nodeId) {
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       if (data.dungeon) world3d.syncDungeonSnapshot(data.dungeon);
+      if (data.arena) world3d.syncArenaSnapshot(data.arena);
       if (data.economy) applyEconomySnapshot(data.economy);
     } else if (data.error) {
       showToast(`🗝️ ${data.error}`);
@@ -2165,8 +2382,9 @@ async function attackDungeonMob(mobId, mode = 'blast') {
     });
     if (await handleHttpAuthCheck(res)) return;
     const data = await res.json().catch(() => ({}));
-    if (res.ok && data.dungeon) {
-      world3d.syncDungeonSnapshot(data.dungeon);
+    if (res.ok) {
+      if (data.dungeon) world3d.syncDungeonSnapshot(data.dungeon);
+      if (data.arena) world3d.syncArenaSnapshot(data.arena);
     } else if (!res.ok && data.error) {
       showToast(`⚔️ ${data.error}`);
     }
@@ -2188,6 +2406,7 @@ async function pickupDungeonDrop(dropId) {
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       if (data.dungeon) world3d.syncDungeonSnapshot(data.dungeon);
+      if (data.arena) world3d.syncArenaSnapshot(data.arena);
     }
   } catch {
     // ignore transient network error
@@ -2795,6 +3014,7 @@ function renderFriendsList() {
     const isMe = pid === selfId;
     const pZone = p.zone || ZONE_PLAZA;
     const inDungeon = pZone === ZONE_DUNGEON;
+    const inArena = pZone === ZONE_ARENA;
     const inPrison = pZone === ZONE_PRISON;
     const li = document.createElement('li');
     li.className = `friend-card${p.speaking ? ' speaking' : ''}`;
@@ -2821,12 +3041,14 @@ function renderFriendsList() {
     metaRow.className = 'friend-meta-row';
 
     const zoneBadge = document.createElement('span');
-    zoneBadge.className = `friend-zone-tag${inDungeon ? ' in-dungeon' : ''}${inPrison ? ' in-prison' : ''}`;
+    zoneBadge.className = `friend-zone-tag${inDungeon ? ' in-dungeon' : ''}${inArena ? ' in-arena' : ''}${inPrison ? ' in-prison' : ''}`;
     zoneBadge.textContent = inPrison
       ? "⚖️ Debtor's Prison"
-      : inDungeon
-        ? '🏰 Crystal Cavern'
-        : '⛲ Plaza';
+      : inArena
+        ? '⚔️ Shadow Rift'
+        : inDungeon
+          ? '🏰 Crystal Cavern'
+          : '⛲ Plaza';
     metaRow.appendChild(zoneBadge);
 
     const sameAccount =
@@ -3123,6 +3345,30 @@ if (warpDungeonBtn) {
       return;
     }
     requestZoneTransition(currentZone === ZONE_DUNGEON ? ZONE_PLAZA : ZONE_DUNGEON);
+  });
+}
+
+if (warpArenaBtn) {
+  warpArenaBtn.addEventListener('click', () => {
+    pendingPostPortalWarp = null;
+    if (currentZone === ZONE_PRISON) {
+      showToast("⚖️ Clear your Debtor's Prison chores & negative debt first!");
+      return;
+    }
+    requestZoneTransition(currentZone === ZONE_ARENA ? ZONE_PLAZA : ZONE_ARENA);
+  });
+}
+
+if (arenaRespawnBtn) {
+  arenaRespawnBtn.addEventListener('click', () => {
+    respawnInArena();
+  });
+}
+
+if (arenaFleePlazaBtn) {
+  arenaFleePlazaBtn.addEventListener('click', () => {
+    pendingPostPortalWarp = null;
+    requestZoneTransition(ZONE_PLAZA);
   });
 }
 
@@ -3754,6 +4000,12 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (currentZone === ZONE_ARENA && !arenaPlayerStatus.alive && (e.key === 'Enter' || e.code === 'Space')) {
+    e.preventDefault();
+    respawnInArena();
+    return;
+  }
+
   const k = e.key.toLowerCase();
   if (k === 'm') {
     if (notifyVoiceLockIfNeeded()) return;
@@ -3773,6 +4025,13 @@ window.addEventListener('keydown', (e) => {
       requestZoneTransition(ZONE_PLAZA);
     } else {
       requestZoneTransition(currentZone === ZONE_DUNGEON ? ZONE_PLAZA : ZONE_DUNGEON);
+    }
+  } else if (!isSalonOpen && k === 'k') {
+    pendingPostPortalWarp = null;
+    if (currentZone === ZONE_PRISON) {
+      showToast("⚖️ Clear your Debtor's Prison chores & negative debt first!");
+    } else {
+      requestZoneTransition(currentZone === ZONE_ARENA ? ZONE_PLAZA : ZONE_ARENA);
     }
   } else if (!isSalonOpen && k === 'b') {
     toggleBuildMode();

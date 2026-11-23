@@ -12,24 +12,26 @@ use crate::economy::{
     add_inventory_item, calculate_escalating_fine, execute_atomic_trade_swap, find_item_def,
     player_owns_item, reconcile_equipped_cosmetics, remove_inventory_item, roll_crystal_loot,
     roll_golden_chest_loot, roll_mob_loot, roll_wooden_chest_loot, sanitize_and_validate_offer,
-    DungeonMob, DungeonSnapshot, DungeonState, PrisonSnapshot, PrisonState, TradeSession,
-    TradeSideOffer, DUNGEON_RETURN_PORTAL_POS, DUNGEON_SPAWN_POS, ITEM_CATALOG, PLAZA_PORTAL_POS,
-    PLAZA_RETURN_SPAWN_POS, PRISON_RELEASE_PORTAL_POS, PRISON_SPAWN_POS, PRISON_WORK_REWARD_COINS,
+    ArenaPlayerStatus, ArenaSnapshot, ArenaState, DungeonMob, DungeonSnapshot, DungeonState,
+    PrisonSnapshot, PrisonState, TradeSession, TradeSideOffer, ARENA_RETURN_PORTAL_POS,
+    ARENA_SPAWN_POS, DUNGEON_RETURN_PORTAL_POS, DUNGEON_SPAWN_POS, ITEM_CATALOG,
+    PLAZA_ARENA_PORTAL_POS, PLAZA_ARENA_RETURN_SPAWN_POS, PLAZA_PORTAL_POS, PLAZA_RETURN_SPAWN_POS,
+    PRISON_RELEASE_PORTAL_POS, PRISON_SPAWN_POS, PRISON_WORK_REWARD_COINS,
     TRADE_ACTIVE_IDLE_TTL_MS, TRADE_INVITE_TTL_MS,
 };
 use crate::models::{
     block_occupied_cells, default_block_kind, default_starter_blocks, is_toggleable_block_kind,
     is_two_tall_block_kind, is_valid_block_kind, is_valid_hex_color, normalize_chat_mode, now_ms,
-    BlockedChatEntry, BlocksDataFile, ChatMessage, DeviceEvasionEntry, MachineDeviceRecord,
-    PlayerEconomySnapshot, PlayerModerationSnapshot, PlayerRuntimeState, RunwayPublicSummary,
-    RunwayState, SanitizedUser, SavedPosition, UserAccount, UsersConfigFile, VoxelBlock,
-    RUNWAY_THEMES, SAFE_QUICK_CHAT_PHRASES,
+    prebuilt_village_blocks, BlockedChatEntry, BlocksDataFile, ChatMessage, DeviceEvasionEntry,
+    MachineDeviceRecord, PlayerEconomySnapshot, PlayerModerationSnapshot, PlayerRuntimeState,
+    RunwayPublicSummary, RunwayState, SanitizedUser, SavedPosition, UserAccount, UsersConfigFile,
+    VoxelBlock, RUNWAY_THEMES, SAFE_QUICK_CHAT_PHRASES,
 };
 use crate::persistence::PersistenceStore;
 use crate::udp_wire::{
     assemble_s2c_world_state_chunks, assemble_s2c_world_state_scheduled_chunk,
-    encode_player_binary_entry, DecodedC2SState, MAX_SNAPSHOT_MTU_BYTES, ZONE_DUNGEON, ZONE_PLAZA,
-    ZONE_PRISON,
+    encode_player_binary_entry, DecodedC2SState, MAX_SNAPSHOT_MTU_BYTES, ZONE_ARENA, ZONE_DUNGEON,
+    ZONE_PLAZA, ZONE_PRISON,
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -146,6 +148,20 @@ pub enum UdpWorldEvent {
         #[serde(rename = "actorId", skip_serializing_if = "Option::is_none")]
         actor_id: Option<String>,
         prison: PrisonSnapshot,
+    },
+    ArenaMobs {
+        #[serde(rename = "serverTimeMs")]
+        server_time_ms: u64,
+        mobs: Vec<DungeonMob>,
+    },
+    ArenaSync {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event: Option<String>,
+        #[serde(rename = "actorId", skip_serializing_if = "Option::is_none")]
+        actor_id: Option<String>,
+        arena: ArenaSnapshot,
     },
     RayGunBeam {
         #[serde(rename = "stateSeq")]
@@ -303,6 +319,7 @@ pub struct WorldEngine {
     pub chat_cooldowns: RwLock<HashMap<String, VecDeque<u64>>>,
     pub runway: RwLock<RunwayState>,
     pub dungeon: RwLock<DungeonState>,
+    pub arena: RwLock<ArenaState>,
     pub prison: RwLock<PrisonState>,
     pub prison_work_cooldowns: RwLock<HashMap<String, u64>>,
     pub raygun_cooldowns: RwLock<HashMap<String, u64>>,
@@ -332,7 +349,29 @@ impl WorldEngine {
             &config.seed_users_file,
         )?);
         let users_cfg = store.load_or_init_users()?;
-        let blocks_data = store.load_or_init_blocks()?;
+        let mut blocks_data = store.load_or_init_blocks()?;
+        if !blocks_data.prebuilt_village_v1_seeded {
+            let mut existing_cells = std::collections::HashSet::new();
+            for b in &blocks_data.blocks {
+                for cell in block_occupied_cells(b.x, b.y, b.z, &b.kind, b.rot) {
+                    existing_cells.insert(cell);
+                }
+            }
+            for nb in prebuilt_village_blocks() {
+                let cells = block_occupied_cells(nb.x, nb.y, nb.z, &nb.kind, nb.rot);
+                if cells.iter().all(|c| !existing_cells.contains(c))
+                    && blocks_data.blocks.len() < 12_000
+                {
+                    for c in cells {
+                        existing_cells.insert(c);
+                    }
+                    blocks_data.blocks.push(nb);
+                }
+            }
+            blocks_data.prebuilt_village_v1_seeded = true;
+            blocks_data.version = blocks_data.version.saturating_add(1).max(1);
+            store.save_blocks(&blocks_data)?;
+        }
         let initial_chat_count = store.count_chats();
         let initial_blocked_count = store.count_blocked_chats();
         let initial_evasion_count = store.count_device_evasions();
@@ -358,6 +397,7 @@ impl WorldEngine {
             chat_cooldowns: RwLock::new(HashMap::new()),
             runway: RwLock::new(RunwayState::default()),
             dungeon: RwLock::new(DungeonState::new()),
+            arena: RwLock::new(ArenaState::new()),
             prison: RwLock::new(PrisonState::new()),
             prison_work_cooldowns: RwLock::new(HashMap::new()),
             raygun_cooldowns: RwLock::new(HashMap::new()),
@@ -395,6 +435,7 @@ impl WorldEngine {
                 }
                 if tick_counter.is_multiple_of(5) {
                     bg.tick_dungeon_if_occupied().await;
+                    bg.tick_arena_if_occupied().await;
                     bg.tick_prison_if_occupied().await;
                 }
                 if tick_counter.is_multiple_of(40) {
@@ -1520,6 +1561,10 @@ impl WorldEngine {
             .collect();
         let runway_summary = self.runway.read().await.summary();
         let dungeon_snapshot = self.dungeon.read().await.snapshot();
+        let (arena_snapshot, arena_status) = {
+            let ar = self.arena.read().await;
+            (ar.snapshot(), ar.status_for(&self_id))
+        };
         let prison_snapshot = self.prison.read().await.snapshot();
         let economy_snapshot = found_user.economy_snapshot();
         let moderation_snapshot = found_user.moderation_snapshot();
@@ -1534,6 +1579,8 @@ impl WorldEngine {
             "moderation": moderation_snapshot,
             "itemCatalog": ITEM_CATALOG,
             "dungeon": dungeon_snapshot,
+            "arena": arena_snapshot,
+            "arenaStatus": arena_status,
             "prison": prison_snapshot,
             "players": other_players,
             "blocks": blocks_snapshot.blocks,
@@ -1598,6 +1645,10 @@ impl WorldEngine {
             .collect();
         let runway_summary = self.runway.read().await.summary();
         let dungeon_snapshot = self.dungeon.read().await.snapshot();
+        let (arena_snapshot, arena_status) = {
+            let ar = self.arena.read().await;
+            (ar.snapshot(), ar.status_for(self_id))
+        };
         let prison_snapshot = self.prison.read().await.snapshot();
         let (economy_snapshot, moderation_snapshot, parental_world) = {
             let cfg = self.users_cfg.read().await;
@@ -1629,6 +1680,8 @@ impl WorldEngine {
             "parentalWorld": parental_world,
             "itemCatalog": ITEM_CATALOG,
             "dungeon": dungeon_snapshot,
+            "arena": arena_snapshot,
+            "arenaStatus": arena_status,
             "prison": prison_snapshot,
             "players": others,
             "blocks": blocks_snapshot.blocks,
@@ -1726,6 +1779,11 @@ impl WorldEngine {
     ) {
         let now = now_ms();
         let global_voice_ok = self.global_voice_enabled.load(Ordering::Relaxed);
+        let arena_dead = if decoded.zone == ZONE_ARENA {
+            !self.arena.read().await.status_for(self_id).alive
+        } else {
+            false
+        };
         {
             let mut map = self.players.write().await;
             if let Some(p) = map.get_mut(self_id) {
@@ -1742,7 +1800,7 @@ impl WorldEngine {
                 }
                 p.last_seq = decoded.seq;
                 p.last_client_time_ms = decoded.client_time_ms;
-                if decoded.zone == p.zone {
+                if decoded.zone == p.zone && !(p.zone == ZONE_ARENA && arena_dead) {
                     if p.zone == ZONE_PRISON {
                         p.x = decoded.x.clamp(-13.2, 13.2);
                         p.y = decoded.y.clamp(0.0, 12.0);
@@ -1755,6 +1813,9 @@ impl WorldEngine {
                     p.ry = decoded.ry;
                     p.anim = decoded.anim;
                     p.emote = decoded.emote;
+                } else if p.zone == ZONE_ARENA && arena_dead {
+                    p.anim = "idle".into();
+                    p.emote = Some("sit".into());
                 }
                 if !global_voice_ok || p.server_voice_muted {
                     p.muted = true;
@@ -2835,6 +2896,7 @@ impl WorldEngine {
             } else {
                 default_starter_blocks()
             };
+            bd.prebuilt_village_v1_seeded = true;
             bd.version += 1;
             (bd.version, bd.blocks.clone(), bd.clone(), refunds)
         };
@@ -3151,13 +3213,74 @@ impl WorldEngine {
         }
     }
 
+    pub async fn tick_arena_if_occupied(&self) {
+        let arena_players: Vec<(String, String, f32, f32, f32)> = {
+            let map = self.players.read().await;
+            map.values()
+                .filter(|p| p.zone == ZONE_ARENA)
+                .map(|p| (p.id.clone(), p.user.display_name.clone(), p.x, p.y, p.z))
+                .collect()
+        };
+        if arena_players.is_empty() {
+            return;
+        }
+        let now = now_ms();
+        let (world_changed, mobs, damage_notices, maybe_snapshot) = {
+            let mut ar = self.arena.write().await;
+            let (changed, mobs, notices) = ar.tick(now, &arena_players);
+            let snap = if changed { Some(ar.snapshot()) } else { None };
+            (changed, mobs, notices, snap)
+        };
+        let _ = self.udp_event_tx.send(UdpWorldEvent::ArenaMobs {
+            server_time_ms: now,
+            mobs,
+        });
+        if world_changed {
+            if let Some(arena) = maybe_snapshot {
+                let seq = self.next_state_seq();
+                let _ = self.udp_event_tx.send(UdpWorldEvent::ArenaSync {
+                    state_seq: seq,
+                    event: Some("tick".into()),
+                    actor_id: None,
+                    arena,
+                });
+            }
+        }
+        for notice in damage_notices {
+            if notice.just_died {
+                let mut map = self.players.write().await;
+                if let Some(p) = map.get_mut(&notice.self_id) {
+                    p.anim = "idle".into();
+                    p.emote = Some("sit".into());
+                }
+            }
+            let payload = serde_json::json!({
+                "type": "arena_player_status",
+                "event": if notice.just_died { "died" } else { "damaged" },
+                "damage": notice.damage,
+                "source": notice.source_label,
+                "arenaStatus": notice.status,
+            })
+            .to_string();
+            let _ = self.send_peer_targeted_json(&notice.self_id, payload).await;
+            if notice.just_died {
+                let _ = self
+                    .broadcast_system_chat_notice(format!(
+                        "💀 {} fell in the Shadow Rift against {}! Click Respawn to rise at the Sanctuary!",
+                        notice.display_name, notice.source_label
+                    ))
+                    .await;
+            }
+        }
+    }
+
     pub async fn transition_player_zone(
         &self,
         self_id: &str,
         username: &str,
         target_zone: u8,
     ) -> Result<serde_json::Value, String> {
-        if target_zone != ZONE_PLAZA && target_zone != ZONE_DUNGEON {
+        if target_zone != ZONE_PLAZA && target_zone != ZONE_DUNGEON && target_zone != ZONE_ARENA {
             return Err("Unknown world zone.".into());
         }
         let current_player = self
@@ -3217,10 +3340,27 @@ impl WorldEngine {
             }
         }
 
-        let (nx, ny, nz) = if target_zone == ZONE_DUNGEON {
-            DUNGEON_SPAWN_POS
-        } else {
-            PLAZA_RETURN_SPAWN_POS
+        let (nx, ny, nz) = match target_zone {
+            ZONE_DUNGEON => DUNGEON_SPAWN_POS,
+            ZONE_ARENA => ARENA_SPAWN_POS,
+            _ => {
+                if current_player.zone == ZONE_ARENA {
+                    PLAZA_ARENA_RETURN_SPAWN_POS
+                } else {
+                    PLAZA_RETURN_SPAWN_POS
+                }
+            }
+        };
+
+        let now = now_ms();
+        let arena_status: ArenaPlayerStatus = {
+            let mut ar = self.arena.write().await;
+            if target_zone == ZONE_ARENA {
+                ar.enter_or_reset_player(self_id, now)
+            } else {
+                ar.remove_player(self_id);
+                ArenaPlayerStatus::fresh(0)
+            }
         };
 
         {
@@ -3234,7 +3374,7 @@ impl WorldEngine {
             p.z = nz;
             p.anim = "idle".into();
             p.emote = None;
-            p.last_seen = now_ms();
+            p.last_seen = now;
         }
 
         let seq = self.next_state_seq();
@@ -3248,6 +3388,7 @@ impl WorldEngine {
         });
 
         let dungeon_snapshot = self.dungeon.read().await.snapshot();
+        let arena_snapshot = self.arena.read().await.snapshot();
         let prison_snapshot = self.prison.read().await.snapshot();
         let response = serde_json::json!({
             "ok": true,
@@ -3263,14 +3404,88 @@ impl WorldEngine {
                 DUNGEON_RETURN_PORTAL_POS.1,
                 DUNGEON_RETURN_PORTAL_POS.2
             ],
+            "plazaArenaPortalPos": [
+                PLAZA_ARENA_PORTAL_POS.0,
+                PLAZA_ARENA_PORTAL_POS.1,
+                PLAZA_ARENA_PORTAL_POS.2
+            ],
+            "arenaReturnPortalPos": [
+                ARENA_RETURN_PORTAL_POS.0,
+                ARENA_RETURN_PORTAL_POS.1,
+                ARENA_RETURN_PORTAL_POS.2
+            ],
             "prisonReleasePortalPos": [
                 PRISON_RELEASE_PORTAL_POS.0,
                 PRISON_RELEASE_PORTAL_POS.1,
                 PRISON_RELEASE_PORTAL_POS.2
             ],
             "dungeon": dungeon_snapshot,
+            "arena": arena_snapshot,
+            "arenaStatus": arena_status,
             "prison": prison_snapshot,
             "moderation": mod_snapshot,
+        });
+        let _ = self
+            .send_peer_targeted_json(self_id, response.to_string())
+            .await;
+        Ok(response)
+    }
+
+    pub async fn respawn_in_arena(
+        &self,
+        self_id: &str,
+        username: &str,
+    ) -> Result<serde_json::Value, String> {
+        let _ = self
+            .ensure_player_online(self_id, username)
+            .await
+            .ok_or_else(|| "Player session not active.".to_string())?;
+        let p_zone = self.get_peer_zone(self_id).await;
+        if p_zone != ZONE_ARENA {
+            return Err("You are not currently inside the Shadow Rift Arena.".into());
+        }
+
+        let now = now_ms();
+        let (arena_status, arena_snapshot) = {
+            let mut ar = self.arena.write().await;
+            let st = ar.enter_or_reset_player(self_id, now);
+            (st, ar.snapshot())
+        };
+
+        let (nx, ny, nz) = ARENA_SPAWN_POS;
+        {
+            let mut map = self.players.write().await;
+            let Some(p) = map.get_mut(self_id) else {
+                return Err("Player session not found.".into());
+            };
+            p.x = nx;
+            p.y = ny;
+            p.z = nz;
+            p.anim = "idle".into();
+            p.emote = None;
+            p.last_seen = now;
+        }
+
+        let seq = self.next_state_seq();
+        let _ = self.udp_event_tx.send(UdpWorldEvent::PlayerZone {
+            state_seq: seq,
+            id: self_id.to_string(),
+            zone: ZONE_ARENA,
+            x: nx,
+            y: ny,
+            z: nz,
+        });
+
+        let response = serde_json::json!({
+            "ok": true,
+            "type": "arena_player_status",
+            "event": "respawned",
+            "stateSeq": seq,
+            "x": nx,
+            "y": ny,
+            "z": nz,
+            "arenaStatus": arena_status,
+            "arena": arena_snapshot,
         });
         let _ = self
             .send_peer_targeted_json(self_id, response.to_string())
@@ -3399,11 +3614,20 @@ impl WorldEngine {
             };
             (p.zone, p.x, p.y, p.z)
         };
-        if p_zone != ZONE_DUNGEON {
-            return Err("Enter the Crystal Cavern Portal first!".into());
+        if p_zone != ZONE_DUNGEON && p_zone != ZONE_ARENA {
+            return Err("Enter the Crystal Cavern or Shadow Rift Portal first!".into());
+        }
+        if p_zone == ZONE_ARENA && !self.arena.read().await.status_for(self_id).alive {
+            return Err("💀 You were defeated! Click Respawn at Sanctuary first!".into());
         }
 
-        let (node_kind, nx, ny, nz, node_available) = {
+        let (node_kind, nx, ny, nz, node_available) = if p_zone == ZONE_ARENA {
+            let ar = self.arena.read().await;
+            let Some(n) = ar.nodes.iter().find(|n| n.id == node_id) else {
+                return Err("Crystal vein or chest not found.".into());
+            };
+            (n.kind.clone(), n.x, n.y, n.z, n.available)
+        } else {
             let dg = self.dungeon.read().await;
             let Some(n) = dg.nodes.iter().find(|n| n.id == node_id) else {
                 return Err("Crystal vein or chest not found.".into());
@@ -3439,6 +3663,69 @@ impl WorldEngine {
         };
 
         let now = now_ms();
+        if p_zone == ZONE_ARENA {
+            let outcome = {
+                let mut ar = self.arena.write().await;
+                let Some(idx) = ar.nodes.iter().position(|n| n.id == node_id) else {
+                    return Err("Node disappeared.".into());
+                };
+                if !ar.nodes[idx].available {
+                    None
+                } else {
+                    let cd = ar.nodes[idx].cooldown_ms;
+                    let kind = ar.nodes[idx].kind.clone();
+                    let drop_x = ar.nodes[idx].x;
+                    let drop_y = ar.nodes[idx].y + 0.35;
+                    let drop_z = ar.nodes[idx].z + 0.85;
+                    ar.nodes[idx].available = false;
+                    ar.nodes[idx].ready_at_ms = now + cd;
+
+                    let (coins, item_opt, qty) = match kind.as_str() {
+                        "golden_chest" => roll_golden_chest_loot(),
+                        "wooden_chest" => roll_wooden_chest_loot(),
+                        _ => roll_crystal_loot(),
+                    };
+                    let drop = ar.spawn_drop(drop_x, drop_y, drop_z, coins, item_opt, qty, now);
+                    let snap = ar.snapshot();
+                    Some((drop, snap))
+                }
+            };
+
+            let Some((spawned_drop, arena_snap)) = outcome else {
+                if consumed_key {
+                    let mut cfg = self.users_cfg.write().await;
+                    if let Some(user) = cfg
+                        .users
+                        .iter_mut()
+                        .find(|u| u.username.eq_ignore_ascii_case(username))
+                    {
+                        add_inventory_item(&mut user.inventory, "dungeon_key", 1);
+                    }
+                }
+                return Err("Another adventurer just opened that chest!".into());
+            };
+
+            if consumed_key {
+                self.persist_users_async().await;
+                self.send_economy_update(self_id, username, "used_dungeon_key")
+                    .await;
+            }
+
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::ArenaSync {
+                state_seq: seq,
+                event: Some(format!("node:{node_id}")),
+                actor_id: Some(self_id.to_string()),
+                arena: arena_snap.clone(),
+            });
+
+            return Ok(serde_json::json!({
+                "ok": true,
+                "drop": spawned_drop,
+                "arena": arena_snap,
+            }));
+        }
+
         let outcome = {
             let mut dg = self.dungeon.write().await;
             let Some(idx) = dg.nodes.iter().position(|n| n.id == node_id) else {
@@ -3514,8 +3801,11 @@ impl WorldEngine {
             };
             (p.zone, p.x, p.y, p.z, p.user.username.clone())
         };
-        if p_zone != ZONE_DUNGEON {
-            return Err("Enter the Crystal Cavern Portal first!".into());
+        if p_zone != ZONE_DUNGEON && p_zone != ZONE_ARENA {
+            return Err("Enter the Crystal Cavern or Shadow Rift Portal first!".into());
+        }
+        if p_zone == ZONE_ARENA && !self.arena.read().await.status_for(self_id).alive {
+            return Err("💀 You were defeated! Click Respawn at Sanctuary first!".into());
         }
 
         let is_raygun = mode == "raygun";
@@ -3537,6 +3827,90 @@ impl WorldEngine {
         }
 
         let now = now_ms();
+        if p_zone == ZONE_ARENA {
+            let (dmg, defeated, spawned_drop, arena_snap, mob_center) = {
+                let mut ar = self.arena.write().await;
+                let Some(idx) = ar.mobs.iter().position(|m| m.id == mob_id) else {
+                    return Err("Shadow Rift monster not found.".into());
+                };
+                if !ar.mobs[idx].alive {
+                    return Err("That monster was already defeated!".into());
+                }
+                if now.saturating_sub(ar.mobs[idx].last_hit_at_ms) < 160 {
+                    return Err("Attack cooling down...".into());
+                }
+                let mx = ar.mobs[idx].x;
+                let my = ar.mobs[idx].y;
+                let mz = ar.mobs[idx].z;
+                let dist = ((px - mx).powi(2) + (py - my).powi(2) + (pz - mz).powi(2)).sqrt();
+                let max_reach = if is_raygun { 14.5 } else { 6.5 };
+                if dist > max_reach {
+                    return Err(if is_raygun {
+                        "Step within 14m so your Plasma Ray Gun can lock onto that monster!".into()
+                    } else {
+                        "Move closer to stomp or Sparkle-Blast that monster!".into()
+                    });
+                }
+
+                let dmg: u8 = if is_raygun {
+                    3
+                } else if mode == "stomp" {
+                    2
+                } else {
+                    1
+                };
+                ar.mobs[idx].last_hit_at_ms = now;
+                ar.mobs[idx].hp = ar.mobs[idx].hp.saturating_sub(dmg);
+
+                let mut maybe_drop = None;
+                let defeated = ar.mobs[idx].hp == 0;
+                if defeated {
+                    let kind = ar.mobs[idx].kind.clone();
+                    ar.mobs[idx].alive = false;
+                    ar.mobs[idx].respawn_at_ms = now + 15_000;
+                    let (coins, item_opt, qty) = roll_mob_loot(&kind);
+                    maybe_drop =
+                        Some(ar.spawn_drop(mx, my.max(0.25), mz, coins, item_opt, qty, now));
+                }
+                let snap = ar.snapshot();
+                (dmg, defeated, maybe_drop, snap, [mx, my + 0.75, mz])
+            };
+
+            if is_raygun {
+                let beam_seq = self.next_state_seq();
+                let _ = self.udp_event_tx.send(UdpWorldEvent::RayGunBeam {
+                    state_seq: beam_seq,
+                    actor_id: self_id.to_string(),
+                    zone: ZONE_ARENA,
+                    from: [px, py + 1.05, pz],
+                    to: mob_center,
+                    hit_mob_id: Some(mob_id.to_string()),
+                });
+            }
+
+            let seq = self.next_state_seq();
+            let event_tag = if defeated {
+                format!("mob_defeated:{mob_id}")
+            } else {
+                format!("mob_hit:{mob_id}")
+            };
+            let _ = self.udp_event_tx.send(UdpWorldEvent::ArenaSync {
+                state_seq: seq,
+                event: Some(event_tag),
+                actor_id: Some(self_id.to_string()),
+                arena: arena_snap.clone(),
+            });
+
+            return Ok(serde_json::json!({
+                "ok": true,
+                "mode": mode,
+                "damage": dmg,
+                "defeated": defeated,
+                "drop": spawned_drop,
+                "arena": arena_snap,
+            }));
+        }
+
         let (dmg, defeated, spawned_drop, snapshot, mob_center) = {
             let mut dg = self.dungeon.write().await;
             let Some(idx) = dg.mobs.iter().position(|m| m.id == mob_id) else {
@@ -3732,11 +4106,29 @@ impl WorldEngine {
             };
             (p.zone, p.x, p.y, p.z)
         };
-        if p_zone != ZONE_DUNGEON {
-            return Err("You must be inside the Crystal Cavern to pick up dungeon drops.".into());
+        if p_zone != ZONE_DUNGEON && p_zone != ZONE_ARENA {
+            return Err(
+                "You must be inside the Crystal Cavern or Shadow Rift to pick up loot drops."
+                    .into(),
+            );
+        }
+        if p_zone == ZONE_ARENA && !self.arena.read().await.status_for(self_id).alive {
+            return Err("💀 You were defeated! Click Respawn at Sanctuary first!".into());
         }
 
-        let (picked, snapshot) = {
+        let (picked, dungeon_snap, arena_snap) = if p_zone == ZONE_ARENA {
+            let mut ar = self.arena.write().await;
+            let Some(idx) = ar.drops.iter().position(|d| d.id == drop_id) else {
+                return Err("Loot orb already collected!".into());
+            };
+            let d = &ar.drops[idx];
+            let dist = ((px - d.x).powi(2) + (py - d.y).powi(2) + (pz - d.z).powi(2)).sqrt();
+            if dist > 6.0 {
+                return Err("Walk closer to scoop up that loot!".into());
+            }
+            let removed = ar.drops.remove(idx);
+            (removed, None, Some(ar.snapshot()))
+        } else {
             let mut dg = self.dungeon.write().await;
             let Some(idx) = dg.drops.iter().position(|d| d.id == drop_id) else {
                 return Err("Loot orb already collected!".into());
@@ -3747,8 +4139,7 @@ impl WorldEngine {
                 return Err("Walk closer to scoop up that loot!".into());
             }
             let removed = dg.drops.remove(idx);
-            let snap = dg.snapshot();
-            (removed, snap)
+            (removed, Some(dg.snapshot()), None)
         };
 
         let econ = {
@@ -3779,6 +4170,22 @@ impl WorldEngine {
             .await;
 
         let seq = self.next_state_seq();
+        if let Some(arena) = arena_snap {
+            let _ = self.udp_event_tx.send(UdpWorldEvent::ArenaSync {
+                state_seq: seq,
+                event: Some(format!("pickup:{drop_id}")),
+                actor_id: Some(self_id.to_string()),
+                arena: arena.clone(),
+            });
+            return Ok(serde_json::json!({
+                "ok": true,
+                "picked": picked,
+                "economy": econ,
+                "arena": arena,
+            }));
+        }
+
+        let snapshot = dungeon_snap.unwrap();
         let _ = self.udp_event_tx.send(UdpWorldEvent::DungeonSync {
             state_seq: seq,
             event: Some(format!("pickup:{drop_id}")),
@@ -3824,6 +4231,9 @@ impl WorldEngine {
         if p_zone == ZONE_PRISON {
             return Err("Inventory items cannot be used while inside Debtor's Prison!".into());
         }
+        if p_zone == ZONE_ARENA && !self.arena.read().await.status_for(self_id).alive {
+            return Err("💀 You were defeated! Click Respawn at Sanctuary first!".into());
+        }
 
         if def.id == "prism_block" && p_zone != ZONE_PLAZA {
             return Err(
@@ -3853,6 +4263,7 @@ impl WorldEngine {
         let now = now_ms();
         let mut speed_until = 0u64;
         let mut jump_until = 0u64;
+        let mut healed_arena_status: Option<ArenaPlayerStatus> = None;
         match def.id {
             "speed_potion" => {
                 let mut map = self.players.write().await;
@@ -3861,6 +4272,9 @@ impl WorldEngine {
                     speed_until = p.speed_boost_until_ms;
                     jump_until = p.jump_boost_until_ms;
                 }
+                if p_zone == ZONE_ARENA {
+                    healed_arena_status = self.arena.write().await.heal_player(self_id, 35);
+                }
             }
             "jump_potion" => {
                 let mut map = self.players.write().await;
@@ -3868,6 +4282,9 @@ impl WorldEngine {
                     p.jump_boost_until_ms = now + 20_000;
                     speed_until = p.speed_boost_until_ms;
                     jump_until = p.jump_boost_until_ms;
+                }
+                if p_zone == ZONE_ARENA {
+                    healed_arena_status = self.arena.write().await.heal_player(self_id, 35);
                 }
             }
             "prism_block" => {
@@ -3893,6 +4310,15 @@ impl WorldEngine {
         }
 
         self.persist_users_async().await;
+        if let Some(ref ar_st) = healed_arena_status {
+            let heal_msg = serde_json::json!({
+                "type": "arena_player_status",
+                "event": "healed",
+                "arenaStatus": ar_st,
+            })
+            .to_string();
+            let _ = self.send_peer_targeted_json(self_id, heal_msg).await;
+        }
         let res = serde_json::json!({
             "ok": true,
             "type": "item_used",
@@ -3900,6 +4326,7 @@ impl WorldEngine {
             "itemName": def.name,
             "speedBoostUntilMs": speed_until,
             "jumpBoostUntilMs": jump_until,
+            "arenaStatus": healed_arena_status,
             "economy": econ,
         });
         let _ = self.send_peer_targeted_json(self_id, res.to_string()).await;

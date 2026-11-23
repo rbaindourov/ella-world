@@ -61,6 +61,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dungeon/interact", post(dungeon_interact_handler))
         .route("/dungeon/attack", post(dungeon_attack_handler))
         .route("/dungeon/pickup", post(dungeon_pickup_handler))
+        .route("/arena/respawn", post(arena_respawn_handler))
         .route("/prison/work", post(prison_work_handler))
         .route("/trade/invite", post(trade_invite_handler))
         .route("/trade/respond", post(trade_respond_handler))
@@ -1545,6 +1546,28 @@ async fn dungeon_portal_handler(
         .transition_player_zone(&self_id, &username, target_zone)
         .await
     {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArenaRespawnPayload {
+    token: String,
+}
+
+async fn arena_respawn_handler(
+    State(st): State<AppState>,
+    Json(body): Json<ArenaRespawnPayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
+    };
+    match st.world.respawn_in_arena(&self_id, &username).await {
         Ok(res) => Json(res).into_response(),
         Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
     }

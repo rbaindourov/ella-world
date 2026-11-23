@@ -10,8 +10,8 @@ use crate::models::now_ms;
 use crate::udp_wire::{
     decode_c2s_state, encode_native_voice_opus, encode_native_welcome, encode_pong,
     unwrap_native_packet, wrap_native_packet, OP_C2S_PING, OP_C2S_STATE, OP_EVENT_ACK,
-    OP_EVENT_JSON, OP_HELLO, OP_S2C_PONG, OP_S2C_WORLD_STATE, OP_VOICE_OPUS, ZONE_DUNGEON,
-    ZONE_PRISON,
+    OP_EVENT_JSON, OP_HELLO, OP_S2C_PONG, OP_S2C_WORLD_STATE, OP_VOICE_OPUS, ZONE_ARENA,
+    ZONE_DUNGEON, ZONE_PRISON,
 };
 use crate::world::{BridgedOpusFrame, WorldEngine};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -119,6 +119,11 @@ impl NativeUdpServer {
                     crate::world::UdpWorldEvent::DungeonMobs { .. }
                         | crate::world::UdpWorldEvent::DungeonSync { .. }
                 );
+                let arena_only = matches!(
+                    ev,
+                    crate::world::UdpWorldEvent::ArenaMobs { .. }
+                        | crate::world::UdpWorldEvent::ArenaSync { .. }
+                );
                 let prison_only = matches!(ev, crate::world::UdpWorldEvent::PrisonSync { .. });
                 let raygun_zone = match &ev {
                     crate::world::UdpWorldEvent::RayGunBeam { zone, .. } => Some(*zone),
@@ -139,6 +144,9 @@ impl NativeUdpServer {
                 };
                 for sess in peers {
                     if dungeon_only && ev_world.get_peer_zone(&sess.self_id).await != ZONE_DUNGEON {
+                        continue;
+                    }
+                    if arena_only && ev_world.get_peer_zone(&sess.self_id).await != ZONE_ARENA {
                         continue;
                     }
                     if prison_only && ev_world.get_peer_zone(&sess.self_id).await != ZONE_PRISON {
@@ -462,6 +470,11 @@ pub async fn handle_client_event_command(
         "zone_portal" => {
             let zone = cmd.get("zone").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
             if let Err(err) = world.transition_player_zone(self_id, username, zone).await {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "arena_respawn" => {
+            if let Err(err) = world.respawn_in_arena(self_id, username).await {
                 emit_action_error(world, self_id, cmd_type, &err).await;
             }
         }

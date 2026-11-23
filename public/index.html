@@ -168,6 +168,9 @@
           <button type="button" id="warp-dungeon-btn" class="hud-chip-btn dungeon-chip" title="Enter or Exit the Crystal Cavern Dungeon! (Shortcut: G)">
             🌀 Dungeon
           </button>
+          <button type="button" id="warp-arena-btn" class="hud-chip-btn arena-chip" title="Enter or Exit the Shadow Rift Mortal Arena! Watch your HP &amp; Lava! (Shortcut: K)">
+            ⚔️ Shadow Rift
+          </button>
           <button type="button" id="warp-runway-btn" class="hud-chip-btn runway-chip" title="Teleport to the Dress to Impress Fashion Runway! (Shortcut: F)">
             💃 Runway
           </button>
@@ -260,6 +263,42 @@
         <span id="prison-debt-pill" class="prison-metric-pill is-debt">🪙 Balance: 0</span>
         <span id="prison-chores-pill" class="prison-metric-pill">🪨 Chores Left: 0</span>
         <span id="prison-gate-pill" class="prison-metric-pill">🔒 Gate Locked</span>
+      </div>
+    </section>
+
+    <!-- Shadow Rift Mortal Arena Health Bar Banner (Shown in ZONE_ARENA; modern-web-guidance: progress) -->
+    <section id="arena-hud-banner" class="arena-hud-banner" hidden aria-label="Shadow Rift Arena Health and Status">
+      <div class="arena-hud-top">
+        <span class="arena-badge">⚔️ SHADOW RIFT ARENA</span>
+        <span id="arena-shield-pill" class="arena-shield-pill" hidden>🛡️ Sanctuary Shield</span>
+      </div>
+      <div class="arena-hp-row">
+        <label for="arena-hp-bar" class="arena-hp-label">❤️ Health</label>
+        <progress id="arena-hp-bar" class="arena-hp-progress" max="100" value="100"></progress>
+        <span id="arena-hp-text" class="arena-hp-text">100 / 100 HP</span>
+      </div>
+      <p id="arena-hud-sub" class="arena-hud-sub">
+        Beware chasing Rift Spiders, Void Wraiths, Magma Colossi &amp; molten lava! Drink potions to heal +35 HP.
+      </p>
+      <span id="arena-status-sr" class="visually-hidden" role="status" aria-live="polite"></span>
+    </section>
+
+    <!-- Shadow Rift Defeat & Respawn Overlay (Shown when HP reaches 0 in ZONE_ARENA) -->
+    <section id="arena-death-overlay" class="arena-death-overlay" hidden aria-labelledby="arena-death-title">
+      <div class="arena-death-card">
+        <span class="arena-death-skull" aria-hidden="true">💀</span>
+        <h2 id="arena-death-title" class="arena-death-title">YOU FELL IN THE SHADOW RIFT!</h2>
+        <p id="arena-death-cause" class="arena-death-cause">
+          Defeated in battle — your coins &amp; Backpack treasures are completely safe!
+        </p>
+        <div class="arena-death-actions">
+          <button type="button" id="arena-respawn-btn" class="primary-cta-btn arena-respawn-btn">
+            ⚡ Respawn at Sanctuary (100 HP)
+          </button>
+          <button type="button" id="arena-flee-plaza-btn" class="secondary-outline-btn">
+            ⛲ Return to Starlight Plaza
+          </button>
+        </div>
       </div>
     </section>
 

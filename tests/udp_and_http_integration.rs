@@ -2668,13 +2668,17 @@ async fn legacy_world_blocks_compatibility_and_doors_windows_interiors_persist()
     assert_eq!(st_login, 200);
     let ella_token = login["token"].as_str().unwrap().to_string();
 
-    // Verify legacy block hydrated with backward-compatible serde defaults
+    // Verify legacy block hydrated with backward-compatible serde defaults alongside Prebuilt Village v1 seeding
+    let village_count = ella_world::models::prebuilt_village_blocks().len();
     let initial_blocks = login["blocks"].as_array().unwrap();
-    assert_eq!(initial_blocks.len(), 1);
-    assert_eq!(initial_blocks[0]["x"], 5);
-    assert_eq!(initial_blocks[0]["kind"], "block");
-    assert_eq!(initial_blocks[0]["rot"], 0);
-    assert_eq!(initial_blocks[0]["open"], false);
+    assert_eq!(initial_blocks.len(), 1 + village_count);
+    let legacy_block = initial_blocks
+        .iter()
+        .find(|b| b["x"] == 5 && b["y"] == 1 && b["z"] == 5)
+        .expect("legacy block at (5,1,5)");
+    assert_eq!(legacy_block["kind"], "block");
+    assert_eq!(legacy_block["rot"], 0);
+    assert_eq!(legacy_block["open"], false);
 
     // Place 2-block-tall hinged Door at (6, 1, 5), rot=2, Window at (8, 2, 5), Stairs at (4, 1, 5), and Kitchen/Bath/Bedroom furniture
     let (st_door, _) = http_json_request(
@@ -2803,7 +2807,8 @@ async fn legacy_world_blocks_compatibility_and_doors_windows_interiors_persist()
     };
     let reloaded = WorldEngine::new(reload_cfg).expect("reload world");
     let bd = reloaded.blocks_data.read().await;
-    assert_eq!(bd.blocks.len(), 7);
+    assert!(bd.prebuilt_village_v1_seeded);
+    assert_eq!(bd.blocks.len(), 7 + village_count);
     let saved_door = bd
         .blocks
         .iter()
@@ -4494,6 +4499,279 @@ async fn expanded_plaza_double_doors_and_pro_obby_gauntlet_end_to_end() {
         initial_coins + 25,
         "Persistent balance must increase by exactly +25 coins"
     );
+
+    running.http_task.abort();
+}
+
+#[tokio::test]
+async fn prebuilt_village_homes_and_shadow_rift_mortal_arena_respawn_end_to_end() {
+    use ella_world::udp_wire::ZONE_ARENA;
+
+    // 1. Verify legacy world_blocks.json without `prebuiltVillageV1Seeded` preserves player blocks AND seeds all 3 homes
+    let cfg = make_test_config("prebuilt_village_and_arena");
+    std::fs::create_dir_all(&cfg.data_dir).expect("create test data_dir");
+    let custom_block_json = json!({
+        "version": 7,
+        "blocks": [
+            {
+                "x": 52,
+                "y": 1,
+                "z": -26,
+                "color": "#a855f7",
+                "author": "ella",
+                "kind": "block",
+                "rot": 0,
+                "open": false
+            }
+        ]
+    });
+    std::fs::write(
+        cfg.data_dir.join("world_blocks.json"),
+        serde_json::to_vec_pretty(&custom_block_json).unwrap(),
+    )
+    .expect("seed legacy world_blocks.json");
+
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (st_login, login_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({
+            "username": "ella",
+            "password": "changeme-starlight",
+            "clientId": "peer_ella_arena"
+        })),
+    )
+    .await;
+    assert_eq!(st_login, 200);
+    let token = login_res["token"].as_str().unwrap().to_string();
+    let self_id = login_res["selfId"].as_str().unwrap().to_string();
+    let blocks = login_res["blocks"].as_array().expect("blocks array");
+
+    // Existing custom block on Plot #1 (52, 1, -26) must be preserved
+    assert!(
+        blocks
+            .iter()
+            .any(|b| b["x"] == 52 && b["y"] == 1 && b["z"] == -26 && b["color"] == "#a855f7"),
+        "Existing player block must be preserved during prebuilt village seeding"
+    );
+    // All 3 Prebuilt Homes must be seeded: Rosewater Villa (81, 1, -22 double_door), Starlight Cottage (52, 1, 17 door), Woodland Chalet (-65, 1, -13 double_door)
+    assert!(
+        blocks
+            .iter()
+            .any(|b| b["x"] == 81 && b["y"] == 1 && b["z"] == -22 && b["kind"] == "double_door"),
+        "Rosewater Grand Villa double_door must be seeded at Plot #2"
+    );
+    assert!(
+        blocks
+            .iter()
+            .any(|b| b["x"] == 52 && b["y"] == 1 && b["z"] == 17 && b["kind"] == "door"),
+        "Starlight Beach Cottage door must be seeded at Plot #3"
+    );
+    assert!(
+        blocks
+            .iter()
+            .any(|b| b["x"] == -65 && b["y"] == 1 && b["z"] == -13 && b["kind"] == "double_door"),
+        "Whispering Pine Woodland Chalet double_door must be seeded at Plot #5"
+    );
+
+    // Toggle Rosewater Villa front double door open via partner cell (82, 1, -22)
+    let (st_toggle, toggle_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": token,
+            "action": "toggle",
+            "x": 82,
+            "y": 1,
+            "z": -22
+        })),
+    )
+    .await;
+    assert_eq!(st_toggle, 200);
+    assert!(
+        toggle_res["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["x"] == 81 && b["y"] == 1 && b["z"] == -22 && b["open"] == true),
+        "Prebuilt Rosewater Villa front double_door must swing open"
+    );
+
+    // 2. Enter Shadow Rift Mortal Arena (`ZONE_ARENA = 3`)
+    let (st_portal, portal_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/portal",
+        Some(json!({
+            "token": token,
+            "zone": ZONE_ARENA
+        })),
+    )
+    .await;
+    assert_eq!(st_portal, 200);
+    assert_eq!(portal_res["zone"], ZONE_ARENA);
+    assert_eq!(portal_res["arenaStatus"]["hp"], 100);
+    assert_eq!(portal_res["arenaStatus"]["alive"], true);
+
+    let arena_mobs = portal_res["arena"]["mobs"].as_array().expect("arena mobs");
+    assert!(arena_mobs.iter().any(|m| m["kind"] == "rift_spider"));
+    assert!(arena_mobs.iter().any(|m| m["kind"] == "void_wraith"));
+    assert!(arena_mobs.iter().any(|m| m["kind"] == "lava_golem"));
+
+    // Move Ella near `spider_1` (-9.5, 0.0, 10.5) over binary C2S state and defeat it
+    running
+        .world
+        .apply_c2s_state(
+            &self_id,
+            DecodedC2SState {
+                seq: 1,
+                client_time_ms: 100,
+                x: -9.5,
+                y: 0.0,
+                z: 11.2,
+                ry: 0.0,
+                anim: "run".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: ZONE_ARENA,
+            },
+        )
+        .await;
+
+    let (st_hit1, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/attack",
+        Some(json!({ "token": token, "mobId": "spider_1", "mode": "stomp" })),
+    )
+    .await;
+    assert_eq!(st_hit1, 200);
+    tokio::time::sleep(Duration::from_millis(180)).await;
+
+    let (st_hit2, hit2_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/attack",
+        Some(json!({ "token": token, "mobId": "spider_1", "mode": "stomp" })),
+    )
+    .await;
+    assert_eq!(st_hit2, 200);
+    assert_eq!(hit2_res["defeated"], true);
+    let drop_id = hit2_res["drop"]["id"].as_str().unwrap().to_string();
+
+    // 3. Expire spawn shield & plunge into the Molten Abyss (`y = -3.0`) -> Ella dies (`hp == 0`, `alive == false`)!
+    {
+        let mut ar = running.world.arena.write().await;
+        if let Some(st) = ar.player_statuses.get_mut(&self_id) {
+            st.invuln_until_ms = 0;
+        }
+    }
+    running
+        .world
+        .apply_c2s_state(
+            &self_id,
+            DecodedC2SState {
+                seq: 2,
+                client_time_ms: 350,
+                x: -9.5,
+                y: -3.0,
+                z: -5.0,
+                ry: 0.0,
+                anim: "jump".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: ZONE_ARENA,
+            },
+        )
+        .await;
+    running.world.tick_arena_if_occupied().await;
+
+    let dead_status = running.world.arena.read().await.status_for(&self_id);
+    assert_eq!(dead_status.hp, 0);
+    assert!(!dead_status.alive, "Lethal lava fall must mark player dead");
+    assert_eq!(dead_status.defeated_by.as_deref(), Some("the Molten Abyss"));
+
+    // Attacking or picking up loot while dead must fail with 400 until Respawn!
+    let (st_dead_atk, dead_atk_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/attack",
+        Some(json!({ "token": token, "mobId": "spider_2", "mode": "blast" })),
+    )
+    .await;
+    assert_eq!(st_dead_atk, 400);
+    assert!(
+        dead_atk_res["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Respawn"),
+        "Dead player must be required to Respawn before attacking"
+    );
+
+    let (st_dead_pick, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/pickup",
+        Some(json!({ "token": token, "dropId": drop_id })),
+    )
+    .await;
+    assert_eq!(st_dead_pick, 400);
+
+    // 4. Respawn at Sanctuary (`POST /api/ella-world/arena/respawn`) -> restores 100 HP at (0, 0, 25)!
+    let (st_respawn, respawn_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/arena/respawn",
+        Some(json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(st_respawn, 200);
+    assert_eq!(respawn_res["arenaStatus"]["hp"], 100);
+    assert_eq!(respawn_res["arenaStatus"]["alive"], true);
+    assert_eq!(respawn_res["z"], 25.0);
+
+    // Walk back to `drop_id` and collect the Arena reward!
+    let coins_before = {
+        let cfg = running.world.users_cfg.read().await;
+        cfg.users
+            .iter()
+            .find(|u| u.username == "ella")
+            .unwrap()
+            .coins
+    };
+    running
+        .world
+        .apply_c2s_state(
+            &self_id,
+            DecodedC2SState {
+                seq: 3,
+                client_time_ms: 600,
+                x: -9.5,
+                y: 0.0,
+                z: 10.5,
+                ry: 0.0,
+                anim: "run".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: ZONE_ARENA,
+            },
+        )
+        .await;
+    let (st_pick_ok, pick_ok_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/pickup",
+        Some(json!({ "token": token, "dropId": drop_id })),
+    )
+    .await;
+    assert_eq!(st_pick_ok, 200);
+    assert!(pick_ok_res["economy"]["coins"].as_i64().unwrap() >= coins_before + 22);
 
     running.http_task.abort();
 }

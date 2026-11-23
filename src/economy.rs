@@ -14,6 +14,11 @@ pub const PLAZA_PORTAL_POS: (f32, f32, f32) = (18.0, 0.0, 16.0);
 pub const PLAZA_RETURN_SPAWN_POS: (f32, f32, f32) = (14.2, 0.0, 13.2);
 pub const DUNGEON_SPAWN_POS: (f32, f32, f32) = (0.0, 0.0, 22.0);
 pub const DUNGEON_RETURN_PORTAL_POS: (f32, f32, f32) = (0.0, 0.0, 28.0);
+pub const PLAZA_ARENA_PORTAL_POS: (f32, f32, f32) = (-22.0, 0.0, 28.0);
+pub const PLAZA_ARENA_RETURN_SPAWN_POS: (f32, f32, f32) = (-18.0, 0.0, 25.0);
+pub const ARENA_SPAWN_POS: (f32, f32, f32) = (0.0, 0.0, 25.0);
+pub const ARENA_RETURN_PORTAL_POS: (f32, f32, f32) = (0.0, 0.0, 30.0);
+pub const ARENA_MAX_HP: u8 = 100;
 pub const PRISON_SPAWN_POS: (f32, f32, f32) = (0.0, 0.0, 3.5);
 pub const PRISON_RELEASE_PORTAL_POS: (f32, f32, f32) = (0.0, 0.0, 11.5);
 pub const PRISON_WORK_REWARD_COINS: i64 = 5;
@@ -673,7 +678,7 @@ impl DungeonState {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn make_mob(
+    pub fn make_mob(
         id: &str,
         kind: &str,
         name: &str,
@@ -864,6 +869,59 @@ pub fn roll_crystal_loot() -> (u64, Option<&'static str>, u32) {
 
 pub fn roll_mob_loot(kind: &str) -> (u64, Option<&'static str>, u32) {
     let mut rng = rand::thread_rng();
+    if kind == "lava_golem" {
+        let coins = rng.gen_range(48u64..=80u64);
+        let roll: u32 = rng.gen_range(0..100);
+        return if roll < 18 {
+            (coins, Some("crown_relic"), 1)
+        } else if roll < 36 {
+            (coins, Some("dragon_egg_relic"), 1)
+        } else if roll < 52 {
+            (coins, Some("royal_chalice"), 1)
+        } else if roll < 68 {
+            (coins, Some("cosmetic_hat_obsidian_crown"), 1)
+        } else if roll < 84 {
+            (coins, Some("cosmetic_acc_crystal_wings"), 1)
+        } else {
+            (coins + 45, Some("legendary_ray_gun"), 1)
+        };
+    }
+    if kind == "void_wraith" {
+        let coins = rng.gen_range(30u64..=50u64);
+        let roll: u32 = rng.gen_range(0..100);
+        return if roll < 22 {
+            (coins, Some("dungeon_key"), 1)
+        } else if roll < 40 {
+            (coins, Some("moon_opal"), 2)
+        } else if roll < 56 {
+            (coins, Some("cosmetic_hat_shadow_hood"), 1)
+        } else if roll < 72 {
+            (coins, Some("cosmetic_acc_star_lantern"), 1)
+        } else if roll < 88 {
+            (coins, Some("royal_chalice"), 1)
+        } else if roll < 94 {
+            (coins, Some("dragon_egg_relic"), 1)
+        } else {
+            (coins + 35, Some("legendary_ray_gun"), 1)
+        };
+    }
+    if kind == "rift_spider" {
+        let coins = rng.gen_range(22u64..=36u64);
+        let roll: u32 = rng.gen_range(0..100);
+        return if roll < 24 {
+            (coins, Some("speed_potion"), 1)
+        } else if roll < 46 {
+            (coins, Some("jump_potion"), 1)
+        } else if roll < 68 {
+            (coins, Some("dungeon_key"), 1)
+        } else if roll < 84 {
+            (coins, Some("geode_lamp"), 1)
+        } else if roll < 95 {
+            (coins, Some("cosmetic_hat_shadow_hood"), 1)
+        } else {
+            (coins + 30, Some("legendary_ray_gun"), 1)
+        };
+    }
     let base_coins = if kind == "crystal_bat" {
         rng.gen_range(18u64..=32u64)
     } else {
@@ -938,6 +996,598 @@ pub fn roll_golden_chest_loot() -> (u64, Option<&'static str>, u32) {
         (coins, Some("bat_plushie"), 1)
     } else {
         (coins + 50, Some("legendary_ray_gun"), 1)
+    }
+}
+
+// ============================================================================
+// Shadow Rift Mortal Arena (`ZONE_ARENA = 3`) — Chasing Mobs, Lava, Death & Respawn
+// ============================================================================
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArenaPlayerStatus {
+    pub hp: u8,
+    pub max_hp: u8,
+    pub alive: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defeated_by: Option<String>,
+    pub respawn_ready_at_ms: u64,
+    pub invuln_until_ms: u64,
+}
+
+impl ArenaPlayerStatus {
+    pub fn fresh(now: u64) -> Self {
+        Self {
+            hp: ARENA_MAX_HP,
+            max_hp: ARENA_MAX_HP,
+            alive: true,
+            defeated_by: None,
+            respawn_ready_at_ms: 0,
+            invuln_until_ms: now + 2_500,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ArenaDamageNotice {
+    pub self_id: String,
+    pub display_name: String,
+    pub status: ArenaPlayerStatus,
+    pub damage: u8,
+    pub source_label: String,
+    pub just_died: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArenaSnapshot {
+    pub nodes: Vec<DungeonNode>,
+    pub mobs: Vec<DungeonMob>,
+    pub drops: Vec<DungeonDrop>,
+    pub portal_pos: [f32; 3],
+    pub return_portal_pos: [f32; 3],
+}
+
+pub fn is_in_arena_sanctuary(x: f32, z: f32) -> bool {
+    z >= 19.5 && x.abs() <= 9.0
+}
+
+/// Returns `Some((damage, cause))` if `(x, y, z)` is touching the Molten Lava River
+/// (`z in (-6.8, -3.2)` off the 3 basalt bridges at `x = 0, ±16.0`) or Outer Lava Moat.
+pub fn check_arena_lava_hazard(x: f32, y: f32, z: f32) -> Option<(u8, &'static str)> {
+    if y < -2.2 {
+        return Some((ARENA_MAX_HP, "the Molten Abyss"));
+    }
+    if is_in_arena_sanctuary(x, z) {
+        return None;
+    }
+    if (x.abs() > 30.4 || z.abs() > 33.4) && y <= 0.28 {
+        return Some((35, "the Outer Lava Moat"));
+    }
+    let on_bridge = x.abs() <= 2.75 || (13.25..=18.75).contains(&x.abs());
+    if z > -6.8 && z < -3.2 && !on_bridge && y <= 0.14 {
+        return Some((34, "the Molten Lava River"));
+    }
+    None
+}
+
+pub fn arena_mob_melee_damage(kind: &str) -> u8 {
+    match kind {
+        "lava_golem" => 32,
+        "void_wraith" => 22,
+        "rift_spider" => 15,
+        _ => 12,
+    }
+}
+
+pub struct ArenaState {
+    pub nodes: Vec<DungeonNode>,
+    pub mobs: Vec<DungeonMob>,
+    pub drops: Vec<DungeonDrop>,
+    pub player_statuses: HashMap<String, ArenaPlayerStatus>,
+    last_player_hit_ms: HashMap<String, u64>,
+    last_lava_tick_ms: HashMap<String, u64>,
+    last_tick_ms: u64,
+    next_drop_seq: u64,
+}
+
+impl Default for ArenaState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ArenaState {
+    pub fn new() -> Self {
+        let nodes = vec![
+            DungeonNode {
+                id: "arena_crystal_1".into(),
+                kind: "crystal".into(),
+                label: "Bloodstone Rift Spire".into(),
+                x: -16.0,
+                y: 0.0,
+                z: 10.0,
+                available: true,
+                cooldown_ms: 15_000,
+                ready_at_ms: 0,
+            },
+            DungeonNode {
+                id: "arena_crystal_2".into(),
+                kind: "crystal".into(),
+                label: "Bloodstone Rift Spire".into(),
+                x: 16.0,
+                y: 0.0,
+                z: 10.0,
+                available: true,
+                cooldown_ms: 15_000,
+                ready_at_ms: 0,
+            },
+            DungeonNode {
+                id: "arena_crystal_3".into(),
+                kind: "crystal".into(),
+                label: "Void-Shard Cluster".into(),
+                x: -22.0,
+                y: 0.0,
+                z: -14.0,
+                available: true,
+                cooldown_ms: 16_000,
+                ready_at_ms: 0,
+            },
+            DungeonNode {
+                id: "arena_crystal_4".into(),
+                kind: "crystal".into(),
+                label: "Void-Shard Cluster".into(),
+                x: 22.0,
+                y: 0.0,
+                z: -14.0,
+                available: true,
+                cooldown_ms: 16_000,
+                ready_at_ms: 0,
+            },
+            DungeonNode {
+                id: "arena_chest_1".into(),
+                kind: "wooden_chest".into(),
+                label: "Obsidian War Chest".into(),
+                x: -8.0,
+                y: 0.0,
+                z: 2.0,
+                available: true,
+                cooldown_ms: 22_000,
+                ready_at_ms: 0,
+            },
+            DungeonNode {
+                id: "arena_chest_2".into(),
+                kind: "wooden_chest".into(),
+                label: "Obsidian War Chest".into(),
+                x: 8.0,
+                y: 0.0,
+                z: 2.0,
+                available: true,
+                cooldown_ms: 22_000,
+                ready_at_ms: 0,
+            },
+            DungeonNode {
+                id: "arena_vault_1".into(),
+                kind: "golden_chest".into(),
+                label: "Magma Citadel Vault (Needs Key 🗝️)".into(),
+                x: -14.0,
+                y: 0.0,
+                z: -27.0,
+                available: true,
+                cooldown_ms: 34_000,
+                ready_at_ms: 0,
+            },
+            DungeonNode {
+                id: "arena_vault_2".into(),
+                kind: "golden_chest".into(),
+                label: "Shadow Throne Vault (Needs Key 🗝️)".into(),
+                x: 14.0,
+                y: 0.0,
+                z: -27.0,
+                available: true,
+                cooldown_ms: 34_000,
+                ready_at_ms: 0,
+            },
+        ];
+
+        let mobs = vec![
+            DungeonState::make_mob(
+                "spider_1",
+                "rift_spider",
+                "Rift Spider",
+                -9.5,
+                0.0,
+                10.5,
+                4.2,
+                0.0,
+                3.7,
+                3,
+            ),
+            DungeonState::make_mob(
+                "spider_2",
+                "rift_spider",
+                "Rift Spider",
+                9.5,
+                0.0,
+                10.5,
+                4.2,
+                1.9,
+                3.7,
+                3,
+            ),
+            DungeonState::make_mob(
+                "spider_3",
+                "rift_spider",
+                "Venomfang Spider",
+                0.0,
+                0.0,
+                3.5,
+                4.6,
+                3.5,
+                3.9,
+                3,
+            ),
+            DungeonState::make_mob(
+                "wraith_1",
+                "void_wraith",
+                "Void Wraith",
+                -15.5,
+                0.25,
+                -11.5,
+                4.5,
+                0.8,
+                4.1,
+                4,
+            ),
+            DungeonState::make_mob(
+                "wraith_2",
+                "void_wraith",
+                "Void Wraith",
+                15.5,
+                0.25,
+                -11.5,
+                4.5,
+                2.7,
+                4.1,
+                4,
+            ),
+            DungeonState::make_mob(
+                "wraith_3",
+                "void_wraith",
+                "Phantom Archon",
+                0.0,
+                0.25,
+                -14.0,
+                5.0,
+                4.4,
+                4.3,
+                4,
+            ),
+            DungeonState::make_mob(
+                "golem_1",
+                "lava_golem",
+                "Magma Colossus",
+                -9.5,
+                0.0,
+                -22.5,
+                4.0,
+                1.2,
+                2.9,
+                6,
+            ),
+            DungeonState::make_mob(
+                "golem_2",
+                "lava_golem",
+                "Obsidian Titan",
+                9.5,
+                0.0,
+                -22.5,
+                4.0,
+                3.9,
+                2.9,
+                6,
+            ),
+        ];
+
+        Self {
+            nodes,
+            mobs,
+            drops: Vec::new(),
+            player_statuses: HashMap::new(),
+            last_player_hit_ms: HashMap::new(),
+            last_lava_tick_ms: HashMap::new(),
+            last_tick_ms: now_ms(),
+            next_drop_seq: 5_001,
+        }
+    }
+
+    pub fn snapshot(&self) -> ArenaSnapshot {
+        ArenaSnapshot {
+            nodes: self.nodes.clone(),
+            mobs: self.mobs.clone(),
+            drops: self.drops.clone(),
+            portal_pos: [
+                PLAZA_ARENA_PORTAL_POS.0,
+                PLAZA_ARENA_PORTAL_POS.1,
+                PLAZA_ARENA_PORTAL_POS.2,
+            ],
+            return_portal_pos: [
+                ARENA_RETURN_PORTAL_POS.0,
+                ARENA_RETURN_PORTAL_POS.1,
+                ARENA_RETURN_PORTAL_POS.2,
+            ],
+        }
+    }
+
+    pub fn enter_or_reset_player(&mut self, self_id: &str, now: u64) -> ArenaPlayerStatus {
+        let fresh = ArenaPlayerStatus::fresh(now);
+        self.player_statuses
+            .insert(self_id.to_string(), fresh.clone());
+        self.last_player_hit_ms.remove(self_id);
+        self.last_lava_tick_ms.remove(self_id);
+        fresh
+    }
+
+    pub fn status_for(&self, self_id: &str) -> ArenaPlayerStatus {
+        self.player_statuses
+            .get(self_id)
+            .cloned()
+            .unwrap_or_else(|| ArenaPlayerStatus::fresh(0))
+    }
+
+    pub fn remove_player(&mut self, self_id: &str) {
+        self.player_statuses.remove(self_id);
+        self.last_player_hit_ms.remove(self_id);
+        self.last_lava_tick_ms.remove(self_id);
+    }
+
+    pub fn heal_player(&mut self, self_id: &str, amount: u8) -> Option<ArenaPlayerStatus> {
+        let st = self.player_statuses.get_mut(self_id)?;
+        if !st.alive {
+            return None;
+        }
+        st.hp = st.hp.saturating_add(amount).min(st.max_hp);
+        Some(st.clone())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_drop(
+        &mut self,
+        x: f32,
+        y: f32,
+        z: f32,
+        coins: u64,
+        item_id: Option<&str>,
+        qty: u32,
+        now: u64,
+    ) -> DungeonDrop {
+        let seq = self.next_drop_seq;
+        self.next_drop_seq = self.next_drop_seq.wrapping_add(1).max(5_001);
+        let (label, rarity, valid_item) = if let Some(iid) = item_id.and_then(find_item_def) {
+            let lbl = if coins > 0 {
+                format!("{} {} x{} + {} 🪙", iid.icon, iid.name, qty.max(1), coins)
+            } else {
+                format!("{} {} x{}", iid.icon, iid.name, qty.max(1))
+            };
+            (lbl, iid.rarity.to_string(), Some(iid.id.to_string()))
+        } else {
+            (format!("🪙 {coins} Coins"), "common".to_string(), None)
+        };
+        let drop_entry = DungeonDrop {
+            id: format!("arena_drop_{seq}"),
+            x: (x * 100.0).round() / 100.0,
+            y: y.max(0.0),
+            z: (z * 100.0).round() / 100.0,
+            coins,
+            item_id: valid_item,
+            qty: if item_id.is_some() { qty.max(1) } else { 0 },
+            label,
+            rarity,
+            expires_at_ms: now + 75_000,
+        };
+        if self.drops.len() >= 80 {
+            self.drops.remove(0);
+        }
+        self.drops.push(drop_entry.clone());
+        drop_entry
+    }
+
+    fn apply_damage_internal(
+        &mut self,
+        self_id: &str,
+        display_name: &str,
+        raw_damage: u8,
+        source_label: &str,
+        now: u64,
+    ) -> Option<ArenaDamageNotice> {
+        let st = self
+            .player_statuses
+            .entry(self_id.to_string())
+            .or_insert_with(|| ArenaPlayerStatus::fresh(0));
+        if !st.alive || now < st.invuln_until_ms || raw_damage == 0 {
+            return None;
+        }
+        st.hp = st.hp.saturating_sub(raw_damage);
+        let mut just_died = false;
+        if st.hp == 0 {
+            st.alive = false;
+            st.defeated_by = Some(source_label.to_string());
+            st.respawn_ready_at_ms = now + 1_200;
+            just_died = true;
+        }
+        Some(ArenaDamageNotice {
+            self_id: self_id.to_string(),
+            display_name: display_name.to_string(),
+            status: st.clone(),
+            damage: raw_damage,
+            source_label: source_label.to_string(),
+            just_died,
+        })
+    }
+
+    /// Advances Shadow Rift Arena chasing AI, melee strikes, lava burn hazards, node/mob respawns, and drops.
+    /// `arena_players` entries: `(self_id, display_name, x, y, z)`.
+    pub fn tick(
+        &mut self,
+        now: u64,
+        arena_players: &[(String, String, f32, f32, f32)],
+    ) -> (bool, Vec<DungeonMob>, Vec<ArenaDamageNotice>) {
+        let dt = ((now.saturating_sub(self.last_tick_ms)) as f32 * 0.001).clamp(0.05, 0.40);
+        self.last_tick_ms = now;
+
+        let mut world_changed = false;
+        let mut damage_notices = Vec::new();
+
+        for node in &mut self.nodes {
+            if !node.available && now >= node.ready_at_ms {
+                node.available = true;
+                node.ready_at_ms = 0;
+                world_changed = true;
+            }
+        }
+
+        let before_drops = self.drops.len();
+        self.drops.retain(|d| now < d.expires_at_ms);
+        if self.drops.len() != before_drops {
+            world_changed = true;
+        }
+
+        // Ensure every player in ZONE_ARENA has an ArenaPlayerStatus and check lava hazards
+        for (pid, disp, px, py, pz) in arena_players {
+            if !self.player_statuses.contains_key(pid) {
+                self.player_statuses
+                    .insert(pid.clone(), ArenaPlayerStatus::fresh(now));
+            }
+            let is_alive = self
+                .player_statuses
+                .get(pid)
+                .map(|s| s.alive)
+                .unwrap_or(false);
+            if !is_alive {
+                continue;
+            }
+            if let Some((lava_dmg, lava_cause)) = check_arena_lava_hazard(*px, *py, *pz) {
+                let last_lava = self.last_lava_tick_ms.get(pid).copied().unwrap_or(0);
+                if lava_dmg >= ARENA_MAX_HP || now.saturating_sub(last_lava) >= 650 {
+                    self.last_lava_tick_ms.insert(pid.clone(), now);
+                    if let Some(notice) =
+                        self.apply_damage_internal(pid, disp, lava_dmg, lava_cause, now)
+                    {
+                        damage_notices.push(notice);
+                    }
+                }
+            }
+        }
+
+        // Collect living, non-Sanctuary player targets for mob aggro
+        let valid_targets: Vec<(String, String, f32, f32, f32)> = arena_players
+            .iter()
+            .filter(|(pid, _, px, _, pz)| {
+                !is_in_arena_sanctuary(*px, *pz)
+                    && self
+                        .player_statuses
+                        .get(pid)
+                        .map(|s| s.alive)
+                        .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+
+        let t_sec = (now % 3_600_000) as f32 * 0.001;
+        let mut pending_melee_hits: Vec<(String, String, u8, String)> = Vec::new();
+
+        for mob in &mut self.mobs {
+            if !mob.alive {
+                if now >= mob.respawn_at_ms {
+                    mob.alive = true;
+                    mob.hp = mob.max_hp;
+                    mob.x = mob.home_x;
+                    mob.y = mob.home_y;
+                    mob.z = mob.home_z;
+                    world_changed = true;
+                }
+                continue;
+            }
+
+            let mob_south_bank = mob.home_z > -5.0;
+            // Find closest living player on the same side of the lava river (within 14m aggro range)
+            let mut best_target: Option<&(String, String, f32, f32, f32)> = None;
+            let mut best_dist = 14.0f32;
+            for tgt in &valid_targets {
+                let tgt_south_bank = tgt.4 > -5.0;
+                if tgt_south_bank != mob_south_bank {
+                    continue;
+                }
+                let d = ((tgt.2 - mob.x).powi(2) + (tgt.4 - mob.z).powi(2)).sqrt();
+                if d < best_dist {
+                    best_dist = d;
+                    best_target = Some(tgt);
+                }
+            }
+
+            if let Some((t_id, t_disp, tx, ty, tz)) = best_target {
+                let dx = *tx - mob.x;
+                let dz = *tz - mob.z;
+                let horiz = (dx * dx + dz * dz).sqrt();
+                if horiz > 0.05 {
+                    mob.ry = dx.atan2(dz);
+                }
+                if horiz > 1.35 {
+                    let step = (mob.speed * dt).min(horiz - 1.25);
+                    let mut nx = mob.x + (dx / horiz) * step;
+                    let mut nz = mob.z + (dz / horiz) * step;
+                    nx = nx.clamp(-29.0, 29.0);
+                    if mob_south_bank {
+                        nz = nz.clamp(-2.3, 18.8);
+                    } else {
+                        nz = nz.clamp(-31.5, -7.7);
+                    }
+                    mob.x = (nx * 100.0).round() / 100.0;
+                    mob.z = (nz * 100.0).round() / 100.0;
+                }
+
+                // Melee strike check (`<= 2.05m` horizontal and reasonable vertical reach)
+                let post_dist = ((*tx - mob.x).powi(2) + (*tz - mob.z).powi(2)).sqrt();
+                if post_dist <= 2.05 && (*ty - mob.y).abs() <= 2.2 {
+                    let last_hit = self.last_player_hit_ms.get(t_id).copied().unwrap_or(0);
+                    if now.saturating_sub(last_hit) >= 1_150 {
+                        self.last_player_hit_ms.insert(t_id.clone(), now);
+                        pending_melee_hits.push((
+                            t_id.clone(),
+                            t_disp.clone(),
+                            arena_mob_melee_damage(&mob.kind),
+                            mob.name.clone(),
+                        ));
+                    }
+                }
+            } else {
+                // Smooth patrol orbit around home
+                let angle = t_sec * (mob.speed * 0.34) + mob.phase;
+                let nx = mob.home_x + angle.cos() * mob.patrol_radius;
+                let nz = mob.home_z + (angle * 0.85).sin() * (mob.patrol_radius * 0.78);
+                let dx = nx - mob.x;
+                let dz = nz - mob.z;
+                if dx.abs() + dz.abs() > 0.01 {
+                    mob.ry = dx.atan2(dz);
+                }
+                let blend = (dt * 2.8).min(1.0);
+                mob.x = ((mob.x + dx * blend) * 100.0).round() / 100.0;
+                mob.z = ((mob.z + dz * blend) * 100.0).round() / 100.0;
+            }
+
+            if mob.kind == "void_wraith" {
+                let hover = (t_sec * 3.1 + mob.phase).sin() * 0.22;
+                mob.y = ((mob.home_y + hover) * 100.0).round() / 100.0;
+            }
+        }
+
+        for (t_id, t_disp, dmg, mob_name) in pending_melee_hits {
+            if let Some(notice) = self.apply_damage_internal(&t_id, &t_disp, dmg, &mob_name, now) {
+                damage_notices.push(notice);
+            }
+        }
+
+        (world_changed, self.mobs.clone(), damage_notices)
     }
 }
 
