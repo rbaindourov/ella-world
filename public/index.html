@@ -129,6 +129,7 @@
             <div class="hud-sub-badges">
               <span id="hud-player-badge" class="hud-player-badge">@ella</span>
               <span id="hud-zone-pill" class="hud-zone-pill" title="Current World Zone">⛲ Starlight Plaza</span>
+              <span id="hud-sky-pill" class="hud-sky-pill" title="Plaza Sky &amp; Weather Cycle">☀️ Sunny Day</span>
               <span id="hud-coins-pill" class="hud-coins-pill" title="Your Starlight Coins">🪙 <strong id="hud-coins-count">0</strong></span>
               <span id="hud-buff-pill" class="hud-buff-pill" hidden role="status" aria-live="polite">⚡ Buff</span>
               <span id="udp-status-pill" class="udp-status-pill is-connecting" title="Rust UDP Voice SFU + 20Hz Binary Game State">⚡ UDP Connecting...</span>
@@ -180,6 +181,21 @@
           <button type="button" id="warp-hard-obby-btn" class="hud-chip-btn hard-obby-chip" title="Teleport to Starlight Sky Gauntlet (Pro Obby) Checkpoint (Shortcut: T)">
             🔥 Pro Obby
           </button>
+          <button type="button" id="open-obby-board-btn" class="hud-chip-btn" title="View Sky Obby &amp; Pro Gauntlet Top 5 Best Times">
+            ⏱️ Best Times
+          </button>
+          <button type="button" id="open-companions-btn" class="hud-chip-btn pets-chip" title="Adopt 3D Pets, Hatch Eggs &amp; Equip Hoverboards (Shortcut: P)">
+            🐾 Pets &amp; Boards
+          </button>
+          <button type="button" id="toggle-hoverboard-btn" class="hud-chip-btn mount-chip" title="Quick-Mount or Dismount Plaza Hoverboard (Shortcut: X)">
+            🛹 Board
+          </button>
+          <button type="button" id="open-homes-btn" class="hud-chip-btn home-chip" title="Claim a Neighborhood Home Plot, Nameplate Mailbox &amp; Door Lock">
+            🏡 Homes
+          </button>
+          <button type="button" id="open-craft-btn" class="hud-chip-btn craft-chip" title="Open Starlight Workshop Crafting Recipes (Shortcut: U)">
+            ⚒️ Craft
+          </button>
           <button type="button" id="open-backpack-btn" class="hud-chip-btn backpack-chip" title="Open Backpack Inventory &amp; Trade Items (Shortcut: I)">
             🎒 Backpack (<span id="hud-item-count">0</span>)
           </button>
@@ -188,6 +204,9 @@
           </button>
           <button type="button" id="open-avatar-btn" class="hud-chip-btn accent-chip" title="Open the Dress to Impress Glam Salon Closet (Shortcut: C)">
             👗 Glam Closet
+          </button>
+          <button type="button" id="open-sky-btn" class="hud-chip-btn sky-chip" hidden title="Host &amp; Admin Sky Cycle &amp; Meteor Shower Controls">
+            🌅 Sky &amp; Meteors
           </button>
           <button type="button" id="open-help-btn" class="hud-chip-btn" title="Controls &amp; How to Play">
             ❓ Controls
@@ -224,14 +243,23 @@
         </div>
       </header>
 
-      <!-- Miniaturized Dress to Impress Fashion Runway Theme & 1-5 Star Voting Pill -->
-      <section id="runway-hud-bar" class="runway-hud-bar" aria-label="Fashion Runway Theme and Star Voting">
+      <!-- Miniaturized Dress to Impress Fashion Runway Theme, Timed Show & 1-5 Star Voting Pill -->
+      <section id="runway-hud-bar" class="runway-hud-bar" aria-label="Fashion Runway Theme, Timed Show and Star Voting">
         <div class="runway-theme-box">
           <span class="runway-badge" title="Runway Theme">👗</span>
           <strong id="runway-theme-label">Starlight Princess Gala</strong>
           <button type="button" id="runway-next-theme-btn" class="runway-mini-btn" title="Spin a new Dress to Impress Runway Theme!" aria-label="New Runway Theme">
             🎲
           </button>
+          <button type="button" id="runway-start-show-btn" class="runway-show-cta-btn" title="Start or Join a Timed Dress-to-Impress Fashion Show! (45s Dress-Up + Catwalk + Podium)">
+            🎬 Start Show!
+          </button>
+        </div>
+
+        <div id="runway-show-status" class="runway-show-status" hidden>
+          <span id="runway-show-phase-text" class="runway-show-phase-text">👗 Dress Up: 45s</span>
+          <progress id="runway-show-progress" class="arena-hp-progress runway-show-progress" max="45" value="45" aria-label="Fashion Show Phase Countdown"></progress>
+          <button type="button" id="runway-ready-btn" class="runway-mini-btn" hidden title="Mark outfit ready for Catwalk!">✅ Ready</button>
         </div>
 
         <span class="runway-sep" aria-hidden="true"></span>
@@ -250,6 +278,13 @@
       </section>
     </div>
 
+    <!-- Active Obby Speedrun Timer Pill (Shown ONLY while an active timed foot-race is running) -->
+    <div id="obby-speedrun-banner" class="obby-speedrun-banner" hidden role="region" aria-label="Active Obby Speedrun Timer">
+      <span id="obby-speedrun-course-label" class="obby-speedrun-course">⏱️ Sky Obby</span>
+      <strong id="obby-speedrun-time" class="obby-speedrun-time">00.00s</strong>
+      <button type="button" id="obby-speedrun-cancel-btn" class="obby-cancel-btn" title="Cancel active speedrun timer" aria-label="Cancel active speedrun timer">✕</button>
+    </div>
+
     <!-- Debtor's Prison Sentence & Community Service Banner (Shown only in ZONE_PRISON) -->
     <section id="prison-sentence-banner" class="prison-sentence-banner" hidden aria-label="Debtor's Prison Sentence Status">
       <div class="prison-banner-header">
@@ -266,8 +301,8 @@
       </div>
     </section>
 
-    <!-- Shadow Rift Mortal Arena Health Bar Banner (Shown in ZONE_ARENA; modern-web-guidance: progress) -->
-    <section id="arena-hud-banner" class="arena-hud-banner" hidden aria-label="Shadow Rift Arena Health and Status">
+    <!-- Shadow Rift Mortal Arena Health & Co-Op Obsidian Dragon Boss Banner (Shown in ZONE_ARENA; modern-web-guidance: progress) -->
+    <section id="arena-hud-banner" class="arena-hud-banner" hidden aria-label="Shadow Rift Arena Health and Boss Status">
       <div class="arena-hud-top">
         <span class="arena-badge">⚔️ SHADOW RIFT ARENA</span>
         <span id="arena-shield-pill" class="arena-shield-pill" hidden>🛡️ Sanctuary Shield</span>
@@ -277,8 +312,13 @@
         <progress id="arena-hp-bar" class="arena-hp-progress" max="100" value="100"></progress>
         <span id="arena-hp-text" class="arena-hp-text">100 / 100 HP</span>
       </div>
+      <div id="arena-boss-row" class="arena-hp-row arena-boss-row" hidden>
+        <label for="arena-boss-bar" class="arena-hp-label arena-boss-label">🐉 Dragon Boss</label>
+        <progress id="arena-boss-bar" class="arena-hp-progress is-boss-bar" max="30" value="30"></progress>
+        <span id="arena-boss-hp-text" class="arena-hp-text">30 / 30 HP</span>
+      </div>
       <p id="arena-hud-sub" class="arena-hud-sub">
-        Beware chasing Rift Spiders, Void Wraiths, Magma Colossi &amp; molten lava! Drink potions to heal +35 HP.
+        Beware Rift Spiders, Void Wraiths, Magma Colossi &amp; North Altar Dragon Shockwaves (Jump over rings)!
       </p>
       <span id="arena-status-sr" class="visually-hidden" role="status" aria-live="polite"></span>
     </section>
@@ -401,6 +441,7 @@
         <button type="button" class="emote-btn" data-emote="cheer" title="Victory Cheer (Shortcut: 6)">🎉 Cheer <span>6</span></button>
         <button type="button" class="emote-btn" data-emote="flip" title="Acrobatic Backflip (Shortcut: 7)">🤸‍♀️ Flip <span>7</span></button>
         <button type="button" class="emote-btn" data-emote="sit" title="Sit &amp; Chill (Shortcut: 8)">🪑 Sit <span>8</span></button>
+        <button type="button" class="emote-btn" data-emote="sleep" title="Cozy Lie Down / Sleep (Shortcut: 9)">😴 Sleep <span>9</span></button>
       </div>
     </div>
 
@@ -469,6 +510,9 @@
           <span class="glam-stage-pill" id="glam-runway-theme-pill" hidden>
             🎯 Runway Theme: <strong id="glam-runway-theme-text">Pop Idol</strong>
           </span>
+          <span class="glam-stage-pill glam-show-timer-pill" id="glam-show-timer-pill" hidden>
+            🎬 Dress-Up: <strong id="glam-show-timer-text">45s</strong>
+          </span>
           <p class="glam-save-status" id="glam-save-status" role="status">✨ Live 3D Fitting Stage</p>
         </div>
 
@@ -517,6 +561,7 @@
               <button type="button" class="glam-pose-btn" data-glam-pose="cheer" aria-pressed="false" title="Victory Cheer (Shortcut: 6)">🎉 Cheer <kbd>6</kbd></button>
               <button type="button" class="glam-pose-btn" data-glam-pose="flip" aria-pressed="false" title="Backflip (Shortcut: 7)">🤸‍♀️ Flip <kbd>7</kbd></button>
               <button type="button" class="glam-pose-btn" data-glam-pose="sit" aria-pressed="false" title="Sit &amp; Chill (Shortcut: 8)">🪑 Sit <kbd>8</kbd></button>
+              <button type="button" class="glam-pose-btn" data-glam-pose="sleep" aria-pressed="false" title="Sleep / Lie Down (Shortcut: 9)">😴 Sleep <kbd>9</kbd></button>
             </div>
           </div>
         </div>
@@ -946,6 +991,16 @@
                   <strong>Prism Wings</strong>
                   <small class="glam-lock-badge" data-lock-badge="cosmetic_acc_crystal_wings">🔒 Locked</small>
                 </button>
+                <button type="button" class="glam-item-card is-exclusive" data-field="accessory" data-val="crystal_blade" data-req-item="crystal_blade">
+                  <span class="glam-card-emoji">⚔️</span>
+                  <strong>Crystal Blade</strong>
+                  <small class="glam-lock-badge" data-lock-badge="crystal_blade">🔒 Craft</small>
+                </button>
+                <button type="button" class="glam-item-card is-exclusive" data-field="accessory" data-val="starlight_wand" data-req-item="starlight_wand">
+                  <span class="glam-card-emoji">🪄</span>
+                  <strong>Starlight Wand</strong>
+                  <small class="glam-lock-badge" data-lock-badge="starlight_wand">🔒 Craft</small>
+                </button>
                 <button type="button" class="glam-item-card is-exclusive is-legendary-card" data-field="accessory" data-val="ray_gun" data-req-item="legendary_ray_gun">
                   <span class="glam-card-emoji">🔫</span>
                   <strong>Starlight Ray Gun</strong>
@@ -1008,18 +1063,19 @@
       </header>
       <div class="modal-body">
         <ul class="help-list">
-          <li><strong>Walk &amp; Sprint:</strong> Press <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or <kbd>Arrow Keys</kbd> for your runway walk, and hold <kbd>Shift</kbd> to sprint!</li>
+          <li><strong>Walk, Sprint &amp; Hoverboards:</strong> Press <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or <kbd>Arrow Keys</kbd>, hold <kbd>Shift</kbd> to sprint, or press <kbd>X</kbd> in Plaza to ride your <strong>🛹 Starlight Hoverboard</strong>!</li>
+          <li><strong>3D Pets &amp; Companion Eggs:</strong> Press <kbd>P</kbd> (<strong>🐾 Pets &amp; Boards</strong>) to equip your free <strong>🐶 Cloud Puppy</strong>, name your pet, adopt rare companions, or hatch <strong>🥚 Companion Eggs</strong>!</li>
+          <li><strong>Claimable Homes, Doorbells &amp; Furniture:</strong> Approach any neighborhood Mailbox (<kbd>E</kbd>) or click <strong>🏡 Homes</strong> to claim a plot, customize your Nameplate, invite Co-Builders, lock/unlock doors, ring a friend's <strong>🔔 Doorbell</strong>, sit on chairs/sofas (<kbd>E</kbd>), lie on beds (<kbd>E</kbd> / <kbd>9</kbd>), and toggle lamps (<kbd>E</kbd> / Click)!</li>
+          <li><strong>Starlight Workshop Crafting:</strong> Visit the glowing Workshop in Plaza (<kbd>E</kbd> or <kbd>U</kbd>) to craft the <strong>⚔️ Crystal Blade</strong>, <strong>🪄 Starlight Wand</strong> (+8 HP Arena mend), <strong>💖 Aegis Heart Charm</strong> (150 Max HP), <strong>🧪 Starlight Elixir</strong>, and <strong>🔮 Rift Beacons</strong>!</li>
+          <li><strong>Timed DTI Fashion Show:</strong> Click <strong>🎬 Start Show!</strong> at the Runway (<kbd>F</kbd>) for an opt-in 45s Dress-Up countdown, automatic spotlight catwalk, 1–5★ voting, friendly AI Judges, and 1st/2nd/3rd Podium Coin prizes!</li>
+          <li><strong>Obby Speedrun Gates &amp; Best Times:</strong> Cross the glowing Start Gate at Sky Obby (<kbd>R</kbd>) or Pro Obby (<kbd>T</kbd>) on foot to race the clock and claim a spot on the persistent <strong>⏱️ Top 5 Best-Time Boards</strong>!</li>
+          <li><strong>Sky Cycle, Meteor Showers &amp; Co-Op Dragon Boss:</strong> Watch Starlight Plaza cycle through Sunny Day, Cotton-Candy Sunset &amp; Aurora Night (catch <strong>🌠 Falling Stars</strong> during Meteor Showers!), and cross Shadow Rift (<kbd>K</kbd>) to the North Island Altar to summon the <strong>🐉 Obsidian Rift Dragon</strong> — jump over its Shockwave Rings for personal treasure &amp; Pet Eggs!</li>
           <li><strong>Crystal Cavern Dungeon:</strong> Step into the glowing portal in East Plaza or press <kbd>G</kbd> (<strong>🌀 Dungeon</strong>) to farm Coins, mine Crystal Veins (<kbd>E</kbd>), open Wooden &amp; Golden Vault Chests, and Jump-Stomp or Sparkle-Blast (<kbd>E</kbd>) Shadow Slimes &amp; Crystal Bats!</li>
-          <li><strong>Backpack &amp; Live Friend Trading:</strong> Press <kbd>I</kbd> (<strong>🎒 Backpack</strong>) to drink potions, place Prism Blocks, or inspect rare relics, and click <strong>🤝 Trade</strong> next to any online friend to swap items &amp; coins!</li>
-          <li><strong>Glam Salon Closet:</strong> Press <kbd>C</kbd> or click <strong>👗 Glam Closet</strong> to mix &amp; match Ella Forensics characters, hairstyles, satin/glitter gowns, and dungeon-exclusive Crowns &amp; Prism Wings!</li>
-          <li><strong>Dress to Impress Runway:</strong> Press <kbd>F</kbd> or click <strong>💃 Runway</strong> to teleport backstage, strut down the illuminated catwalk, strike poses (<kbd>1</kbd>–<kbd>8</kbd>), and vote 1–5 ⭐ stars!</li>
-          <li><strong>Jump, Sky Obby &amp; Pro Obby Gauntlet:</strong> Press <kbd>Spacebar</kbd> to jump, <kbd>R</kbd> to warp to your classic Sky Obby checkpoint, or <kbd>T</kbd> to challenge the <strong>🔥 Starlight Sky Gauntlet</strong> (Pro Obby — blinking tiles, bounce chains, spinning sweepers &amp; +25 🪙 Diamond Crown prize!).</li>
+          <li><strong>Backpack &amp; Live Friend Trading:</strong> Press <kbd>I</kbd> (<strong>🎒 Backpack</strong>) to drink potions, hatch eggs, or inspect rare relics, and click <strong>🤝 Trade</strong> next to any online friend to swap items &amp; coins!</li>
+          <li><strong>Glam Salon Closet:</strong> Press <kbd>C</kbd> or click <strong>👗 Glam Closet</strong> to mix &amp; match Ella Forensics characters, hairstyles, satin/glitter gowns, and dungeon-exclusive Crowns, Blades, Wands &amp; Prism Wings!</li>
           <li><strong>Fullscreen HUD &amp; Controls:</strong> Press <kbd>\</kbd> or click <strong>🎛️ Controls</strong> in the top-right to switch between clean Fullscreen HUD (just Chat) and Controls Mode with per-panel toggles.</li>
-          <li><strong>Look Around (3D Camera):</strong> Drag anywhere on the 3D view with your mouse and scroll to zoom in/out.</li>
           <li><strong>Voice Chat:</strong> Press <kbd>M</kbd> to Mute/Unmute your mic, or turn on <strong>Push-to-Talk</strong> and hold <kbd>V</kbd> to speak.</li>
-          <li><strong>Co-Op 2-Story House &amp; Interiors Builder:</strong> Press <kbd>B</kbd> in Starlight Plaza (buildable across the expanded 210×210 map!) to build solid walls, stairs, walkable Single Doors &amp; 2×2 Double Doors (<kbd>E</kbd> or Click to swing open/close, even while building!), Windows, plus 3D Kitchens, Bathrooms, Bedrooms, and placed Backpack Loot Trophies! Press <kbd>Q</kbd> in Build Mode to rotate 90°.</li>
-          <li><strong>Legendary Starlight Ray Gun:</strong> Hunt monsters &amp; Golden Vault Chests in Crystal Cavern for the Legendary <strong>🔫 Starlight Plasma Ray Gun</strong> — equip it in Backpack (<kbd>I</kbd>) or Glam Closet (<kbd>C</kbd>) for 3-DMG ranged cavern zaps &amp; Plaza laser light shows!</li>
-          <li><strong>Kindness Rules &amp; Debtor's Prison:</strong> Cursing or unkind chat deducts escalating Starlight Coin fines (even into negative debt!). Dropping below the debt limit or hitting the strike limit sends you to <strong>⚖️ Debtor's Prison</strong>, where you press <kbd>E</kbd> at glowing courtyard chores (+5 🪙 toward clearing debt) or ask a parent for a pardon!</li>
+          <li><strong>Kindness Rules &amp; Debtor's Prison:</strong> Cursing or unkind chat deducts escalating Starlight Coin fines. Dropping below the debt limit or hitting the strike limit sends you to <strong>⚖️ Debtor's Prison</strong>, where you press <kbd>E</kbd> at glowing courtyard chores (+5 🪙 toward clearing debt) or ask a parent for a pardon!</li>
         </ul>
         <div class="modal-footer">
           <button type="button" class="primary-cta-btn" data-close-dialog="help-dialog" autofocus>Got It!</button>
@@ -1585,6 +1641,231 @@
             <button type="button" id="trade-lock-btn" class="secondary-outline-btn" aria-describedby="trade-status-note">🔒 Lock Offer</button>
             <button type="button" id="trade-confirm-btn" class="primary-cta-btn" disabled>✅ Confirm Trade</button>
           </div>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Screen-Reader Assertive Live Region Fallback for ariaNotify() (modern-web-guidance: persistent-toast-notifications) -->
+  <p id="sr-live-context" class="visually-hidden" hidden>Screen reader announcements</p>
+  <div id="sr-live-announcements" class="visually-hidden" aria-live="assertive"></div>
+
+  <!-- NON-MODAL TOP-LAYER NOTIFICATION STACK (popover="manual" per modern-web-guidance: persistent-toast-notifications) -->
+  <div id="world-notifications-region" class="world-notifications-region" role="region" aria-label="Notifications">
+    <!-- Opt-In Fashion Show Invite Toast (Never auto-teleports busy builders/fighters!) -->
+    <div id="fashion-invite-popover" class="world-toast-popover" popover="manual">
+      <div class="world-toast-header">
+        <span class="world-toast-icon" aria-hidden="true">👗</span>
+        <div class="world-toast-copy">
+          <strong id="fashion-invite-title">Fashion Show Starting!</strong>
+          <p id="fashion-invite-text" class="world-toast-sub">Theme: Starlight Princess Gala • 45s Dress-Up!</p>
+        </div>
+      </div>
+      <div class="world-toast-actions">
+        <button type="button" id="fashion-invite-dismiss-btn" class="secondary-outline-btn" popovertarget="fashion-invite-popover" popovertargetaction="hide">Dismiss</button>
+        <button type="button" id="fashion-invite-join-btn" class="primary-cta-btn">🎬 Join Show!</button>
+      </div>
+    </div>
+
+    <!-- Home Doorbell Notification Toast -->
+    <div id="doorbell-popover" class="world-toast-popover is-doorbell" popover="manual">
+      <div class="world-toast-header">
+        <span class="world-toast-icon" aria-hidden="true">🔔</span>
+        <div class="world-toast-copy">
+          <strong id="doorbell-popover-title">Ding-Dong! Doorbell Rang!</strong>
+          <p id="doorbell-popover-text" class="world-toast-sub">A friend is visiting your neighborhood home!</p>
+        </div>
+      </div>
+      <div class="world-toast-actions">
+        <button type="button" id="doorbell-dismiss-btn" class="secondary-outline-btn" popovertarget="doorbell-popover" popovertargetaction="hide">Close</button>
+        <button type="button" id="doorbell-unlock-btn" class="primary-cta-btn">🔓 Open Home</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 7: Adoptable 3D Pets & Plaza Hoverboards (modern-web-guidance: dialog Rule 1 + tabs) -->
+  <dialog id="companions-dialog" closedby="any" aria-labelledby="companions-dialog-title">
+    <div class="modal-shell modal-wide">
+      <header class="modal-header">
+        <div>
+          <h2 id="companions-dialog-title">🐾 Adoptable 3D Pets &amp; Plaza Hoverboards</h2>
+          <p class="small-note">Pets follow you across all zones with passive perks! Hoverboards zoom across Starlight Plaza (<kbd>X</kbd> quick-toggle).</p>
+        </div>
+        <button type="button" class="modal-close-btn" data-close-dialog="companions-dialog" aria-label="Close Pets and Hoverboards">✕</button>
+      </header>
+      <div class="modal-body">
+        <div class="backpack-summary-bar">
+          <div class="backpack-wallet-box">
+            <span class="wallet-label">Starlight Coins</span>
+            <strong id="companions-coins-value" class="wallet-value">🪙 0</strong>
+          </div>
+          <form id="pet-nickname-form" class="pet-nickname-form">
+            <label for="pet-nickname-input" class="visually-hidden">Pet Nickname</label>
+            <input type="text" id="pet-nickname-input" maxlength="22" autocomplete="off" placeholder="Name your pet (e.g. Marshmallow)..." />
+            <button type="submit" class="small-action-btn">🏷️ Save Name</button>
+          </form>
+          <button type="button" id="hatch-pet-egg-btn" class="primary-cta-btn">🥚 Hatch Egg (<span id="companions-egg-count">0</span>)</button>
+        </div>
+
+        <div class="glam-tablist" id="companions-tablist" focusgroup="tablist nomemory" role="tablist" aria-label="Companions and Mounts">
+          <button type="button" role="tab" id="comp-tab-pets" aria-selected="true" focusgroupstart>🐾 3D Companion Pets</button>
+          <button type="button" role="tab" id="comp-tab-mounts" aria-selected="false" tabindex="-1">🛹 Plaza Hoverboards &amp; Skates</button>
+        </div>
+
+        <div class="glam-panels-stack" id="companions-panels-stack">
+          <div role="tabpanel" id="comp-panel-pets" aria-labelledby="comp-tab-pets">
+            <div class="comp-panel-inner">
+              <div id="companions-pets-grid" class="backpack-items-grid"></div>
+            </div>
+          </div>
+          <div role="tabpanel" id="comp-panel-mounts" aria-labelledby="comp-tab-mounts" hidden="until-found">
+            <div class="comp-panel-inner">
+              <div id="companions-mounts-grid" class="backpack-items-grid"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="primary-cta-btn" data-close-dialog="companions-dialog">Done</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- MODAL 8: Claimable Neighborhood Homes, Mailboxes & Door Locks -->
+  <dialog id="homes-dialog" closedby="any" aria-labelledby="homes-dialog-title">
+    <div class="modal-shell modal-wide">
+      <header class="modal-header">
+        <div>
+          <h2 id="homes-dialog-title">🏡 Neighborhood Homes, Mailboxes &amp; Doorbells</h2>
+          <p class="small-note">Claim 1 plot at a time (switch or release anytime)! Invite Co-Builders, customize your 3D Mailbox Nameplate, or set Locked + Doorbell 🔔.</p>
+        </div>
+        <button type="button" class="modal-close-btn" data-close-dialog="homes-dialog" aria-label="Close Neighborhood Homes">✕</button>
+      </header>
+      <div class="modal-body">
+        <form id="home-owner-settings-form" class="admin-card" hidden>
+          <h3 id="home-owner-settings-heading">🏷️ My Claimed Home Settings</h3>
+          <div class="admin-form-grid-2">
+            <div class="field-group">
+              <label for="home-custom-title-input">3D Mailbox Nameplate Title</label>
+              <input type="text" id="home-custom-title-input" maxlength="30" autocomplete="off" placeholder="e.g. Ella's Starlight Villa" />
+            </div>
+            <div class="field-group">
+              <label for="home-cobuilders-input">Co-Builder Friends (comma-separated usernames)</label>
+              <input type="text" id="home-cobuilders-input" autocomplete="off" spellcheck="false" placeholder="e.g. maya, chloe" />
+            </div>
+          </div>
+          <div class="admin-check-row">
+            <input type="checkbox" id="home-door-locked-checkbox" />
+            <label for="home-door-locked-checkbox">🔒 Lock Doors to Visitors (Visitors can press 🔔 Ring Doorbell to visit!)</label>
+          </div>
+          <div class="btn-group">
+            <button type="submit" class="primary-cta-btn">💾 Save Mailbox &amp; Lock Settings</button>
+            <button type="button" id="home-release-mine-btn" class="secondary-outline-btn danger-action">🔓 Release My Plot</button>
+          </div>
+        </form>
+
+        <div id="homes-plots-grid" class="backpack-items-grid"></div>
+
+        <div class="modal-footer">
+          <button type="button" class="primary-cta-btn" data-close-dialog="homes-dialog">Done</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- MODAL 9: Starlight Workshop Crafting Bench -->
+  <dialog id="craft-dialog" closedby="any" aria-labelledby="craft-dialog-title">
+    <div class="modal-shell modal-wide">
+      <header class="modal-header">
+        <div>
+          <h2 id="craft-dialog-title">⚒️ Starlight Workshop — Gear &amp; Relic Crafting</h2>
+          <p class="small-note">Combine Crystal Cavern &amp; Shadow Rift materials with Starlight Coins to forge 3D weapons, charms, elixirs, lamps &amp; Companion Eggs!</p>
+        </div>
+        <button type="button" class="modal-close-btn" data-close-dialog="craft-dialog" aria-label="Close Starlight Workshop">✕</button>
+      </header>
+      <div class="modal-body">
+        <div id="craft-materials-bar" class="craft-materials-bar" aria-label="Your Crafting Materials"></div>
+        <div id="craft-recipes-grid" class="backpack-items-grid"></div>
+        <div class="modal-footer">
+          <button type="button" class="primary-cta-btn" data-close-dialog="craft-dialog">Done</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- MODAL 10: Obby Speedrun Persistent Top-5 Leaderboards -->
+  <dialog id="obby-board-dialog" closedby="any" aria-labelledby="obby-board-dialog-title">
+    <div class="modal-shell modal-wide">
+      <header class="modal-header">
+        <div>
+          <h2 id="obby-board-dialog-title">⏱️ Obby Speedrun Hall of Fame (Top 5 Best Times)</h2>
+          <p class="small-note">Cross the glowing green Start Gate on foot (hoverboards auto-dismount; checkpoint warps cancel active runs) and sprint to the summit Finish Gate!</p>
+        </div>
+        <button type="button" class="modal-close-btn" data-close-dialog="obby-board-dialog" aria-label="Close Best Times">✕</button>
+      </header>
+      <div class="modal-body">
+        <div class="trade-columns">
+          <section class="admin-card" aria-labelledby="obby-easy-heading">
+            <div class="admin-card-header-row">
+              <h3 id="obby-easy-heading">🏃‍♀️ Classic Sky Obby</h3>
+              <button type="button" id="obby-board-warp-easy-btn" class="small-action-btn">🚀 Warp to Start Gate</button>
+            </div>
+            <ol id="obby-board-easy-list" class="obby-leaderboard-list"></ol>
+          </section>
+          <section class="admin-card" aria-labelledby="obby-hard-heading">
+            <div class="admin-card-header-row">
+              <h3 id="obby-hard-heading">🔥 Pro Obby Gauntlet</h3>
+              <button type="button" id="obby-board-warp-hard-btn" class="small-action-btn">🚀 Warp to Start Gate</button>
+            </div>
+            <ol id="obby-board-hard-list" class="obby-leaderboard-list"></ol>
+          </section>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="primary-cta-btn" data-close-dialog="obby-board-dialog">Done</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- MODAL 11: Host (Ella) & Parent Admin Sky Cycle & Meteor Shower Controls -->
+  <dialog id="sky-dialog" closedby="any" aria-labelledby="sky-dialog-title">
+    <div class="modal-shell">
+      <header class="modal-header">
+        <div>
+          <h2 id="sky-dialog-title">🌅 Sky Cycle &amp; Meteor Shower Controls</h2>
+          <p class="small-note">Host Ella &amp; Parent Admin can switch the Starlight Plaza sky phase or launch a live Meteor Shower with catchable Falling Stars!</p>
+        </div>
+        <button type="button" class="modal-close-btn" data-close-dialog="sky-dialog" aria-label="Close Sky Controls">✕</button>
+      </header>
+      <div class="modal-body">
+        <div class="sky-mode-grid" role="group" aria-label="Sky Lighting Modes">
+          <button type="button" class="glam-item-card" data-sky-mode="auto">
+            <span class="glam-card-emoji">🔄</span>
+            <strong>Auto 12m Cycle</strong>
+            <small>Day → Sunset → Aurora</small>
+          </button>
+          <button type="button" class="glam-item-card" data-sky-mode="day">
+            <span class="glam-card-emoji">☀️</span>
+            <strong>Sunny Day</strong>
+            <small>Bright Crystal Sky</small>
+          </button>
+          <button type="button" class="glam-item-card" data-sky-mode="sunset">
+            <span class="glam-card-emoji">🌅</span>
+            <strong>Cotton-Candy Sunset</strong>
+            <small>Golden Rose Horizon</small>
+          </button>
+          <button type="button" class="glam-item-card" data-sky-mode="aurora_night">
+            <span class="glam-card-emoji">🌌</span>
+            <strong>Aurora Night</strong>
+            <small>Northern Lights &amp; Warm Windows</small>
+          </button>
+        </div>
+        <button type="button" id="launch-meteor-shower-btn" class="primary-cta-btn">
+          🌠 Launch Starlight Meteor Shower! (Spawns Catchable Falling Stars)
+        </button>
+        <div class="modal-footer">
+          <button type="button" class="secondary-outline-btn" data-close-dialog="sky-dialog">Close</button>
         </div>
       </div>
     </div>

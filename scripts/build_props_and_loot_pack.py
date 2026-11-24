@@ -910,6 +910,154 @@ def build_all_assets(pal):
         [pal["marble"], pal["gold"], pal["raygun_plasma"]],
     )
 
+    # 24) Prop_Sofa (Cozy plush velvet loveseat sofa facing -Y -> +Z in Three.js)
+    bm_sofa = load_cc0_bmesh(
+        "GreenChair_01.blend",
+        target_bounds=(0.94, 0.78, 0.84),
+        mat_map={"GreenChair_01": 0},
+    )
+    if bm_sofa is None:
+        bm_sofa = bmesh.new()
+    else:
+        bm_sofa.free()
+        bm_sofa = bmesh.new()
+    # Sculpted 2-cushion loveseat within 1x1 footprint (or wide plush profile) with wooden feet & gold stars
+    for lx in (-0.40, 0.40):
+        for ly in (-0.30, 0.30):
+            append_prim_cyl(bm_sofa, 1, 0.038, 0.026, 0.14, (lx, ly, 0.07), segments=10)
+    # Base frame, plush backrest (+Y), rolled armrests (±X), and 2 plump seat cushions
+    append_prim_box(bm_sofa, 0, (0.94, 0.76, 0.22), (0.0, 0.0, 0.23))
+    append_prim_box(bm_sofa, 0, (0.94, 0.22, 0.54), (0.0, 0.28, 0.56), rot_euler=(-0.08, 0.0, 0.0))
+    for sx in (-0.41, 0.41):
+        append_prim_box(bm_sofa, 0, (0.16, 0.76, 0.34), (sx, 0.0, 0.44))
+        append_prim_cyl(bm_sofa, 0, 0.085, 0.085, 0.76, (sx, 0.0, 0.60), rot_euler=(math.pi / 2, 0.0, 0.0))
+    for cx in (-0.19, 0.19):
+        append_prim_box(bm_sofa, 2, (0.36, 0.52, 0.13), (cx, -0.06, 0.38))
+    # Accent throw pillow + gold star button tufts
+    append_prim_box(bm_sofa, 2, (0.24, 0.12, 0.24), (-0.22, 0.14, 0.54), rot_euler=(0.22, 0.0, 0.18))
+    append_prim_star(bm_sofa, 3, 0.055, 0.025, 0.02, (0.18, 0.16, 0.62), rot_euler=(math.pi / 2, 0.0, 0.0))
+    built["Prop_Sofa"] = finalize_obj(
+        "Prop_Sofa",
+        bm_sofa,
+        [pal["tint"], pal["wood_warm"], pal["fabric_white"], pal["gold"]],
+    )
+
+    # 25) Prop_Crystal_Lamp (Tall Starlight Floor Lamp with toggleable warm glow shade)
+    bm_fl = bmesh.new()
+    append_prim_cyl(bm_fl, 1, 0.24, 0.20, 0.06, (0.0, 0.0, 0.03), segments=18)
+    append_prim_cyl(bm_fl, 0, 0.07, 0.05, 0.18, (0.0, 0.0, 0.14), segments=12)
+    append_prim_cyl(bm_fl, 1, 0.028, 0.024, 1.08, (0.0, 0.0, 0.74), segments=12)
+    append_prim_sphere(bm_fl, 3, 0.065, (0.0, 0.0, 0.88))
+    # Flared pleated starlight shade + glowing bulb core + star finial
+    append_prim_cyl(bm_fl, 2, 0.28, 0.16, 0.34, (0.0, 0.0, 1.36), segments=18)
+    append_prim_torus(bm_fl, 1, 0.28, 0.014, (0.0, 0.0, 1.19))
+    append_prim_torus(bm_fl, 1, 0.16, 0.014, (0.0, 0.0, 1.53))
+    append_prim_star(bm_fl, 1, 0.075, 0.032, 0.022, (0.0, 0.0, 1.62), rot_euler=(math.pi / 2, 0.0, 0.0))
+    built["Prop_Crystal_Lamp"] = finalize_obj(
+        "Prop_Crystal_Lamp",
+        bm_fl,
+        [pal["tint"], pal["gold"], pal["lamp_glow"], pal["amethyst"]],
+    )
+
+    # 26) Loot_Crystal_Blade — Crafted Starlight Crystal Blade (Right-hand weapon & pedestal relic)
+    # Hilt grip near (0, 0.02, 0.14), faceted crystal blade extending forward along -Y & upward (+Z)
+    bm_sw = bmesh.new()
+    append_prim_cyl(bm_sw, 1, 0.028, 0.026, 0.24, (0.0, 0.06, 0.12), segments=12, rot_euler=(0.65, 0.0, 0.0))
+    append_prim_sphere(bm_sw, 0, 0.052, (0.0, 0.14, 0.03))
+    # Winged golden crossguard + central starlight gem
+    append_prim_box(bm_sw, 0, (0.34, 0.055, 0.055), (0.0, -0.02, 0.22), rot_euler=(0.65, 0.0, 0.0))
+    append_prim_sphere(bm_sw, 3, 0.055, (0.0, -0.02, 0.22))
+    # Faceted dual-tone crystal blade extending forward-up along (-Y, +Z)
+    append_prim_box(bm_sw, 2, (0.095, 0.032, 0.68), (0.0, -0.24, 0.48), rot_euler=(0.65, 0.0, 0.0))
+    append_prim_cyl(bm_sw, 3, 0.058, 0.004, 0.26, (0.0, -0.49, 0.79), segments=4, rot_euler=(-0.92, 0.0, 0.0), smooth=False)
+    built["Loot_Crystal_Blade"] = finalize_obj(
+        "Loot_Crystal_Blade",
+        bm_sw,
+        [pal["gold"], pal["obsidian"], pal["raygun_plasma"], pal["amethyst"]],
+    )
+
+    # 27) Loot_Starlight_Wand — Crafted Astral Starlight Wand (Right-hand weapon & pedestal relic)
+    bm_wd2 = bmesh.new()
+    append_prim_cyl(bm_wd2, 0, 0.024, 0.018, 0.56, (0.0, -0.10, 0.26), segments=14, rot_euler=(0.58, 0.0, 0.0))
+    append_prim_sphere(bm_wd2, 2, 0.042, (0.0, 0.06, 0.04))
+    append_prim_torus(bm_wd2, 0, 0.11, 0.018, (0.0, -0.28, 0.52), rot_euler=(0.58, math.pi / 2, 0.0))
+    # Wings flanking wand head + glowing 5-point star core
+    for sx in (-1.0, 1.0):
+        append_prim_box(bm_wd2, 3, (0.18, 0.025, 0.08), (sx * 0.16, -0.28, 0.53), rot_euler=(0.4, 0.0, -sx * 0.38))
+    append_prim_star(bm_wd2, 1, 0.12, 0.052, 0.038, (0.0, -0.30, 0.55), rot_euler=(0.58 + math.pi / 2, 0.0, 0.0))
+    built["Loot_Starlight_Wand"] = finalize_obj(
+        "Loot_Starlight_Wand",
+        bm_wd2,
+        [pal["gold"], pal["lamp_glow"], pal["ruby_gem"], pal["raygun_plasma"]],
+    )
+
+    # 28) Loot_Aegis_Charm — Crafted Aegis Heart Charm (100 -> 150 Max HP in Shadow Rift!)
+    bm_ac = bmesh.new()
+    append_prim_cyl(bm_ac, 0, 0.16, 0.14, 0.05, (0.0, 0.0, 0.025), segments=12)
+    # Sculpted golden shield-ring + twin ruby heart lobes + bottom point
+    append_prim_torus(bm_ac, 0, 0.22, 0.026, (0.0, 0.0, 0.34), rot_euler=(math.pi / 2, 0.0, 0.0))
+    append_prim_sphere(bm_ac, 1, 0.115, (-0.085, 0.0, 0.40), scale=(1.0, 0.58, 1.0))
+    append_prim_sphere(bm_ac, 1, 0.115, (0.085, 0.0, 0.40), scale=(1.0, 0.58, 1.0))
+    append_prim_cyl(bm_ac, 1, 0.145, 0.008, 0.24, (0.0, 0.0, 0.26), segments=12, rot_euler=(math.pi, 0.0, 0.0))
+    append_prim_star(bm_ac, 2, 0.065, 0.028, 0.03, (0.0, -0.055, 0.36), rot_euler=(math.pi / 2, 0.0, 0.0))
+    built["Loot_Aegis_Charm"] = finalize_obj(
+        "Loot_Aegis_Charm",
+        bm_ac,
+        [pal["gold"], pal["ruby_gem"], pal["raygun_plasma"]],
+    )
+
+    # 29) Loot_Rift_Beacon — Crafted Obsidian Rift Beacon (Summons Co-Op Obsidian Dragon Boss!)
+    bm_rb = bmesh.new()
+    append_prim_cyl(bm_rb, 0, 0.22, 0.26, 0.08, (0.0, 0.0, 0.04), segments=6, smooth=False)
+    append_prim_torus(bm_rb, 1, 0.22, 0.022, (0.0, 0.0, 0.36), rot_euler=(0.65, 0.35, 0.0))
+    append_prim_torus(bm_rb, 3, 0.19, 0.018, (0.0, 0.0, 0.36), rot_euler=(-0.55, 0.55, 0.0))
+    append_prim_cyl(bm_rb, 2, 0.14, 0.01, 0.24, (0.0, 0.0, 0.48), segments=5, smooth=False)
+    append_prim_cyl(bm_rb, 2, 0.14, 0.01, 0.24, (0.0, 0.0, 0.24), segments=5, rot_euler=(math.pi, 0.0, 0.0), smooth=False)
+    built["Loot_Rift_Beacon"] = finalize_obj(
+        "Loot_Rift_Beacon",
+        bm_rb,
+        [pal["obsidian"], pal["gold"], pal["burner"], pal["amethyst"]],
+    )
+
+    # 30) Loot_Pet_Egg — Hatchable Starlight Companion Egg
+    bm_pe = bmesh.new()
+    append_prim_torus(bm_pe, 0, 0.20, 0.055, (0.0, 0.0, 0.055), maj_seg=18, min_seg=10)
+    append_prim_sphere(bm_pe, 1, 0.21, (0.0, 0.0, 0.30), u_seg=20, v_seg=16, scale=(1.0, 1.0, 1.30))
+    for ang_i in range(5):
+        ang = ang_i * (math.tau / 5.0)
+        append_prim_star(
+            bm_pe,
+            2,
+            0.055,
+            0.025,
+            0.018,
+            (math.cos(ang) * 0.195, math.sin(ang) * 0.195, 0.31),
+            rot_euler=(math.pi / 2, 0.0, ang + math.pi / 2),
+        )
+    append_prim_torus(bm_pe, 2, 0.14, 0.016, (0.0, 0.0, 0.52), rot_euler=(0.15, 0.0, 0.0))
+    built["Loot_Pet_Egg"] = finalize_obj(
+        "Loot_Pet_Egg",
+        bm_pe,
+        [pal["plush_pink"], pal["raygun_plasma"], pal["gold"]],
+    )
+
+    # 31) Loot_Aurora_Lamp — Rare Crafted Glowing Aurora Crystal Table/Pedestal Lamp
+    bm_al = bmesh.new()
+    append_prim_cyl(bm_al, 0, 0.22, 0.18, 0.07, (0.0, 0.0, 0.035), segments=8)
+    append_prim_cyl(bm_al, 0, 0.04, 0.03, 0.38, (0.0, 0.0, 0.24), segments=10)
+    append_prim_torus(bm_al, 0, 0.22, 0.020, (0.0, 0.0, 0.46))
+    for i in range(6):
+        ang = i * (math.tau / 6.0)
+        cx, cy = math.cos(ang) * 0.21, math.sin(ang) * 0.21
+        mat_slot = 1 if i % 2 == 0 else 2
+        append_prim_cyl(bm_al, mat_slot, 0.045, 0.008, 0.22, (cx, cy, 0.35), segments=6, rot_euler=(math.pi, 0.0, 0.0), smooth=False)
+    append_prim_sphere(bm_al, 3, 0.12, (0.0, 0.0, 0.48))
+    built["Loot_Aurora_Lamp"] = finalize_obj(
+        "Loot_Aurora_Lamp",
+        bm_al,
+        [pal["gold"], pal["raygun_plasma"], pal["amethyst"], pal["lamp_glow"]],
+    )
+
     return built
 
 
@@ -999,6 +1147,8 @@ def main():
         "Prop_Kitchen_Fridge",
         "Prop_Dining_Table",
         "Prop_Chair",
+        "Prop_Sofa",
+        "Prop_Crystal_Lamp",
         "Prop_Bath_Tub",
         "Prop_Bath_Vanity",
         "Prop_Bath_Toilet",
@@ -1025,13 +1175,20 @@ def main():
 
     setup_studio_render((0.0, -9.2, 5.8), (0.0, 0.2, 0.75), PREVIEW_FURNITURE)
 
-    # 3. Arrange Legendary Ray Gun & Monster/Chest Loot Showcase & Render EEVEE Studio Sheet 2
+    # 3. Arrange Crafted Weapons, Charms, Beacons, Pet Egg & Relics Showcase & Render Sheet 2
     for obj in built.values():
         obj.hide_render = True
         obj.rotation_euler = Euler((0.0, 0.0, 0.0), "XYZ")
+        obj.scale = Vector((1.0, 1.0, 1.0))
 
     loot_order = [
         "Loot_Ray_Gun",
+        "Loot_Crystal_Blade",
+        "Loot_Starlight_Wand",
+        "Loot_Aegis_Charm",
+        "Loot_Rift_Beacon",
+        "Loot_Pet_Egg",
+        "Loot_Aurora_Lamp",
         "Loot_Geode_Lamp",
         "Loot_Slime_Lamp",
         "Loot_Bat_Plush",
@@ -1040,15 +1197,17 @@ def main():
         "Loot_Display_Pedestal",
     ]
     for idx, k in enumerate(loot_order):
-        gx = (idx - 3.0) * 0.88
-        built[k].location = Vector((gx, 0.0, 0.0))
+        col = idx % 7
+        row = idx // 7
+        gx = (col - 3.0) * 0.92
+        gy = (row - 0.5) * 1.15
+        built[k].location = Vector((gx, gy, 0.0))
         if k == "Loot_Ray_Gun":
-            built[k].location = Vector((gx + 0.10, 0.0, 0.06))
             built[k].rotation_euler = Euler((0.0, 0.0, 0.78), "XYZ")
-            built[k].scale = Vector((1.42, 1.42, 1.42))
+            built[k].scale = Vector((1.28, 1.28, 1.28))
         built[k].hide_render = False
 
-    setup_studio_render((0.0, -4.8, 1.75), (0.0, 0.0, 0.34), PREVIEW_LOOT)
+    setup_studio_render((0.0, -5.8, 2.35), (0.0, 0.0, 0.35), PREVIEW_LOOT)
     print("Studio verification renders saved cleanly!")
 
 

@@ -3,7 +3,7 @@ use crate::device_sig::{
     active_penalties_for_user, build_machine_seal_set_cookie, extract_effective_client_ip,
     extract_machine_seal_cookie, ClientDeviceTelemetry, ClientPeerAddr,
 };
-use crate::economy::ITEM_CATALOG;
+use crate::economy::{CRAFTING_RECIPES, ITEM_CATALOG, MOUNT_CATALOG, PET_CATALOG};
 use crate::models::{
     normalize_chat_mode, now_ms, AvatarAppearance, UserAccount, SAFE_QUICK_CHAT_PHRASES,
 };
@@ -54,6 +54,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/avatar", post(avatar_handler))
         .route("/chat", post(chat_handler))
         .route("/runway", post(runway_handler))
+        .route("/companions", post(companions_handler))
+        .route("/homes", get(homes_get_handler).post(homes_post_handler))
+        .route("/craft", get(craft_get_handler).post(craft_post_handler))
+        .route("/obby", get(obby_get_handler).post(obby_post_handler))
+        .route("/sky", get(sky_get_handler).post(sky_post_handler))
+        .route("/arena/boss", post(arena_boss_handler))
         .route("/economy/catalog", get(economy_catalog_handler))
         .route("/economy/use", post(economy_use_handler))
         .route("/economy/clone", post(economy_clone_handler))
@@ -120,6 +126,9 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
     let cfg = world.users_cfg.read().await;
     let active = world.players.read().await;
     let blocks_count = world.blocks_data.read().await.blocks.len();
+    let homes_views = world.homes_data.read().await.public_views();
+    let obby_boards = world.obby_leaderboards.read().await.clone();
+    let sky_snapshot = world.sky_state.read().await.snapshot(now_ms());
 
     let users_list: Vec<Value> = cfg
         .users
@@ -158,6 +167,7 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
                 "canTrade": u.can_trade,
                 "deviceCount": device_count,
                 "avatar": u.avatar,
+                "companions": u.companions_snapshot(),
                 "online": online
             })
         })
@@ -241,6 +251,12 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
         "devices": devices_list,
         "recentDeviceEvasions": recent_evasions,
         "itemCatalog": ITEM_CATALOG,
+        "petCatalog": PET_CATALOG,
+        "mountCatalog": MOUNT_CATALOG,
+        "craftingRecipes": CRAFTING_RECIPES,
+        "homes": homes_views,
+        "obbyLeaderboards": obby_boards,
+        "sky": sky_snapshot,
         "users": users_list
     })
 }
@@ -741,7 +757,7 @@ async fn runway_handler(
         );
     };
 
-    let runway = st
+    match st
         .world
         .mutate_runway(
             &self_id,
@@ -751,13 +767,15 @@ async fn runway_handler(
             body.target_username.as_deref(),
             body.stars,
         )
-        .await;
-
-    Json(json!({
-        "ok": true,
-        "runway": runway
-    }))
-    .into_response()
+        .await
+    {
+        Ok(runway) => Json(json!({
+            "ok": true,
+            "runway": runway
+        }))
+        .into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
 }
 
 #[derive(Deserialize)]
@@ -867,28 +885,14 @@ async fn admin_upsert_user_handler(
             if let Some(av_patch) = &body.avatar {
                 av.apply_patch(av_patch);
             }
-            cfg.users.push(UserAccount {
-                username: clean_username.clone(),
+            let mut new_user = UserAccount::new_basic(
+                clean_username.clone(),
                 display_name,
-                password: clean_pw,
-                role: body.role.unwrap_or_else(|| "friend".into()),
-                token_epoch: 0,
-                avatar: av,
-                coins: 0,
-                inventory: HashMap::new(),
-                cloneable_items: Default::default(),
-                violation_strikes: 0,
-                in_debtors_prison: false,
-                prison_reason: None,
-                prison_tasks_remaining: 0,
-                voice_muted_by_parent: false,
-                chat_mode: "normal".into(),
-                suspended: false,
-                can_build: true,
-                can_trade: true,
-                last_pos: None,
-                last_pos_saved_at: None,
-            });
+                clean_pw,
+                body.role.unwrap_or_else(|| "friend".into()),
+            );
+            new_user.avatar = av;
+            cfg.users.push(new_user);
         }
     }
     st.world.persist_users_async().await;
@@ -1487,6 +1491,9 @@ async fn economy_catalog_handler(State(st): State<AppState>) -> Json<Value> {
         "ok": true,
         "itemCatalog": ITEM_CATALOG,
         "items": ITEM_CATALOG,
+        "petCatalog": PET_CATALOG,
+        "mountCatalog": MOUNT_CATALOG,
+        "craftingRecipes": CRAFTING_RECIPES,
         "dungeon": dungeon,
     }))
 }
@@ -1855,6 +1862,275 @@ async fn trade_cancel_handler(
         .await
     {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+// ============================================================================
+// Expansion Pack HTTP Endpoints:
+// 1. Adoptable 3D Pets & Hoverboards (/companions)
+// 2. Claimable Homes, Nameplate Mailboxes & Doorbells (/homes)
+// 3. Starlight Workshop Crafting (/craft)
+// 4. Obby Speedrun Gates & Persistent Leaderboards (/obby)
+// 5. Dynamic Sky / Aurora Night / Meteor Shower (/sky)
+// 6. Shadow Rift Co-Op Obsidian Dragon Boss (/arena/boss)
+// ============================================================================
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompanionsPayload {
+    token: String,
+    action: String,
+    #[serde(default)]
+    pet_id: Option<String>,
+    #[serde(default)]
+    mount_id: Option<String>,
+    #[serde(default)]
+    nickname: Option<String>,
+}
+
+async fn companions_handler(
+    State(st): State<AppState>,
+    Json(body): Json<CompanionsPayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
+    };
+    match st
+        .world
+        .mutate_companions(
+            &self_id,
+            &username,
+            &body.action,
+            body.pet_id.as_deref(),
+            body.mount_id.as_deref(),
+            body.nickname.as_deref(),
+        )
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+async fn homes_get_handler(State(st): State<AppState>) -> Json<Value> {
+    let homes = st.world.homes_data.read().await.public_views();
+    Json(json!({
+        "ok": true,
+        "homes": homes,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HomesMutationPayload {
+    #[serde(default)]
+    token: Option<String>,
+    action: String,
+    #[serde(default)]
+    plot_id: Option<String>,
+    #[serde(default)]
+    custom_title: Option<String>,
+    #[serde(default)]
+    door_locked: Option<bool>,
+    #[serde(default)]
+    co_builders: Option<Vec<String>>,
+}
+
+async fn homes_post_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<HomesMutationPayload>,
+) -> Response {
+    let is_admin = verify_admin_bearer(&st.world, &headers).await;
+    let (self_id, username) = if is_admin {
+        ("admin".to_string(), "admin".to_string())
+    } else {
+        let Some(tok) = body.token.as_deref() else {
+            return json_err(StatusCode::UNAUTHORIZED, "Missing player or admin token.");
+        };
+        let Some(pair) = extract_player_claims(&st.world, tok).await else {
+            return json_err(
+                StatusCode::UNAUTHORIZED,
+                "Invalid or expired session token.",
+            );
+        };
+        pair
+    };
+    match st
+        .world
+        .mutate_home(
+            &self_id,
+            &username,
+            is_admin,
+            &body.action,
+            body.plot_id.as_deref(),
+            body.custom_title.as_deref(),
+            body.door_locked,
+            body.co_builders,
+        )
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+async fn craft_get_handler() -> Json<Value> {
+    Json(json!({
+        "ok": true,
+        "craftingRecipes": CRAFTING_RECIPES,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CraftMutationPayload {
+    token: String,
+    recipe_id: String,
+}
+
+async fn craft_post_handler(
+    State(st): State<AppState>,
+    Json(body): Json<CraftMutationPayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
+    };
+    match st
+        .world
+        .craft_recipe(&self_id, &username, &body.recipe_id)
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+async fn obby_get_handler(State(st): State<AppState>) -> Json<Value> {
+    let leaderboards = st.world.obby_leaderboards.read().await.clone();
+    Json(json!({
+        "ok": true,
+        "obbyLeaderboards": leaderboards,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObbySpeedrunPayload {
+    token: String,
+    action: String,
+    #[serde(default)]
+    course: Option<String>,
+}
+
+async fn obby_post_handler(
+    State(st): State<AppState>,
+    Json(body): Json<ObbySpeedrunPayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
+    };
+    match st
+        .world
+        .obby_speedrun_action(&self_id, &username, &body.action, body.course.as_deref())
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+async fn sky_get_handler(State(st): State<AppState>) -> Json<Value> {
+    let sky = st.world.sky_state.read().await.snapshot(now_ms());
+    Json(json!({
+        "ok": true,
+        "sky": sky,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkyMutationPayload {
+    #[serde(default)]
+    token: Option<String>,
+    action: String,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    star_id: Option<String>,
+}
+
+async fn sky_post_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkyMutationPayload>,
+) -> Response {
+    let is_admin = verify_admin_bearer(&st.world, &headers).await;
+    let (self_id, username_opt) = if is_admin {
+        ("admin".to_string(), None)
+    } else {
+        let Some(tok) = body.token.as_deref() else {
+            return json_err(StatusCode::UNAUTHORIZED, "Missing player or admin token.");
+        };
+        let Some((sid, uname)) = extract_player_claims(&st.world, tok).await else {
+            return json_err(
+                StatusCode::UNAUTHORIZED,
+                "Invalid or expired session token.",
+            );
+        };
+        (sid, Some(uname))
+    };
+    match st
+        .world
+        .mutate_sky(
+            &self_id,
+            username_opt.as_deref(),
+            is_admin,
+            &body.action,
+            body.mode.as_deref(),
+            body.star_id.as_deref(),
+        )
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArenaBossSummonPayload {
+    token: String,
+    #[serde(default)]
+    use_beacon: bool,
+}
+
+async fn arena_boss_handler(
+    State(st): State<AppState>,
+    Json(body): Json<ArenaBossSummonPayload>,
+) -> Response {
+    let Some((self_id, username)) = extract_player_claims(&st.world, &body.token).await else {
+        return json_err(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired session token.",
+        );
+    };
+    match st
+        .world
+        .summon_arena_boss(&self_id, &username, body.use_beacon)
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
         Err(msg) => json_err(StatusCode::BAD_REQUEST, &msg),
     }
 }

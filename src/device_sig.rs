@@ -591,32 +591,11 @@ pub fn match_existing_device(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::AvatarAppearance;
-    use std::collections::HashMap;
 
     fn sample_user(username: &str) -> UserAccount {
-        UserAccount {
-            username: username.into(),
-            display_name: username.into(),
-            password: "pw".into(),
-            role: "friend".into(),
-            token_epoch: 0,
-            avatar: AvatarAppearance::default(),
-            coins: 20,
-            inventory: HashMap::new(),
-            cloneable_items: Default::default(),
-            violation_strikes: 0,
-            in_debtors_prison: false,
-            prison_reason: None,
-            prison_tasks_remaining: 0,
-            voice_muted_by_parent: false,
-            chat_mode: "normal".into(),
-            suspended: false,
-            can_build: true,
-            can_trade: true,
-            last_pos: None,
-            last_pos_saved_at: None,
-        }
+        let mut u = UserAccount::new_basic(username, username, "pw", "friend");
+        u.coins = 20;
+        u
     }
 
     #[test]

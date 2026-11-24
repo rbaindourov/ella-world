@@ -19,6 +19,9 @@ pub const PLAZA_ARENA_RETURN_SPAWN_POS: (f32, f32, f32) = (-18.0, 0.0, 25.0);
 pub const ARENA_SPAWN_POS: (f32, f32, f32) = (0.0, 0.0, 25.0);
 pub const ARENA_RETURN_PORTAL_POS: (f32, f32, f32) = (0.0, 0.0, 30.0);
 pub const ARENA_MAX_HP: u8 = 100;
+pub const ARENA_AEGIS_MAX_HP: u8 = 150;
+pub const ARENA_BOSS_ALTAR_POS: (f32, f32, f32) = (0.0, 0.0, -24.5);
+pub const CRAFTING_BENCH_POS: (f32, f32, f32) = (12.5, 0.0, 6.5);
 pub const PRISON_SPAWN_POS: (f32, f32, f32) = (0.0, 0.0, 3.5);
 pub const PRISON_RELEASE_PORTAL_POS: (f32, f32, f32) = (0.0, 0.0, 11.5);
 pub const PRISON_WORK_REWARD_COINS: i64 = 5;
@@ -244,6 +247,90 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         parent_exclusive: false,
     },
     ItemDef {
+        id: "pet_egg",
+        name: "Starlight Companion Egg",
+        category: "egg",
+        rarity: "rare",
+        icon: "🥚",
+        description: "Hatch in Pets & Boards to adopt a 3D Starlight Kitsune, Shadow Kitty, or Baby Crystal Dragon!",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 120,
+        parent_exclusive: false,
+    },
+    ItemDef {
+        id: "crystal_blade",
+        name: "Starlight Crystal Blade",
+        category: "weapon",
+        rarity: "epic",
+        icon: "⚔️",
+        description: "Crafted melee sword! Equip in right hand for 2 HP strikes + glowing crystal swing arcs!",
+        cosmetic_slot: Some("accessory"),
+        cosmetic_value: Some("crystal_blade"),
+        suggested_coins: 260,
+        parent_exclusive: false,
+    },
+    ItemDef {
+        id: "starlight_wand",
+        name: "Astral Starlight Wand",
+        category: "weapon",
+        rarity: "epic",
+        icon: "🪄",
+        description: "Crafted magic wand! Casts ranged star-bolts (2 HP, 16m range) + mends +8 HP per hit in Shadow Rift!",
+        cosmetic_slot: Some("accessory"),
+        cosmetic_value: Some("starlight_wand"),
+        suggested_coins: 290,
+        parent_exclusive: false,
+    },
+    ItemDef {
+        id: "aegis_heart_charm",
+        name: "Aegis Heart Charm",
+        category: "charm",
+        rarity: "epic",
+        icon: "💖",
+        description: "Passive Guardian Relic! Boosts your Max HP from 100 to 150 inside Shadow Rift while in your Backpack!",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 340,
+        parent_exclusive: false,
+    },
+    ItemDef {
+        id: "starlight_potion",
+        name: "Starlight Restoration Elixir",
+        category: "consumable",
+        rarity: "rare",
+        icon: "🧪",
+        description: "Drink to restore +75 HP in Shadow Rift AND gain +35% Speed & +30% Jump for 30 seconds!",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 55,
+        parent_exclusive: false,
+    },
+    ItemDef {
+        id: "rift_beacon",
+        name: "Obsidian Rift Beacon",
+        category: "consumable",
+        rarity: "epic",
+        icon: "🔮",
+        description: "Summons the Obsidian Dragon Boss at the North Island Altar immediately (bypasses cooldown + boosts Pet Egg luck)!",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 175,
+        parent_exclusive: false,
+    },
+    ItemDef {
+        id: "aurora_crystal_lamp",
+        name: "Aurora Prism Lamp",
+        category: "decor",
+        rarity: "epic",
+        icon: "🌟",
+        description: "Rare crafted floating Aurora orb lamp! Place it inside your home from Backpack.",
+        cosmetic_slot: None,
+        cosmetic_value: None,
+        suggested_coins: 210,
+        parent_exclusive: false,
+    },
+    ItemDef {
         id: "legendary_ray_gun",
         name: "Starlight Plasma Ray Gun",
         category: "weapon",
@@ -292,6 +379,309 @@ pub const ITEM_CATALOG: &[ItemDef] = &[
         parent_exclusive: true,
     },
 ];
+
+// ============================================================================
+// Adoptable 3D Pets, Plaza Hoverboards / Mounts & Starlight Crafting Recipes
+// ============================================================================
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetDef {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub rarity: &'static str,
+    pub icon: &'static str,
+    pub glb_node: &'static str,
+    pub perk_label: &'static str,
+    pub coin_price: u64,
+    pub egg_weight: u32,
+    pub magnet_bonus_m: f32,
+    pub coin_bonus_pct: u32,
+    pub bonus_combat_dmg: u8,
+}
+
+pub const PET_CATALOG: &[PetDef] = &[
+    PetDef {
+        id: "cloud_puppy",
+        name: "Cloud Puppy",
+        rarity: "common",
+        icon: "🐶",
+        glb_node: "Env_Pet_CloudPuppy",
+        perk_label: "Free Starter Bestie • +2.0m Coin Magnet & +5% Coins",
+        coin_price: 0,
+        egg_weight: 0,
+        magnet_bonus_m: 2.0,
+        coin_bonus_pct: 5,
+        bonus_combat_dmg: 0,
+    },
+    PetDef {
+        id: "starlight_kitsune",
+        name: "Starlight Kitsune",
+        rarity: "rare",
+        icon: "🦊",
+        glb_node: "Env_Pet_StarlightKitsune",
+        perk_label: "Triple-Tail Luck • +20% Bonus Coins & +1.5m Magnet",
+        coin_price: 160,
+        egg_weight: 46,
+        magnet_bonus_m: 1.5,
+        coin_bonus_pct: 20,
+        bonus_combat_dmg: 0,
+    },
+    PetDef {
+        id: "shadow_kitty",
+        name: "Shadow Rift Kitty",
+        rarity: "epic",
+        icon: "🐱",
+        glb_node: "Env_Pet_ShadowKitty",
+        perk_label: "Night Prowler • +12% Sprint Agility & +10% Coins",
+        coin_price: 220,
+        egg_weight: 34,
+        magnet_bonus_m: 1.5,
+        coin_bonus_pct: 10,
+        bonus_combat_dmg: 0,
+    },
+    PetDef {
+        id: "baby_crystal_dragon",
+        name: "Baby Crystal Dragon",
+        rarity: "legendary",
+        icon: "🐉",
+        glb_node: "Env_Pet_BabyDragon_Body",
+        perk_label: "Rift Guardian • +1 Combat Damage, +15% Coins & +2.5m Magnet",
+        coin_price: 420,
+        egg_weight: 20,
+        magnet_bonus_m: 2.5,
+        coin_bonus_pct: 15,
+        bonus_combat_dmg: 1,
+    },
+];
+
+pub fn find_pet_def(pet_id: &str) -> Option<&'static PetDef> {
+    PET_CATALOG.iter().find(|p| p.id == pet_id)
+}
+
+pub fn roll_hatched_pet(owned_pets: &std::collections::HashSet<String>) -> &'static PetDef {
+    let mut rng = rand::thread_rng();
+    // Strongly favor unowned pets first so hatching eggs feels rewarding and fair!
+    let unowned: Vec<&'static PetDef> = PET_CATALOG
+        .iter()
+        .filter(|p| p.egg_weight > 0 && !owned_pets.contains(p.id))
+        .collect();
+    let pool: Vec<&'static PetDef> = if !unowned.is_empty() {
+        unowned
+    } else {
+        PET_CATALOG.iter().filter(|p| p.egg_weight > 0).collect()
+    };
+    let total_weight: u32 = pool.iter().map(|p| p.egg_weight).sum();
+    if total_weight == 0 {
+        return &PET_CATALOG[1];
+    }
+    let mut pick = rng.gen_range(0..total_weight);
+    for p in &pool {
+        if pick < p.egg_weight {
+            return p;
+        }
+        pick -= p.egg_weight;
+    }
+    pool[0]
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountDef {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub rarity: &'static str,
+    pub icon: &'static str,
+    pub glb_node: &'static str,
+    pub speed_mult: f32,
+    pub coin_price: u64,
+    pub description: &'static str,
+}
+
+pub const MOUNT_CATALOG: &[MountDef] = &[
+    MountDef {
+        id: "starlight_board",
+        name: "Starlight Hoverboard",
+        rarity: "common",
+        icon: "🛹",
+        glb_node: "Env_Mount_Hoverboard",
+        speed_mult: 1.58,
+        coin_price: 0,
+        description: "Free starter hoverboard! Press X in Starlight Plaza to cruise fast!",
+    },
+    MountDef {
+        id: "sunset_skates",
+        name: "Cotton-Candy Starlight Skates",
+        rarity: "rare",
+        icon: "🛼",
+        glb_node: "Env_Mount_StarlightSkates",
+        speed_mult: 1.66,
+        coin_price: 150,
+        description: "Twin winged hover-skates with pastel ribbon trails across the Plaza!",
+    },
+    MountDef {
+        id: "comet_surfer",
+        name: "Golden Comet Surfer",
+        rarity: "epic",
+        icon: "☄️",
+        glb_node: "Env_Mount_CometSurfer",
+        speed_mult: 1.75,
+        coin_price: 320,
+        description: "Championship gold-and-cyan surfboard glider with starlight wake!",
+    },
+];
+
+pub fn find_mount_def(mount_id: &str) -> Option<&'static MountDef> {
+    MOUNT_CATALOG.iter().find(|m| m.id == mount_id)
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CraftingIngredient {
+    pub item_id: &'static str,
+    pub qty: u32,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CraftingRecipeDef {
+    pub id: &'static str,
+    pub output_item_id: &'static str,
+    pub output_qty: u32,
+    pub coin_cost: u64,
+    pub ingredients: &'static [CraftingIngredient],
+    pub summary: &'static str,
+}
+
+pub const CRAFTING_RECIPES: &[CraftingRecipeDef] = &[
+    CraftingRecipeDef {
+        id: "craft_crystal_blade",
+        output_item_id: "crystal_blade",
+        output_qty: 1,
+        coin_cost: 40,
+        ingredients: &[
+            CraftingIngredient {
+                item_id: "star_shard",
+                qty: 3,
+            },
+            CraftingIngredient {
+                item_id: "slime_gel",
+                qty: 2,
+            },
+        ],
+        summary: "Forge a 2-DMG right-hand Starlight Crystal Blade with 3D arc swing trails!",
+    },
+    CraftingRecipeDef {
+        id: "craft_starlight_wand",
+        output_item_id: "starlight_wand",
+        output_qty: 1,
+        coin_cost: 50,
+        ingredients: &[
+            CraftingIngredient {
+                item_id: "star_shard",
+                qty: 3,
+            },
+            CraftingIngredient {
+                item_id: "moon_opal",
+                qty: 2,
+            },
+        ],
+        summary:
+            "Channel ranged 16m star-bolts (2 DMG) that also mend +8 HP per hit in Shadow Rift!",
+    },
+    CraftingRecipeDef {
+        id: "craft_aegis_charm",
+        output_item_id: "aegis_heart_charm",
+        output_qty: 1,
+        coin_cost: 80,
+        ingredients: &[
+            CraftingIngredient {
+                item_id: "moon_opal",
+                qty: 2,
+            },
+            CraftingIngredient {
+                item_id: "crown_relic",
+                qty: 1,
+            },
+        ],
+        summary: "Raises your Shadow Rift Max HP from 100 -> 150 while carried in your Backpack!",
+    },
+    CraftingRecipeDef {
+        id: "craft_starlight_potion",
+        output_item_id: "starlight_potion",
+        output_qty: 2,
+        coin_cost: 15,
+        ingredients: &[
+            CraftingIngredient {
+                item_id: "star_shard",
+                qty: 1,
+            },
+            CraftingIngredient {
+                item_id: "slime_gel",
+                qty: 1,
+            },
+        ],
+        summary:
+            "Brews 2x Starlight Elixirs (+75 HP heal in Shadow Rift + 30s Speed & Jump boost)!",
+    },
+    CraftingRecipeDef {
+        id: "craft_rift_beacon",
+        output_item_id: "rift_beacon",
+        output_qty: 1,
+        coin_cost: 45,
+        ingredients: &[
+            CraftingIngredient {
+                item_id: "star_shard",
+                qty: 2,
+            },
+            CraftingIngredient {
+                item_id: "moon_opal",
+                qty: 1,
+            },
+        ],
+        summary: "Instantly summons the Co-Op Obsidian Dragon Boss with boosted Pet Egg luck!",
+    },
+    CraftingRecipeDef {
+        id: "craft_aurora_lamp",
+        output_item_id: "aurora_crystal_lamp",
+        output_qty: 1,
+        coin_cost: 35,
+        ingredients: &[
+            CraftingIngredient {
+                item_id: "star_shard",
+                qty: 2,
+            },
+            CraftingIngredient {
+                item_id: "moon_opal",
+                qty: 1,
+            },
+        ],
+        summary: "Crafts a floating luminous Aurora Prism Lamp for your home interior!",
+    },
+    CraftingRecipeDef {
+        id: "craft_pet_egg",
+        output_item_id: "pet_egg",
+        output_qty: 1,
+        coin_cost: 65,
+        ingredients: &[
+            CraftingIngredient {
+                item_id: "slime_gel",
+                qty: 2,
+            },
+            CraftingIngredient {
+                item_id: "moon_opal",
+                qty: 1,
+            },
+        ],
+        summary: "Incubate a Hatchable Starlight Companion Egg to adopt a new 3D Pet!",
+    },
+];
+
+pub fn find_crafting_recipe(recipe_id: &str) -> Option<&'static CraftingRecipeDef> {
+    CRAFTING_RECIPES
+        .iter()
+        .find(|r| r.id == recipe_id || r.output_item_id == recipe_id)
+}
 
 pub fn find_item_def(item_id: &str) -> Option<&'static ItemDef> {
     ITEM_CATALOG.iter().find(|it| it.id == item_id)
@@ -872,15 +1262,17 @@ pub fn roll_mob_loot(kind: &str) -> (u64, Option<&'static str>, u32) {
     if kind == "lava_golem" {
         let coins = rng.gen_range(48u64..=80u64);
         let roll: u32 = rng.gen_range(0..100);
-        return if roll < 18 {
+        return if roll < 16 {
             (coins, Some("crown_relic"), 1)
-        } else if roll < 36 {
+        } else if roll < 30 {
             (coins, Some("dragon_egg_relic"), 1)
-        } else if roll < 52 {
+        } else if roll < 44 {
+            (coins, Some("pet_egg"), 1)
+        } else if roll < 58 {
             (coins, Some("royal_chalice"), 1)
-        } else if roll < 68 {
+        } else if roll < 72 {
             (coins, Some("cosmetic_hat_obsidian_crown"), 1)
-        } else if roll < 84 {
+        } else if roll < 86 {
             (coins, Some("cosmetic_acc_crystal_wings"), 1)
         } else {
             (coins + 45, Some("legendary_ray_gun"), 1)
@@ -893,13 +1285,15 @@ pub fn roll_mob_loot(kind: &str) -> (u64, Option<&'static str>, u32) {
             (coins, Some("dungeon_key"), 1)
         } else if roll < 40 {
             (coins, Some("moon_opal"), 2)
-        } else if roll < 56 {
+        } else if roll < 54 {
             (coins, Some("cosmetic_hat_shadow_hood"), 1)
-        } else if roll < 72 {
+        } else if roll < 68 {
             (coins, Some("cosmetic_acc_star_lantern"), 1)
-        } else if roll < 88 {
+        } else if roll < 80 {
+            (coins, Some("pet_egg"), 1)
+        } else if roll < 89 {
             (coins, Some("royal_chalice"), 1)
-        } else if roll < 94 {
+        } else if roll < 95 {
             (coins, Some("dragon_egg_relic"), 1)
         } else {
             (coins + 35, Some("legendary_ray_gun"), 1)
@@ -982,25 +1376,47 @@ pub fn roll_golden_chest_loot() -> (u64, Option<&'static str>, u32) {
     let mut rng = rand::thread_rng();
     let coins = rng.gen_range(55u64..=95u64);
     let roll: u32 = rng.gen_range(0..100);
-    if roll < 18 {
+    if roll < 16 {
         (coins, Some("crown_relic"), 1)
-    } else if roll < 34 {
+    } else if roll < 30 {
+        (coins, Some("pet_egg"), 1)
+    } else if roll < 44 {
         (coins, Some("royal_chalice"), 1)
-    } else if roll < 50 {
+    } else if roll < 58 {
         (coins, Some("dragon_egg_relic"), 1)
-    } else if roll < 66 {
+    } else if roll < 72 {
         (coins, Some("cosmetic_hat_obsidian_crown"), 1)
-    } else if roll < 82 {
+    } else if roll < 86 {
         (coins, Some("cosmetic_acc_crystal_wings"), 1)
-    } else if roll < 90 {
+    } else if roll < 92 {
         (coins, Some("bat_plushie"), 1)
     } else {
         (coins + 50, Some("legendary_ray_gun"), 1)
     }
 }
 
+/// Rolls personal boss loot for each contributing player upon defeating the Obsidian Dragon Boss.
+pub fn roll_boss_personal_loot() -> (u64, &'static str, u32) {
+    let mut rng = rand::thread_rng();
+    let coins = rng.gen_range(95u64..=140u64);
+    let roll: u32 = rng.gen_range(0..100);
+    if roll < 24 {
+        (coins, "crown_relic", 1)
+    } else if roll < 44 {
+        (coins, "dragon_egg_relic", 1)
+    } else if roll < 60 {
+        (coins, "cosmetic_hat_obsidian_crown", 1)
+    } else if roll < 76 {
+        (coins, "cosmetic_acc_crystal_wings", 1)
+    } else if roll < 88 {
+        (coins, "aurora_crystal_lamp", 1)
+    } else {
+        (coins + 50, "legendary_ray_gun", 1)
+    }
+}
+
 // ============================================================================
-// Shadow Rift Mortal Arena (`ZONE_ARENA = 3`) — Chasing Mobs, Lava, Death & Respawn
+// Shadow Rift Mortal Arena (`ZONE_ARENA = 3`) — Chasing Mobs, Lava, Boss & Respawn
 // ============================================================================
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1017,14 +1433,27 @@ pub struct ArenaPlayerStatus {
 
 impl ArenaPlayerStatus {
     pub fn fresh(now: u64) -> Self {
+        Self::fresh_with_max_hp(now, ARENA_MAX_HP)
+    }
+
+    pub fn fresh_with_max_hp(now: u64, max_hp: u8) -> Self {
+        let capped = max_hp.max(ARENA_MAX_HP);
         Self {
-            hp: ARENA_MAX_HP,
-            max_hp: ARENA_MAX_HP,
+            hp: capped,
+            max_hp: capped,
             alive: true,
             defeated_by: None,
             respawn_ready_at_ms: 0,
             invuln_until_ms: now + 2_500,
         }
+    }
+}
+
+pub fn max_hp_for_inventory(inventory: &HashMap<String, u32>) -> u8 {
+    if player_owns_item(inventory, "aegis_heart_charm") {
+        ARENA_AEGIS_MAX_HP
+    } else {
+        ARENA_MAX_HP
     }
 }
 
@@ -1040,12 +1469,111 @@ pub struct ArenaDamageNotice {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BossShockwave {
+    pub id: u64,
+    pub x: f32,
+    pub z: f32,
+    pub radius: f32,
+    pub max_radius: f32,
+    pub spawned_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArenaBossSnapshot {
+    pub active: bool,
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub ry: f32,
+    pub hp: u16,
+    pub max_hp: u16,
+    pub cooldown_until_ms: u64,
+    pub beacon_boosted: bool,
+    pub altar_pos: [f32; 3],
+    pub shockwaves: Vec<BossShockwave>,
+    pub contributors_count: usize,
+}
+
+pub type BossAttackOutcome = (ArenaBossSnapshot, Option<(Vec<String>, bool)>);
+
+#[derive(Clone, Debug)]
+pub struct ArenaBossState {
+    pub active: bool,
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub ry: f32,
+    pub hp: u16,
+    pub max_hp: u16,
+    pub cooldown_until_ms: u64,
+    pub beacon_boosted: bool,
+    pub shockwaves: Vec<BossShockwave>,
+    pub contributors: std::collections::HashSet<String>,
+    pub scaled_players_count: usize,
+    last_shockwave_ms: u64,
+    next_shockwave_id: u64,
+    shockwave_hits: std::collections::HashSet<(u64, String)>,
+}
+
+impl Default for ArenaBossState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            name: "Obsidian Rift Dragon".to_string(),
+            x: ARENA_BOSS_ALTAR_POS.0,
+            y: 0.4,
+            z: ARENA_BOSS_ALTAR_POS.2,
+            ry: 0.0,
+            hp: 0,
+            max_hp: 18,
+            cooldown_until_ms: 0,
+            beacon_boosted: false,
+            shockwaves: Vec::new(),
+            contributors: std::collections::HashSet::new(),
+            scaled_players_count: 1,
+            last_shockwave_ms: 0,
+            next_shockwave_id: 1,
+            shockwave_hits: std::collections::HashSet::new(),
+        }
+    }
+}
+
+impl ArenaBossState {
+    pub fn snapshot(&self) -> ArenaBossSnapshot {
+        ArenaBossSnapshot {
+            active: self.active,
+            name: self.name.clone(),
+            x: self.x,
+            y: self.y,
+            z: self.z,
+            ry: self.ry,
+            hp: self.hp,
+            max_hp: self.max_hp,
+            cooldown_until_ms: self.cooldown_until_ms,
+            beacon_boosted: self.beacon_boosted,
+            altar_pos: [
+                ARENA_BOSS_ALTAR_POS.0,
+                ARENA_BOSS_ALTAR_POS.1,
+                ARENA_BOSS_ALTAR_POS.2,
+            ],
+            shockwaves: self.shockwaves.clone(),
+            contributors_count: self.contributors.len(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ArenaSnapshot {
     pub nodes: Vec<DungeonNode>,
     pub mobs: Vec<DungeonMob>,
     pub drops: Vec<DungeonDrop>,
     pub portal_pos: [f32; 3],
     pub return_portal_pos: [f32; 3],
+    pub boss: ArenaBossSnapshot,
 }
 
 pub fn is_in_arena_sanctuary(x: f32, z: f32) -> bool {
@@ -1056,7 +1584,7 @@ pub fn is_in_arena_sanctuary(x: f32, z: f32) -> bool {
 /// (`z in (-6.8, -3.2)` off the 3 basalt bridges at `x = 0, ±16.0`) or Outer Lava Moat.
 pub fn check_arena_lava_hazard(x: f32, y: f32, z: f32) -> Option<(u8, &'static str)> {
     if y < -2.2 {
-        return Some((ARENA_MAX_HP, "the Molten Abyss"));
+        return Some((u8::MAX, "the Molten Abyss"));
     }
     if is_in_arena_sanctuary(x, z) {
         return None;
@@ -1084,6 +1612,7 @@ pub struct ArenaState {
     pub nodes: Vec<DungeonNode>,
     pub mobs: Vec<DungeonMob>,
     pub drops: Vec<DungeonDrop>,
+    pub boss: ArenaBossState,
     pub player_statuses: HashMap<String, ArenaPlayerStatus>,
     last_player_hit_ms: HashMap<String, u64>,
     last_lava_tick_ms: HashMap<String, u64>,
@@ -1293,6 +1822,7 @@ impl ArenaState {
             nodes,
             mobs,
             drops: Vec::new(),
+            boss: ArenaBossState::default(),
             player_statuses: HashMap::new(),
             last_player_hit_ms: HashMap::new(),
             last_lava_tick_ms: HashMap::new(),
@@ -1316,16 +1846,45 @@ impl ArenaState {
                 ARENA_RETURN_PORTAL_POS.1,
                 ARENA_RETURN_PORTAL_POS.2,
             ],
+            boss: self.boss.snapshot(),
         }
     }
 
-    pub fn enter_or_reset_player(&mut self, self_id: &str, now: u64) -> ArenaPlayerStatus {
-        let fresh = ArenaPlayerStatus::fresh(now);
+    pub fn enter_or_reset_player_with_max_hp(
+        &mut self,
+        self_id: &str,
+        max_hp: u8,
+        now: u64,
+    ) -> ArenaPlayerStatus {
+        let fresh = ArenaPlayerStatus::fresh_with_max_hp(now, max_hp);
         self.player_statuses
             .insert(self_id.to_string(), fresh.clone());
         self.last_player_hit_ms.remove(self_id);
         self.last_lava_tick_ms.remove(self_id);
         fresh
+    }
+
+    pub fn enter_or_reset_player(&mut self, self_id: &str, now: u64) -> ArenaPlayerStatus {
+        self.enter_or_reset_player_with_max_hp(self_id, ARENA_MAX_HP, now)
+    }
+
+    pub fn sync_player_max_hp(
+        &mut self,
+        self_id: &str,
+        desired_max_hp: u8,
+    ) -> Option<ArenaPlayerStatus> {
+        let st = self.player_statuses.get_mut(self_id)?;
+        let capped = desired_max_hp.max(ARENA_MAX_HP);
+        if st.max_hp == capped {
+            return None;
+        }
+        if capped > st.max_hp && st.alive {
+            st.hp = st.hp.saturating_add(capped - st.max_hp).min(capped);
+        } else if st.hp > capped {
+            st.hp = capped;
+        }
+        st.max_hp = capped;
+        Some(st.clone())
     }
 
     pub fn status_for(&self, self_id: &str) -> ArenaPlayerStatus {
@@ -1348,6 +1907,75 @@ impl ArenaState {
         }
         st.hp = st.hp.saturating_add(amount).min(st.max_hp);
         Some(st.clone())
+    }
+
+    pub fn summon_boss(
+        &mut self,
+        summoner_username: &str,
+        active_arena_players: usize,
+        use_beacon: bool,
+        now: u64,
+    ) -> Result<ArenaBossSnapshot, String> {
+        if self.boss.active {
+            return Err("🐉 The Obsidian Rift Dragon is already awake at the North Altar!".into());
+        }
+        if !use_beacon && now < self.boss.cooldown_until_ms {
+            let secs = ((self.boss.cooldown_until_ms - now) as f64 / 1000.0).ceil() as u64;
+            return Err(format!(
+                "⏳ Altar recharging ({secs}s left) — or use an Obsidian Rift Beacon 🔮 to summon instantly!"
+            ));
+        }
+        let players_n = active_arena_players.max(1);
+        let max_hp = (18u16 + (players_n.saturating_sub(1) as u16) * 12).min(120);
+        self.boss.active = true;
+        self.boss.x = ARENA_BOSS_ALTAR_POS.0;
+        self.boss.y = 0.55;
+        self.boss.z = ARENA_BOSS_ALTAR_POS.2;
+        self.boss.ry = 0.0;
+        self.boss.hp = max_hp;
+        self.boss.max_hp = max_hp;
+        self.boss.beacon_boosted = use_beacon;
+        self.boss.shockwaves.clear();
+        self.boss.contributors.clear();
+        self.boss
+            .contributors
+            .insert(summoner_username.to_ascii_lowercase());
+        self.boss.scaled_players_count = players_n;
+        self.boss.last_shockwave_ms = now;
+        self.boss.shockwave_hits.clear();
+        Ok(self.boss.snapshot())
+    }
+
+    /// Applies `damage` to the Obsidian Dragon Boss and records `attacker_username` as a contributor.
+    /// Returns `(boss_snapshot, defeated_contributors_and_beacon_flag)`.
+    pub fn attack_boss(
+        &mut self,
+        attacker_username: &str,
+        damage: u16,
+        now: u64,
+    ) -> Result<BossAttackOutcome, String> {
+        if !self.boss.active {
+            return Err("No active Boss at the North Altar right now.".into());
+        }
+        let uname_lc = attacker_username.to_ascii_lowercase();
+        let is_new_contributor = self.boss.contributors.insert(uname_lc);
+        if is_new_contributor && self.boss.contributors.len() > self.boss.scaled_players_count {
+            self.boss.scaled_players_count = self.boss.contributors.len();
+            self.boss.hp = self.boss.hp.saturating_add(10).min(140);
+            self.boss.max_hp = self.boss.max_hp.saturating_add(10).min(140);
+        }
+        let dealt = damage.max(1);
+        self.boss.hp = self.boss.hp.saturating_sub(dealt);
+        if self.boss.hp == 0 {
+            self.boss.active = false;
+            self.boss.cooldown_until_ms = now + 25_000;
+            self.boss.shockwaves.clear();
+            let mut contributors: Vec<String> = self.boss.contributors.iter().cloned().collect();
+            contributors.sort();
+            let boosted = self.boss.beacon_boosted;
+            return Ok((self.boss.snapshot(), Some((contributors, boosted))));
+        }
+        Ok((self.boss.snapshot(), None))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1425,7 +2053,7 @@ impl ArenaState {
         })
     }
 
-    /// Advances Shadow Rift Arena chasing AI, melee strikes, lava burn hazards, node/mob respawns, and drops.
+    /// Advances Shadow Rift Arena chasing AI, melee strikes, Boss Shockwave Rings, lava burn hazards, node/mob respawns, and drops.
     /// `arena_players` entries: `(self_id, display_name, x, y, z)`.
     pub fn tick(
         &mut self,
@@ -1479,7 +2107,7 @@ impl ArenaState {
             }
         }
 
-        // Collect living, non-Sanctuary player targets for mob aggro
+        // Collect living, non-Sanctuary player targets for mob & boss aggro
         let valid_targets: Vec<(String, String, f32, f32, f32)> = arena_players
             .iter()
             .filter(|(pid, _, px, _, pz)| {
@@ -1495,6 +2123,75 @@ impl ArenaState {
 
         let t_sec = (now % 3_600_000) as f32 * 0.001;
         let mut pending_melee_hits: Vec<(String, String, u8, String)> = Vec::new();
+
+        // Advance Obsidian Rift Dragon Boss + Expanding Jump-Over Shockwave Rings
+        if self.boss.active {
+            let orbit_ang = t_sec * 0.65;
+            self.boss.x =
+                ((ARENA_BOSS_ALTAR_POS.0 + orbit_ang.cos() * 2.4) * 100.0).round() / 100.0;
+            self.boss.z =
+                ((ARENA_BOSS_ALTAR_POS.2 + orbit_ang.sin() * 1.8) * 100.0).round() / 100.0;
+            self.boss.y = ((0.65 + (t_sec * 2.4).sin() * 0.28) * 100.0).round() / 100.0;
+
+            let north_targets: Vec<&(String, String, f32, f32, f32)> = valid_targets
+                .iter()
+                .filter(|(_, _, _, _, pz)| *pz < -6.5)
+                .collect();
+            if let Some((_, _, tx, _, tz)) = north_targets.first() {
+                let dx = *tx - self.boss.x;
+                let dz = *tz - self.boss.z;
+                if dx.abs() + dz.abs() > 0.05 {
+                    self.boss.ry = dx.atan2(dz);
+                }
+            }
+
+            if !north_targets.is_empty() && now.saturating_sub(self.boss.last_shockwave_ms) >= 3_600
+            {
+                let sw_id = self.boss.next_shockwave_id;
+                self.boss.next_shockwave_id = self.boss.next_shockwave_id.wrapping_add(1).max(1);
+                self.boss.last_shockwave_ms = now;
+                self.boss.shockwaves.push(BossShockwave {
+                    id: sw_id,
+                    x: self.boss.x,
+                    z: self.boss.z,
+                    radius: 0.8,
+                    max_radius: 18.0,
+                    spawned_at_ms: now,
+                });
+                world_changed = true;
+            }
+
+            let mut active_sw = Vec::with_capacity(self.boss.shockwaves.len());
+            for mut sw in self.boss.shockwaves.drain(..) {
+                let prev_r = sw.radius;
+                sw.radius = ((sw.radius + 7.5 * dt) * 100.0).round() / 100.0;
+                for (t_id, t_disp, tx, ty, tz) in &north_targets {
+                    let dist = ((*tx - sw.x).powi(2) + (*tz - sw.z).powi(2)).sqrt();
+                    let band_min = prev_r - 0.85;
+                    let band_max = sw.radius + 0.85;
+                    // Players who jump (`ty >= 0.65`) vault cleanly over the ground shockwave ring!
+                    if dist >= band_min
+                        && dist <= band_max
+                        && *ty < 0.65
+                        && self.boss.shockwave_hits.insert((sw.id, t_id.clone()))
+                    {
+                        pending_melee_hits.push((
+                            t_id.clone(),
+                            t_disp.clone(),
+                            18,
+                            "Obsidian Dragon Shockwave".to_string(),
+                        ));
+                    }
+                }
+                if sw.radius < sw.max_radius {
+                    active_sw.push(sw);
+                } else {
+                    self.boss.shockwave_hits.retain(|(id, _)| *id != sw.id);
+                    world_changed = true;
+                }
+            }
+            self.boss.shockwaves = active_sw;
+        }
 
         for mob in &mut self.mobs {
             if !mob.alive {
@@ -2046,28 +2743,9 @@ mod tests {
     use super::*;
 
     fn dummy_user(username: &str, coins: i64) -> UserAccount {
-        UserAccount {
-            username: username.into(),
-            display_name: username.into(),
-            password: "pw".into(),
-            role: "friend".into(),
-            token_epoch: 0,
-            avatar: AvatarAppearance::default(),
-            coins,
-            inventory: HashMap::new(),
-            cloneable_items: Default::default(),
-            violation_strikes: 0,
-            in_debtors_prison: false,
-            prison_reason: None,
-            prison_tasks_remaining: 0,
-            voice_muted_by_parent: false,
-            chat_mode: "normal".into(),
-            suspended: false,
-            can_build: true,
-            can_trade: true,
-            last_pos: None,
-            last_pos_saved_at: None,
-        }
+        let mut u = UserAccount::new_basic(username, username, "pw", "friend");
+        u.coins = coins;
+        u
     }
 
     #[test]

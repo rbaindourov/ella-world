@@ -1,0 +1,4 @@
+# Keep local workstation (`darter`) cool & responsive if `cargo` is invoked directly.
+# Remote offloads on `solidstate` (192.168.11.25) override this via `CARGO_BUILD_JOBS=8`.
+[build]
+jobs = 2

@@ -304,6 +304,8 @@ impl AvatarAppearance {
                 "crystal_wings",
                 "star_lantern",
                 "ray_gun",
+                "crystal_blade",
+                "starlight_wand",
             ]
             .contains(&v)
             {
@@ -403,6 +405,18 @@ pub struct PlayerEconomySnapshot {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct PlayerCompanionsSnapshot {
+    pub owned_pets: Vec<String>,
+    pub equipped_pet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pet_nickname: Option<String>,
+    pub owned_mounts: Vec<String>,
+    pub equipped_mount: Option<String>,
+    pub first_boss_defeated: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct PlayerModerationSnapshot {
     #[serde(default)]
     pub violation_strikes: u32,
@@ -440,6 +454,18 @@ impl Default for PlayerModerationSnapshot {
     }
 }
 
+pub fn default_owned_pets() -> HashSet<String> {
+    HashSet::from(["cloud_puppy".to_string()])
+}
+
+pub fn default_equipped_pet() -> Option<String> {
+    Some("cloud_puppy".to_string())
+}
+
+pub fn default_owned_mounts() -> HashSet<String> {
+    HashSet::from(["starlight_board".to_string()])
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserAccount {
@@ -459,6 +485,18 @@ pub struct UserAccount {
     pub inventory: HashMap<String, u32>,
     #[serde(default)]
     pub cloneable_items: HashSet<String>,
+    #[serde(default = "default_owned_pets")]
+    pub owned_pets: HashSet<String>,
+    #[serde(default = "default_equipped_pet")]
+    pub equipped_pet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pet_nickname: Option<String>,
+    #[serde(default = "default_owned_mounts")]
+    pub owned_mounts: HashSet<String>,
+    #[serde(default)]
+    pub equipped_mount: Option<String>,
+    #[serde(default)]
+    pub first_boss_defeated: bool,
     #[serde(default)]
     pub violation_strikes: u32,
     #[serde(default)]
@@ -500,8 +538,53 @@ pub fn normalize_chat_mode(raw: &str) -> String {
 }
 
 impl UserAccount {
+    pub fn new_basic(
+        username: impl Into<String>,
+        display_name: impl Into<String>,
+        password: impl Into<String>,
+        role: impl Into<String>,
+    ) -> Self {
+        Self {
+            username: username.into(),
+            display_name: display_name.into(),
+            password: password.into(),
+            role: role.into(),
+            token_epoch: 0,
+            avatar: AvatarAppearance::default(),
+            coins: 0,
+            inventory: HashMap::new(),
+            cloneable_items: HashSet::new(),
+            owned_pets: default_owned_pets(),
+            equipped_pet: default_equipped_pet(),
+            pet_nickname: None,
+            owned_mounts: default_owned_mounts(),
+            equipped_mount: None,
+            first_boss_defeated: false,
+            violation_strikes: 0,
+            in_debtors_prison: false,
+            prison_reason: None,
+            prison_tasks_remaining: 0,
+            voice_muted_by_parent: false,
+            chat_mode: default_chat_mode(),
+            suspended: false,
+            can_build: true,
+            can_trade: true,
+            last_pos: None,
+            last_pos_saved_at: None,
+        }
+    }
+
+    pub fn ensure_starter_companions(&mut self) {
+        self.owned_pets.insert("cloud_puppy".to_string());
+        self.owned_mounts.insert("starlight_board".to_string());
+    }
+
     pub fn is_subadmin(&self) -> bool {
         self.role.eq_ignore_ascii_case("subadmin")
+    }
+
+    pub fn is_host(&self) -> bool {
+        self.role.eq_ignore_ascii_case("host")
     }
 
     pub fn sanitized(&self) -> SanitizedUser {
@@ -519,6 +602,30 @@ impl UserAccount {
             },
             avatar: self.avatar.clone(),
             moderation: self.moderation_snapshot(),
+            equipped_pet: self.equipped_pet.clone(),
+            pet_nickname: self.pet_nickname.clone(),
+            equipped_mount: self.equipped_mount.clone(),
+        }
+    }
+
+    pub fn companions_snapshot(&self) -> PlayerCompanionsSnapshot {
+        let mut pets: Vec<String> = self.owned_pets.iter().cloned().collect();
+        if !pets.iter().any(|p| p == "cloud_puppy") {
+            pets.push("cloud_puppy".to_string());
+        }
+        pets.sort();
+        let mut mounts: Vec<String> = self.owned_mounts.iter().cloned().collect();
+        if !mounts.iter().any(|m| m == "starlight_board") {
+            mounts.push("starlight_board".to_string());
+        }
+        mounts.sort();
+        PlayerCompanionsSnapshot {
+            owned_pets: pets,
+            equipped_pet: self.equipped_pet.clone(),
+            pet_nickname: self.pet_nickname.clone(),
+            owned_mounts: mounts,
+            equipped_mount: self.equipped_mount.clone(),
+            first_boss_defeated: self.first_boss_defeated,
         }
     }
 
@@ -554,6 +661,40 @@ pub struct SanitizedUser {
     pub avatar: AvatarAppearance,
     #[serde(default)]
     pub moderation: PlayerModerationSnapshot,
+    #[serde(default)]
+    pub equipped_pet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pet_nickname: Option<String>,
+    #[serde(default)]
+    pub equipped_mount: Option<String>,
+}
+
+impl SanitizedUser {
+    /// Deterministic 16-hex-character digest covering avatar outfit + 3D companion/mount state.
+    pub fn visual_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(self.avatar.short_hash().as_bytes());
+        h.update(b"|");
+        if let Some(p) = &self.equipped_pet {
+            h.update(p.as_bytes());
+        }
+        h.update(b"|");
+        if let Some(n) = &self.pet_nickname {
+            h.update(n.as_bytes());
+        }
+        h.update(b"|");
+        if let Some(m) = &self.equipped_mount {
+            h.update(m.as_bytes());
+        }
+        let digest = h.finalize();
+        let mut hex = String::with_capacity(16);
+        for b in &digest[..8] {
+            use std::fmt::Write;
+            let _ = write!(&mut hex, "{b:02x}");
+        }
+        hex
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -746,11 +887,13 @@ pub const ALLOWED_BLOCK_KINDS: &[&str] = &[
     "kitchen_fridge",
     "dining_table",
     "chair",
+    "sofa",
     "bath_tub",
     "bath_vanity",
     "bath_toilet",
     "bed",
     "nightstand_lamp",
+    "crystal_lamp",
     "wardrobe",
     "rug",
     "loot_decor",
@@ -769,7 +912,10 @@ pub fn is_two_tall_block_kind(kind: &str) -> bool {
 }
 
 pub fn is_toggleable_block_kind(kind: &str) -> bool {
-    matches!(kind, "door" | "double_door" | "window")
+    matches!(
+        kind,
+        "door" | "double_door" | "window" | "nightstand_lamp" | "crystal_lamp"
+    )
 }
 
 /// Deterministic horizontal partner cell `(dx, dz)` for a 2-block-wide `double_door`
@@ -960,8 +1106,10 @@ pub fn prebuilt_village_blocks() -> Vec<VoxelBlock> {
         }
     }
 
-    // Villa 1st-Floor Interior Furnishings (Kitchen, Dining, Bath & Welcome Rug)
+    // Villa 1st-Floor Interior Furnishings (Kitchen, Dining, Lounge, Bath & Welcome Rug)
     put(82, 1, -25, "rug", 0, "#f472b6", false);
+    put(83, 1, -24, "sofa", 3, villa_trim, false);
+    put(84, 1, -23, "crystal_lamp", 0, "#f472b6", false);
     put(79, 1, -29, "kitchen_fridge", 1, "#ffffff", false);
     put(79, 1, -28, "kitchen_counter", 1, "#fbcfe8", false);
     put(79, 1, -27, "kitchen_sink", 1, "#bae6fd", false);
@@ -1025,6 +1173,8 @@ pub fn prebuilt_village_blocks() -> Vec<VoxelBlock> {
 
     // Cottage Cozy Interior
     put(52, 1, 20, "rug", 0, "#38bdf8", false);
+    put(50, 1, 19, "sofa", 1, "#7dd3fc", false);
+    put(54, 1, 18, "crystal_lamp", 0, "#38bdf8", false);
     put(50, 1, 21, "bed", 1, "#38bdf8", false);
     put(50, 1, 22, "nightstand_lamp", 1, "#fde047", false);
     put(54, 1, 19, "dining_table", 0, "#ffffff", false);
@@ -1079,6 +1229,8 @@ pub fn prebuilt_village_blocks() -> Vec<VoxelBlock> {
 
     // Chalet Interior Furnishings
     put(-64, 1, -16, "rug", 0, "#fbbf24", false);
+    put(-63, 1, -15, "sofa", 2, "#34d399", false);
+    put(-67, 1, -14, "crystal_lamp", 0, "#fbbf24", false);
     put(-67, 1, -18, "kitchen_fridge", 0, "#f8fafc", false);
     put(-66, 1, -18, "kitchen_stove", 0, "#cbd5e1", false);
     put(-65, 1, -18, "kitchen_sink", 0, "#bae6fd", false);
@@ -1219,12 +1371,77 @@ pub struct RunwayLeaderEntry {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FashionShowContestant {
+    pub username: String,
+    pub display_name: String,
+    pub ready: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FashionPodiumEntry {
+    pub place: u8,
+    pub username: String,
+    pub display_name: String,
+    pub avg_stars: f64,
+    pub votes: usize,
+    pub prize_coins: u64,
+    pub ai_judged: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FashionShowPublicSummary {
+    pub show_id: u64,
+    pub phase: String, // "idle" | "dress_up" | "catwalk" | "podium"
+    pub theme: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
+    pub phase_started_at: u64,
+    pub phase_ends_at: u64,
+    pub contestants: Vec<FashionShowContestant>,
+    pub spotlight_index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spotlight_username: Option<String>,
+    pub podium_winners: Vec<FashionPodiumEntry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FashionShowState {
+    pub show_id: u64,
+    pub phase: String,
+    pub started_by: Option<String>,
+    pub phase_started_at: u64,
+    pub phase_ends_at: u64,
+    pub contestants: Vec<FashionShowContestant>,
+    pub spotlight_index: usize,
+    pub podium_winners: Vec<FashionPodiumEntry>,
+}
+
+impl Default for FashionShowState {
+    fn default() -> Self {
+        Self {
+            show_id: 0,
+            phase: "idle".to_string(),
+            started_by: None,
+            phase_started_at: 0,
+            phase_ends_at: 0,
+            contestants: Vec::new(),
+            spotlight_index: 0,
+            podium_winners: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunwayPublicSummary {
     pub theme: String,
     pub themes: Vec<String>,
     pub updated_at: u64,
     pub scores: HashMap<String, RunwayScoreEntry>,
     pub leaderboard: Vec<RunwayLeaderEntry>,
+    pub show: FashionShowPublicSummary,
 }
 
 #[derive(Clone, Debug)]
@@ -1232,6 +1449,7 @@ pub struct RunwayState {
     pub theme: String,
     pub updated_at: u64,
     pub votes_by_target: HashMap<String, HashMap<String, u8>>,
+    pub show: FashionShowState,
 }
 
 impl Default for RunwayState {
@@ -1240,6 +1458,7 @@ impl Default for RunwayState {
             theme: RUNWAY_THEMES[0].to_string(),
             updated_at: now_ms(),
             votes_by_target: HashMap::new(),
+            show: FashionShowState::default(),
         }
     }
 }
@@ -1269,12 +1488,488 @@ impl RunwayState {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| b.votes.cmp(&a.votes))
         });
+        let spotlight_username = if self.show.phase == "catwalk" {
+            self.show
+                .contestants
+                .get(self.show.spotlight_index)
+                .map(|c| c.username.clone())
+        } else {
+            None
+        };
         RunwayPublicSummary {
             theme: self.theme.clone(),
             themes: RUNWAY_THEMES.iter().map(|s| (*s).to_string()).collect(),
             updated_at: self.updated_at,
             scores,
             leaderboard,
+            show: FashionShowPublicSummary {
+                show_id: self.show.show_id,
+                phase: self.show.phase.clone(),
+                theme: self.theme.clone(),
+                started_by: self.show.started_by.clone(),
+                phase_started_at: self.show.phase_started_at,
+                phase_ends_at: self.show.phase_ends_at,
+                contestants: self.show.contestants.clone(),
+                spotlight_index: self.show.spotlight_index,
+                spotlight_username,
+                podium_winners: self.show.podium_winners.clone(),
+            },
+        }
+    }
+}
+
+// ============================================================================
+// Claimable Neighborhood Homes, Mailboxes & Doorbells
+// ============================================================================
+
+#[derive(Clone, Copy, Debug)]
+pub struct HomePlotDef {
+    pub id: &'static str,
+    pub default_name: &'static str,
+    pub prebuilt: bool,
+    pub center_x: i32,
+    pub center_z: i32,
+    pub half_extent: i32,
+    pub mailbox_pos: [f32; 3],
+    pub mailbox_rot_y: f32,
+}
+
+pub const HOME_PLOT_DEFS: &[HomePlotDef] = &[
+    HomePlotDef {
+        id: "plot_1",
+        default_name: "🏡 Sunset Plot #1",
+        prebuilt: false,
+        center_x: 52,
+        center_z: -26,
+        half_extent: 9,
+        mailbox_pos: [52.0, 0.0, -16.2],
+        mailbox_rot_y: 0.0,
+    },
+    HomePlotDef {
+        id: "plot_2",
+        default_name: "🌸 Rosewater Villa",
+        prebuilt: true,
+        center_x: 82,
+        center_z: -26,
+        half_extent: 9,
+        mailbox_pos: [79.0, 0.0, -16.2],
+        mailbox_rot_y: 0.0,
+    },
+    HomePlotDef {
+        id: "plot_3",
+        default_name: "🌊 Starlight Cottage",
+        prebuilt: true,
+        center_x: 52,
+        center_z: 20,
+        half_extent: 9,
+        mailbox_pos: [49.5, 0.0, 10.2],
+        mailbox_rot_y: std::f32::consts::PI,
+    },
+    HomePlotDef {
+        id: "plot_4",
+        default_name: "🏡 Starlight Plot #4",
+        prebuilt: false,
+        center_x: 82,
+        center_z: 20,
+        half_extent: 9,
+        mailbox_pos: [82.0, 0.0, 10.2],
+        mailbox_rot_y: std::f32::consts::PI,
+    },
+    HomePlotDef {
+        id: "plot_5",
+        default_name: "🌲 Woodland Chalet",
+        prebuilt: true,
+        center_x: -64,
+        center_z: -16,
+        half_extent: 10,
+        mailbox_pos: [-61.5, 0.0, -5.2],
+        mailbox_rot_y: 0.0,
+    },
+    HomePlotDef {
+        id: "plot_6",
+        default_name: "🏡 West Villa Plot #6",
+        prebuilt: false,
+        center_x: -64,
+        center_z: 32,
+        half_extent: 10,
+        mailbox_pos: [-64.0, 0.0, 21.2],
+        mailbox_rot_y: std::f32::consts::PI,
+    },
+];
+
+pub fn find_home_plot_def(plot_id: &str) -> Option<&'static HomePlotDef> {
+    HOME_PLOT_DEFS.iter().find(|p| p.id == plot_id)
+}
+
+pub fn find_home_plot_for_cell(x: i32, z: i32) -> Option<&'static HomePlotDef> {
+    HOME_PLOT_DEFS.iter().find(|p| {
+        x >= p.center_x - p.half_extent
+            && x <= p.center_x + p.half_extent
+            && z >= p.center_z - p.half_extent
+            && z <= p.center_z + p.half_extent
+    })
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HomePlotClaim {
+    pub plot_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_title: Option<String>,
+    #[serde(default)]
+    pub co_builders: Vec<String>,
+    #[serde(default)]
+    pub door_locked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_at_ms: Option<u64>,
+}
+
+impl HomePlotClaim {
+    pub fn empty(plot_id: &str) -> Self {
+        Self {
+            plot_id: plot_id.to_string(),
+            owner_username: None,
+            owner_display_name: None,
+            custom_title: None,
+            co_builders: Vec::new(),
+            door_locked: false,
+            claimed_at_ms: None,
+        }
+    }
+
+    pub fn is_authorized_builder(&self, username: &str, role: &str) -> bool {
+        if role.eq_ignore_ascii_case("host") {
+            return true;
+        }
+        let Some(owner) = &self.owner_username else {
+            return true;
+        };
+        if owner.eq_ignore_ascii_case(username) {
+            return true;
+        }
+        self.co_builders
+            .iter()
+            .any(|u| u.eq_ignore_ascii_case(username))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HomePlotsFile {
+    #[serde(default = "default_session_epoch")]
+    pub version: u64,
+    #[serde(default)]
+    pub plots: Vec<HomePlotClaim>,
+}
+
+impl Default for HomePlotsFile {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            plots: HOME_PLOT_DEFS
+                .iter()
+                .map(|d| HomePlotClaim::empty(d.id))
+                .collect(),
+        }
+    }
+}
+
+impl HomePlotsFile {
+    pub fn normalize(&mut self) {
+        for def in HOME_PLOT_DEFS {
+            if !self.plots.iter().any(|p| p.plot_id == def.id) {
+                self.plots.push(HomePlotClaim::empty(def.id));
+            }
+        }
+        self.plots
+            .retain(|p| find_home_plot_def(&p.plot_id).is_some());
+    }
+
+    pub fn public_views(&self) -> Vec<HomePlotPublicView> {
+        HOME_PLOT_DEFS
+            .iter()
+            .map(|def| {
+                let claim = self
+                    .plots
+                    .iter()
+                    .find(|p| p.plot_id == def.id)
+                    .cloned()
+                    .unwrap_or_else(|| HomePlotClaim::empty(def.id));
+                HomePlotPublicView {
+                    plot_id: def.id.to_string(),
+                    default_name: def.default_name.to_string(),
+                    prebuilt: def.prebuilt,
+                    center_x: def.center_x,
+                    center_z: def.center_z,
+                    half_extent: def.half_extent,
+                    mailbox_pos: def.mailbox_pos,
+                    mailbox_rot_y: def.mailbox_rot_y,
+                    owner_username: claim.owner_username,
+                    owner_display_name: claim.owner_display_name,
+                    custom_title: claim.custom_title,
+                    co_builders: claim.co_builders,
+                    door_locked: claim.door_locked,
+                    claimed_at_ms: claim.claimed_at_ms,
+                }
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HomePlotPublicView {
+    pub plot_id: String,
+    pub default_name: String,
+    pub prebuilt: bool,
+    pub center_x: i32,
+    pub center_z: i32,
+    pub half_extent: i32,
+    pub mailbox_pos: [f32; 3],
+    pub mailbox_rot_y: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_title: Option<String>,
+    pub co_builders: Vec<String>,
+    pub door_locked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claimed_at_ms: Option<u64>,
+}
+
+// ============================================================================
+// Obby Speedrun Gates & Persistent Top-5 Best-Time Boards
+// ============================================================================
+
+#[derive(Clone, Copy, Debug)]
+pub struct ObbyCourseSpec {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub start_pos: [f32; 3],
+    pub start_radius: f32,
+    pub finish_pos: [f32; 3],
+    pub finish_radius: f32,
+    pub min_elapsed_ms: u64,
+    pub completion_coins: u64,
+    pub record_bonus_coins: u64,
+}
+
+pub const OBBY_COURSES: &[ObbyCourseSpec] = &[
+    ObbyCourseSpec {
+        id: "easy",
+        name: "🌈 Sky Obby",
+        start_pos: [0.0, 0.4, -12.0],
+        start_radius: 8.5,
+        finish_pos: [6.5, 16.5, -20.0],
+        finish_radius: 9.0,
+        min_elapsed_ms: 100,
+        completion_coins: 12,
+        record_bonus_coins: 25,
+    },
+    ObbyCourseSpec {
+        id: "hard",
+        name: "🔥 Pro Obby Gauntlet",
+        start_pos: [52.0, 0.4, 52.0],
+        start_radius: 9.0,
+        finish_pos: [72.6, 40.2, 69.2],
+        finish_radius: 9.5,
+        min_elapsed_ms: 100,
+        completion_coins: 35,
+        record_bonus_coins: 55,
+    },
+];
+
+pub fn find_obby_course(course_id: &str) -> Option<&'static ObbyCourseSpec> {
+    OBBY_COURSES
+        .iter()
+        .find(|c| c.id.eq_ignore_ascii_case(course_id.trim()))
+}
+
+pub fn format_obby_time_ms(elapsed_ms: u64) -> String {
+    format!("{:.2}s", (elapsed_ms as f64) / 1000.0)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ObbyRecord {
+    pub username: String,
+    pub display_name: String,
+    pub elapsed_ms: u64,
+    pub time_formatted: String,
+    pub recorded_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObbyLeaderboardsFile {
+    #[serde(default = "default_session_epoch")]
+    pub version: u64,
+    #[serde(default)]
+    pub easy: Vec<ObbyRecord>,
+    #[serde(default)]
+    pub hard: Vec<ObbyRecord>,
+}
+
+impl Default for ObbyLeaderboardsFile {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            easy: Vec::new(),
+            hard: Vec::new(),
+        }
+    }
+}
+
+impl ObbyLeaderboardsFile {
+    /// Updates the Top-5 leaderboard for `course_id` (`"easy"` or `"hard"`), keeping each player's personal best.
+    /// Returns `(rank_1_to_5_or_0, improved_board)`.
+    pub fn record_finish(&mut self, course_id: &str, record: ObbyRecord) -> (usize, bool) {
+        let board = if course_id == "hard" {
+            &mut self.hard
+        } else {
+            &mut self.easy
+        };
+        let mut improved = false;
+        if let Some(existing) = board
+            .iter_mut()
+            .find(|r| r.username.eq_ignore_ascii_case(&record.username))
+        {
+            if record.elapsed_ms < existing.elapsed_ms {
+                *existing = record.clone();
+                improved = true;
+            } else {
+                existing.display_name = record.display_name.clone();
+            }
+        } else if board.len() < 5
+            || board
+                .last()
+                .map(|w| record.elapsed_ms < w.elapsed_ms)
+                .unwrap_or(true)
+        {
+            board.push(record.clone());
+            improved = true;
+        }
+        board.sort_by(|a, b| {
+            a.elapsed_ms
+                .cmp(&b.elapsed_ms)
+                .then_with(|| a.recorded_at_ms.cmp(&b.recorded_at_ms))
+        });
+        if board.len() > 5 {
+            board.truncate(5);
+        }
+        let rank = board
+            .iter()
+            .position(|r| r.username.eq_ignore_ascii_case(&record.username))
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        if improved {
+            self.version = self.version.saturating_add(1);
+        }
+        (rank, improved)
+    }
+}
+
+// ============================================================================
+// Dynamic 12-Minute Sky / Sunset / Aurora Cycle & Meteor Shower
+// ============================================================================
+
+pub const SKY_CYCLE_DURATION_MS: u64 = 720_000;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FallingStarNode {
+    pub id: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub coins: u64,
+    pub bonus_shard: bool,
+    pub spawned_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkyWeatherPublicState {
+    pub mode: String,  // "auto" | "day" | "sunset" | "aurora_night"
+    pub phase: String, // "day" | "sunset" | "aurora_night"
+    pub progress: f32, // 0.0 .. 1.0 across the 12-min cycle
+    pub cycle_duration_ms: u64,
+    pub server_time_ms: u64,
+    pub cycle_anchor_ms: u64,
+    pub meteor_shower_active: bool,
+    pub meteor_shower_until_ms: u64,
+    pub falling_stars: Vec<FallingStarNode>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SkyWeatherState {
+    pub mode: String,
+    pub cycle_anchor_ms: u64,
+    pub meteor_shower_until_ms: u64,
+    pub falling_stars: Vec<FallingStarNode>,
+    pub next_star_seq: u64,
+    pub last_auto_meteor_cycle: Option<u64>,
+}
+
+impl Default for SkyWeatherState {
+    fn default() -> Self {
+        Self {
+            mode: "auto".to_string(),
+            cycle_anchor_ms: now_ms(),
+            meteor_shower_until_ms: 0,
+            falling_stars: Vec::new(),
+            next_star_seq: 1,
+            last_auto_meteor_cycle: None,
+        }
+    }
+}
+
+impl SkyWeatherState {
+    pub fn compute_phase_and_progress(&self, now: u64) -> (&'static str, f32) {
+        match self.mode.as_str() {
+            "day" => ("day", 0.18),
+            "sunset" => ("sunset", 0.52),
+            "aurora_night" => ("aurora_night", 0.80),
+            _ => {
+                let elapsed = now.saturating_sub(self.cycle_anchor_ms);
+                let prog =
+                    ((elapsed % SKY_CYCLE_DURATION_MS) as f32) / (SKY_CYCLE_DURATION_MS as f32);
+                let phase = if prog < 0.42 {
+                    "day"
+                } else if prog < 0.64 {
+                    "sunset"
+                } else {
+                    "aurora_night"
+                };
+                (phase, (prog * 10_000.0).round() / 10_000.0)
+            }
+        }
+    }
+
+    pub fn snapshot(&self, now: u64) -> SkyWeatherPublicState {
+        let (phase, progress) = self.compute_phase_and_progress(now);
+        let active = now < self.meteor_shower_until_ms;
+        SkyWeatherPublicState {
+            mode: self.mode.clone(),
+            phase: phase.to_string(),
+            progress,
+            cycle_duration_ms: SKY_CYCLE_DURATION_MS,
+            server_time_ms: now,
+            cycle_anchor_ms: self.cycle_anchor_ms,
+            meteor_shower_active: active,
+            meteor_shower_until_ms: if active {
+                self.meteor_shower_until_ms
+            } else {
+                0
+            },
+            falling_stars: self.falling_stars.clone(),
         }
     }
 }

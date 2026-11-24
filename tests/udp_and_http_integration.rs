@@ -4775,3 +4775,1154 @@ async fn prebuilt_village_homes_and_shadow_rift_mortal_arena_respawn_end_to_end(
 
     running.http_task.abort();
 }
+
+// ============================================================================
+// Expansion Pack End-to-End Integration Tests (All 6 Upgrades + Edge Cases)
+// ============================================================================
+
+#[tokio::test]
+async fn expansion_adoptable_pets_hoverboards_and_egg_hatching_end_to_end() {
+    let cfg = make_test_config("exp_pets_mounts");
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (st_adm, adm_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/login",
+        Some(json!({ "password": "changeme-parent-admin" })),
+    )
+    .await;
+    assert_eq!(st_adm, 200);
+    let admin_token = adm_login["adminToken"].as_str().unwrap().to_string();
+
+    let (st_login, login_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({
+            "username": "maya",
+            "password": "changeme-puppy",
+            "clientId": "maya_pets_1"
+        })),
+    )
+    .await;
+    assert_eq!(st_login, 200);
+    let token = login_res["token"].as_str().unwrap().to_string();
+    let self_id = login_res["selfId"].as_str().unwrap().to_string();
+
+    // 1. Starter Cloud Puppy + Starlight Hoverboard unlocked out-of-the-box for everyone!
+    let owned_pets = login_res["companions"]["ownedPets"].as_array().unwrap();
+    let owned_mounts = login_res["companions"]["ownedMounts"].as_array().unwrap();
+    assert!(owned_pets.iter().any(|v| v.as_str() == Some("cloud_puppy")));
+    assert!(owned_mounts
+        .iter()
+        .any(|v| v.as_str() == Some("starlight_board")));
+    assert_eq!(login_res["petCatalog"].as_array().unwrap().len(), 4);
+    assert_eq!(login_res["mountCatalog"].as_array().unwrap().len(), 3);
+
+    // 2. Equip starter pet & verify profanity filter blocks unkind pet nickname
+    let (st_eq, eq_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/companions",
+        Some(json!({ "token": token, "action": "equip_pet", "petId": "cloud_puppy" })),
+    )
+    .await;
+    assert_eq!(st_eq, 200);
+    assert_eq!(eq_res["user"]["equippedPet"], "cloud_puppy");
+
+    let (st_bad_nick, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/companions",
+        Some(json!({ "token": token, "action": "rename_pet", "nickname": "sh1t dog" })),
+    )
+    .await;
+    assert_eq!(st_bad_nick, 400);
+
+    let (st_good_nick, nick_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/companions",
+        Some(json!({ "token": token, "action": "rename_pet", "nickname": "Fluffy Cloud" })),
+    )
+    .await;
+    assert_eq!(st_good_nick, 200);
+    assert_eq!(nick_res["user"]["petNickname"], "Fluffy Cloud");
+
+    // 3. Cannot adopt rare Starlight Kitsune without 180 coins
+    let (st_poor, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/companions",
+        Some(json!({ "token": token, "action": "adopt_pet", "petId": "starlight_kitsune" })),
+    )
+    .await;
+    assert_eq!(st_poor, 400);
+
+    // Grant coins + 1x pet_egg via Parent Admin, then adopt Kitsune, buy Comet Surfer & hatch egg!
+    let (st_grant, _) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/moderate",
+        &admin_token,
+        Some(json!({ "username": "maya", "action": "adjust_coins", "coinDelta": 500 })),
+    )
+    .await;
+    assert_eq!(st_grant, 200);
+
+    let (st_adopt, adopt_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/companions",
+        Some(json!({ "token": token, "action": "adopt_pet", "petId": "starlight_kitsune" })),
+    )
+    .await;
+    assert_eq!(st_adopt, 200);
+    assert_eq!(adopt_res["user"]["equippedPet"], "starlight_kitsune");
+    assert_eq!(adopt_res["economy"]["coins"], 340);
+
+    let (st_mount, mount_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/companions",
+        Some(json!({ "token": token, "action": "buy_mount", "mountId": "comet_surfer" })),
+    )
+    .await;
+    assert_eq!(st_mount, 200);
+    assert_eq!(mount_res["user"]["equippedMount"], "comet_surfer");
+    assert_eq!(mount_res["economy"]["coins"], 20);
+
+    // Gift & hatch a Starlight Companion Egg via `/economy/use`
+    let (st_egg_gift, _) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/gift-item",
+        &admin_token,
+        Some(json!({ "username": "maya", "itemId": "pet_egg", "qty": 1, "allowClone": false })),
+    )
+    .await;
+    assert_eq!(st_egg_gift, 200);
+
+    let (st_hatch, hatch_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/economy/use",
+        Some(json!({ "token": token, "itemId": "pet_egg" })),
+    )
+    .await;
+    assert_eq!(st_hatch, 200);
+    assert!(hatch_res["hatchedPetId"].as_str().is_some());
+    assert!(hatch_res["economy"]["inventory"]
+        .get("pet_egg")
+        .and_then(Value::as_u64)
+        .is_none());
+
+    // 4. Verify UDP binary wire roundtrip for new `hover` anim (4) and `sleep` emote (9)
+    let pkt = encode_c2s_state(&DecodedC2SState {
+        seq: 7,
+        client_time_ms: 900,
+        x: 10.0,
+        y: 0.5,
+        z: -4.0,
+        ry: 1.25,
+        anim: "hover".into(),
+        emote: Some("sleep".into()),
+        muted: false,
+        speaking: false,
+        zone: 0,
+    });
+    let decoded = ella_world::udp_wire::decode_c2s_state(&pkt).expect("decode hover/sleep packet");
+    assert_eq!(decoded.anim, "hover");
+    assert_eq!(decoded.emote.as_deref(), Some("sleep"));
+    running.world.apply_c2s_state(&self_id, decoded).await;
+
+    running.http_task.abort();
+}
+
+#[tokio::test]
+async fn expansion_claimable_homes_mailboxes_locks_cobuilders_and_doorbells_end_to_end() {
+    let cfg = make_test_config("exp_homes_doorbells");
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (_, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "ella_h" })),
+    )
+    .await;
+    let ella_token = ella_login["token"].as_str().unwrap().to_string();
+
+    let (_, maya_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "maya_h" })),
+    )
+    .await;
+    let maya_token = maya_login["token"].as_str().unwrap().to_string();
+
+    let (_, chloe_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "chloe", "password": "changeme-rainbow", "clientId": "chloe_h" })),
+    )
+    .await;
+    let chloe_token = chloe_login["token"].as_str().unwrap().to_string();
+
+    // 1. Maya claims Plot #2 (Rosewater Villa), then switches to Plot #3 -> Plot #2 auto-releases!
+    let (st_c2, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/homes",
+        Some(json!({ "token": maya_token, "action": "claim", "plotId": "plot_2" })),
+    )
+    .await;
+    assert_eq!(st_c2, 200);
+
+    let (st_c3, c3_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/homes",
+        Some(json!({ "token": maya_token, "action": "claim", "plotId": "plot_3" })),
+    )
+    .await;
+    assert_eq!(st_c3, 200);
+    let homes = c3_res["homes"].as_array().unwrap();
+    let p2 = homes.iter().find(|p| p["plotId"] == "plot_2").unwrap();
+    let p3 = homes.iter().find(|p| p["plotId"] == "plot_3").unwrap();
+    assert!(
+        p2["ownerUsername"].is_null(),
+        "1-plot-per-player rule must release plot_2"
+    );
+    assert_eq!(p3["ownerUsername"], "maya");
+
+    // 2. Profanity in customTitle is rejected; clean title + doorLocked: true succeeds
+    let (st_bad_title, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/homes",
+        Some(json!({
+            "token": maya_token,
+            "action": "update_settings",
+            "plotId": "plot_3",
+            "customTitle": "f u c k house"
+        })),
+    )
+    .await;
+    assert_eq!(st_bad_title, 400);
+
+    let (st_lock, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/homes",
+        Some(json!({
+            "token": maya_token,
+            "action": "update_settings",
+            "plotId": "plot_3",
+            "customTitle": "Maya's Starlight Villa",
+            "doorLocked": true
+        })),
+    )
+    .await;
+    assert_eq!(st_lock, 200);
+
+    // 3. Chloe (non-owner) cannot place blocks OR open locked front door on Plot #3 (43..=61, 11..=29)
+    let (st_chloe_place, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": chloe_token,
+            "action": "place",
+            "x": 45,
+            "y": 1,
+            "z": 13,
+            "kind": "sofa",
+            "color": "#f472b6",
+            "rot": 0
+        })),
+    )
+    .await;
+    assert_eq!(st_chloe_place, 400);
+
+    // Find an actual door block on Plot #3 (43..=61, 11..=29)
+    let plot3_door = {
+        let bd = running.world.blocks_data.read().await;
+        bd.blocks
+            .iter()
+            .find(|b| {
+                matches!(b.kind.as_str(), "door" | "double_door")
+                    && b.x >= 43
+                    && b.x <= 61
+                    && b.z >= 11
+                    && b.z <= 29
+            })
+            .cloned()
+            .expect("Plot #3 prebuilt door")
+    };
+    let (st_chloe_door, door_err) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": chloe_token,
+            "action": "toggle",
+            "x": plot3_door.x,
+            "y": plot3_door.y,
+            "z": plot3_door.z
+        })),
+    )
+    .await;
+    assert_eq!(st_chloe_door, 400);
+    assert!(door_err["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Doorbell"));
+
+    // 4. Chloe rings the Doorbell (200 OK), and immediate spam ring is rate-limited (400)
+    let (st_bell, bell_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/homes",
+        Some(json!({ "token": chloe_token, "action": "ring_doorbell", "plotId": "plot_3" })),
+    )
+    .await;
+    assert_eq!(st_bell, 200);
+    assert_eq!(bell_res["ringerName"], "Chloe");
+
+    let (st_bell_spam, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/homes",
+        Some(json!({ "token": chloe_token, "action": "ring_doorbell", "plotId": "plot_3" })),
+    )
+    .await;
+    assert_eq!(st_bell_spam, 400);
+
+    // 5. Maya invites Chloe as coBuilder -> Chloe can now place `crystal_lamp` & toggle its light switch!
+    let (st_cobuild, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/homes",
+        Some(json!({
+            "token": maya_token,
+            "action": "update_settings",
+            "plotId": "plot_3",
+            "coBuilders": ["chloe"]
+        })),
+    )
+    .await;
+    assert_eq!(st_cobuild, 200);
+
+    let (st_lamp, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": chloe_token,
+            "action": "place",
+            "x": 45,
+            "y": 1,
+            "z": 13,
+            "kind": "crystal_lamp",
+            "color": "#a855f7",
+            "rot": 0
+        })),
+    )
+    .await;
+    assert_eq!(st_lamp, 200);
+
+    let (st_lamp_toggle, lamp_tog_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": chloe_token,
+            "action": "toggle",
+            "x": 45,
+            "y": 1,
+            "z": 13
+        })),
+    )
+    .await;
+    assert_eq!(st_lamp_toggle, 200);
+    let lamp_block = lamp_tog_res["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["x"] == 45 && b["y"] == 1 && b["z"] == 13)
+        .unwrap();
+    assert_eq!(lamp_block["open"], true);
+
+    // 6. Host Ella (`role == "host"`) retains moderation override even on Maya's claimed plot
+    let (st_ella_override, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": ella_token,
+            "action": "place",
+            "x": 46,
+            "y": 1,
+            "z": 13,
+            "kind": "sofa",
+            "color": "#38bdf8",
+            "rot": 2
+        })),
+    )
+    .await;
+    assert_eq!(st_ella_override, 200);
+
+    running.http_task.abort();
+}
+
+#[tokio::test]
+async fn expansion_crafting_bench_weapons_aegis_charm_and_potions_end_to_end() {
+    use ella_world::udp_wire::ZONE_ARENA;
+
+    let cfg = make_test_config("exp_crafting_gear");
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (_, adm_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/login",
+        Some(json!({ "password": "changeme-parent-admin" })),
+    )
+    .await;
+    let admin_token = adm_login["adminToken"].as_str().unwrap().to_string();
+
+    let (_, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "ella_craft" })),
+    )
+    .await;
+    let token = ella_login["token"].as_str().unwrap().to_string();
+    let self_id = ella_login["selfId"].as_str().unwrap().to_string();
+
+    // 1. Crafting without materials fails cleanly with 400
+    let (st_fail, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/craft",
+        Some(json!({ "token": token, "recipeId": "craft_crystal_blade" })),
+    )
+    .await;
+    assert_eq!(st_fail, 400);
+
+    // 2. Grant coins + dungeon materials, then craft Crystal Blade, Starlight Wand, Aegis Charm & Potion!
+    http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/moderate",
+        &admin_token,
+        Some(json!({ "username": "ella", "action": "adjust_coins", "coinDelta": 600 })),
+    )
+    .await;
+    for (item_id, qty) in [
+        ("star_shard", 25),
+        ("slime_gel", 15),
+        ("moon_opal", 12),
+        ("crown_relic", 4),
+    ] {
+        let (st_g, _) = http_json_auth_request(
+            running.http_addr,
+            "POST",
+            "/api/ella-world/admin/gift-item",
+            &admin_token,
+            Some(json!({ "username": "ella", "itemId": item_id, "qty": qty, "allowClone": false })),
+        )
+        .await;
+        assert_eq!(st_g, 200);
+    }
+
+    for recipe_id in [
+        "craft_crystal_blade",
+        "craft_starlight_wand",
+        "craft_aegis_charm",
+        "craft_starlight_potion",
+    ] {
+        let (st_c, c_res) = http_json_request(
+            running.http_addr,
+            "POST",
+            "/api/ella-world/craft",
+            Some(json!({ "token": token, "recipeId": recipe_id })),
+        )
+        .await;
+        assert_eq!(st_c, 200, "recipe {recipe_id} failed: {c_res}");
+    }
+
+    // 3. Equip Astral Starlight Wand in Glam Closet & enter Shadow Rift -> passive Aegis Charm gives 150 Max HP!
+    let (st_av, av_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/avatar",
+        Some(json!({ "token": token, "avatar": { "accessory": "starlight_wand" } })),
+    )
+    .await;
+    assert_eq!(st_av, 200);
+    assert_eq!(av_res["user"]["avatar"]["accessory"], "starlight_wand");
+
+    let (st_portal, portal_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/portal",
+        Some(json!({ "token": token, "targetZone": ZONE_ARENA })),
+    )
+    .await;
+    assert_eq!(st_portal, 200);
+    assert_eq!(portal_res["arenaStatus"]["maxHp"], 150);
+    assert_eq!(portal_res["arenaStatus"]["hp"], 150);
+
+    // 4. Damage Ella down to 60 HP, fire ranged Starlight Wand at `spider_1` (12m away -> 2 DMG + +8 HP self-mend!), then drink Starlight Potion (+75 HP)!
+    {
+        let mut ar = running.world.arena.write().await;
+        if let Some(st) = ar.player_statuses.get_mut(&self_id) {
+            st.hp = 60;
+        }
+    }
+    running
+        .world
+        .apply_c2s_state(
+            &self_id,
+            DecodedC2SState {
+                seq: 1,
+                client_time_ms: 100,
+                x: -9.5,
+                y: 0.0,
+                z: 22.0, // ~11.5m from spider_1 (-9.5, 0.0, 10.5) -> within 16.5m wand range!
+                ry: 0.0,
+                anim: "idle".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: ZONE_ARENA,
+            },
+        )
+        .await;
+
+    let (st_wand, wand_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/attack",
+        Some(json!({ "token": token, "mobId": "spider_1", "mode": "blast" })),
+    )
+    .await;
+    assert_eq!(st_wand, 200);
+    assert_eq!(wand_res["damage"], 2);
+    let hp_after_wand = running.world.arena.read().await.status_for(&self_id).hp;
+    assert_eq!(hp_after_wand, 68, "Starlight Wand must mend +8 HP per hit");
+
+    let (st_pot, pot_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/economy/use",
+        Some(json!({ "token": token, "itemId": "starlight_potion" })),
+    )
+    .await;
+    assert_eq!(st_pot, 200);
+    assert_eq!(pot_res["arenaStatus"]["hp"], 143); // 68 + 75 = 143 / 150
+
+    running.http_task.abort();
+}
+
+#[tokio::test]
+async fn expansion_timed_fashion_show_ai_judges_and_podium_prizes_end_to_end() {
+    let cfg = make_test_config("exp_fashion_show");
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (_, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(
+            json!({ "username": "ella", "password": "changeme-starlight", "clientId": "fs_ella" }),
+        ),
+    )
+    .await;
+    let ella_token = ella_login["token"].as_str().unwrap().to_string();
+
+    let (_, maya_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "fs_maya" })),
+    )
+    .await;
+    let maya_self_id = maya_login["selfId"].as_str().unwrap().to_string();
+
+    let (_, chloe_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(
+            json!({ "username": "chloe", "password": "changeme-rainbow", "clientId": "fs_chloe" }),
+        ),
+    )
+    .await;
+    let chloe_token = chloe_login["token"].as_str().unwrap().to_string();
+
+    // Place Maya far away building on Plot #1 (52, 0, -26) -> starting show MUST NOT teleport Maya!
+    running
+        .world
+        .apply_c2s_state(
+            &maya_self_id,
+            DecodedC2SState {
+                seq: 1,
+                client_time_ms: 100,
+                x: 52.0,
+                y: 0.0,
+                z: -26.0,
+                ry: 0.0,
+                anim: "idle".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: 0,
+            },
+        )
+        .await;
+
+    // 1. Ella starts Timed Fashion Show -> phase == "dress_up", Chloe opts in via `join_show`
+    let (st_start, start_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/runway",
+        Some(json!({ "token": ella_token, "action": "start_show" })),
+    )
+    .await;
+    assert_eq!(st_start, 200);
+    assert_eq!(start_res["runway"]["show"]["phase"], "dress_up");
+
+    let maya_pos = {
+        let map = running.world.players.read().await;
+        let p = map.get(&maya_self_id).unwrap();
+        (p.x, p.z)
+    };
+    assert_eq!(
+        maya_pos,
+        (52.0, -26.0),
+        "Non-participating builders must NEVER be force-teleported"
+    );
+
+    let (st_join, join_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/runway",
+        Some(json!({ "token": chloe_token, "action": "join_show" })),
+    )
+    .await;
+    assert_eq!(st_join, 200);
+    assert_eq!(
+        join_res["runway"]["show"]["contestants"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // 2. Self-voting during active show is rejected; Ella votes 5★ for Chloe!
+    let (st_self_vote, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/runway",
+        Some(
+            json!({ "token": ella_token, "action": "vote", "targetUsername": "ella", "stars": 5 }),
+        ),
+    )
+    .await;
+    assert_eq!(st_self_vote, 400);
+
+    let (st_vote, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/runway",
+        Some(
+            json!({ "token": ella_token, "action": "vote", "targetUsername": "chloe", "stars": 5 }),
+        ),
+    )
+    .await;
+    assert_eq!(st_vote, 200);
+
+    // 3. Advance `dress_up` -> `catwalk` (contestant 0 -> contestant 1) -> `podium`!
+    {
+        let mut rw = running.world.runway.write().await;
+        rw.show.phase_ends_at = 1;
+    }
+    running.world.tick_fashion_show().await; // -> catwalk idx 0
+    {
+        let mut rw = running.world.runway.write().await;
+        assert_eq!(rw.show.phase, "catwalk");
+        assert_eq!(rw.show.spotlight_index, 0);
+        rw.show.phase_ends_at = 1;
+    }
+    running.world.tick_fashion_show().await; // -> catwalk idx 1
+    {
+        let mut rw = running.world.runway.write().await;
+        assert_eq!(rw.show.phase, "catwalk");
+        assert_eq!(rw.show.spotlight_index, 1);
+        rw.show.phase_ends_at = 1;
+    }
+    running.world.tick_fashion_show().await; // -> podium + AI Judges + coin prizes!
+
+    let summary = running.world.runway.read().await.summary();
+    assert_eq!(summary.show.phase, "podium");
+    assert_eq!(summary.show.podium_winners.len(), 2);
+    assert!(
+        summary
+            .show
+            .podium_winners
+            .iter()
+            .all(|p| p.ai_judged && p.avg_stars >= 4.0),
+        "AI Judges must supply friendly 4★-5★ ratings when < 3 human voters participated"
+    );
+
+    let (ella_coins, chloe_coins) = {
+        let cfg = running.world.users_cfg.read().await;
+        let ec = cfg
+            .users
+            .iter()
+            .find(|u| u.username == "ella")
+            .unwrap()
+            .coins;
+        let cc = cfg
+            .users
+            .iter()
+            .find(|u| u.username == "chloe")
+            .unwrap()
+            .coins;
+        (ec, cc)
+    };
+    assert_eq!(
+        ella_coins + chloe_coins,
+        100,
+        "1st (+60) and 2nd (+40) Podium prizes must total 100 Starlight Coins"
+    );
+
+    running.http_task.abort();
+}
+
+#[tokio::test]
+async fn expansion_obby_speedrun_gates_hoverboard_dismount_and_persistent_leaderboards() {
+    let cfg = make_test_config("exp_obby_speedrun");
+    let cfg_restart = cfg.clone();
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (_, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "obby_ella" })),
+    )
+    .await;
+    let token = ella_login["token"].as_str().unwrap().to_string();
+    let self_id = ella_login["selfId"].as_str().unwrap().to_string();
+
+    // 1. Equip Starlight Hoverboard, stand at Sky Obby Start Gate `(0, 0.8, -13.5)`, and start run -> auto-dismounts hoverboard!
+    let (st_mnt, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/companions",
+        Some(json!({ "token": token, "action": "equip_mount", "mountId": "starlight_board" })),
+    )
+    .await;
+    assert_eq!(st_mnt, 200);
+
+    running
+        .world
+        .apply_c2s_state(
+            &self_id,
+            DecodedC2SState {
+                seq: 1,
+                client_time_ms: 100,
+                x: 0.0,
+                y: 0.8,
+                z: -13.5,
+                ry: 0.0,
+                anim: "hover".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: 0,
+            },
+        )
+        .await;
+
+    let (st_start1, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/obby",
+        Some(json!({ "token": token, "action": "start", "course": "easy" })),
+    )
+    .await;
+    assert_eq!(st_start1, 200);
+    let mount_after_start = {
+        let cfg = running.world.users_cfg.read().await;
+        cfg.users
+            .iter()
+            .find(|u| u.username == "ella")
+            .unwrap()
+            .equipped_mount
+            .clone()
+    };
+    assert_eq!(
+        mount_after_start, None,
+        "Starting an Obby speedrun must auto-dismount hoverboards"
+    );
+
+    // 2. Cancelling timer (checkpoint warp `R`) invalidates finishing
+    let (st_cancel, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/obby",
+        Some(json!({ "token": token, "action": "cancel" })),
+    )
+    .await;
+    assert_eq!(st_cancel, 200);
+
+    running
+        .world
+        .apply_c2s_state(
+            &self_id,
+            DecodedC2SState {
+                seq: 2,
+                client_time_ms: 200,
+                x: 6.5,
+                y: 17.0,
+                z: -20.0,
+                ry: 0.0,
+                anim: "idle".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: 0,
+            },
+        )
+        .await;
+    let (st_fin_invalid, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/obby",
+        Some(json!({ "token": token, "action": "finish", "course": "easy" })),
+    )
+    .await;
+    assert_eq!(st_fin_invalid, 400);
+
+    // 3. Valid timed run from Start Gate -> Finish Gate records Top 5 & persists to `world_leaderboards.json`!
+    running
+        .world
+        .apply_c2s_state(
+            &self_id,
+            DecodedC2SState {
+                seq: 3,
+                client_time_ms: 300,
+                x: 0.0,
+                y: 0.8,
+                z: -13.5,
+                ry: 0.0,
+                anim: "run".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: 0,
+            },
+        )
+        .await;
+    let (st_start2, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/obby",
+        Some(json!({ "token": token, "action": "start", "course": "easy" })),
+    )
+    .await;
+    assert_eq!(st_start2, 200);
+
+    // Backdate `started_at_ms` by 9.42s so we test realistic speedrun timing without sleeping
+    {
+        let mut runs = running.world.active_obby_runs.write().await;
+        if let Some(r) = runs.get_mut(&self_id) {
+            r.started_at_ms = r.started_at_ms.saturating_sub(9_420);
+        }
+    }
+    running
+        .world
+        .apply_c2s_state(
+            &self_id,
+            DecodedC2SState {
+                seq: 4,
+                client_time_ms: 400,
+                x: 6.5,
+                y: 17.0,
+                z: -20.0,
+                ry: 0.0,
+                anim: "jump".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: 0,
+            },
+        )
+        .await;
+
+    let (st_fin, fin_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/obby",
+        Some(json!({ "token": token, "action": "finish", "course": "easy" })),
+    )
+    .await;
+    assert_eq!(st_fin, 200);
+    assert_eq!(fin_res["rank"], 1);
+    assert_eq!(fin_res["improved"], true);
+    assert_eq!(fin_res["awardedCoins"], 37); // 12 base + 25 #1 record bonus
+    assert!(fin_res["timeFormatted"].as_str().unwrap().ends_with('s'));
+
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    running.http_task.abort();
+
+    // Reload WorldEngine from disk and verify `world_leaderboards.json` persisted Ella's #1 time!
+    let reloaded = WorldEngine::new(cfg_restart).expect("reload WorldEngine");
+    let lb = reloaded.obby_leaderboards.read().await.clone();
+    assert_eq!(lb.easy.len(), 1);
+    assert_eq!(lb.easy[0].username, "ella");
+}
+
+#[tokio::test]
+async fn expansion_sky_meteor_shower_and_coop_obsidian_dragon_boss_end_to_end() {
+    use ella_world::economy::BossShockwave;
+    use ella_world::udp_wire::ZONE_ARENA;
+
+    let cfg = make_test_config("exp_sky_and_boss");
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (_, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "boss_ella" })),
+    )
+    .await;
+    let ella_token = ella_login["token"].as_str().unwrap().to_string();
+    let ella_id = ella_login["selfId"].as_str().unwrap().to_string();
+
+    let (_, maya_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "boss_maya" })),
+    )
+    .await;
+    let maya_token = maya_login["token"].as_str().unwrap().to_string();
+    let maya_id = maya_login["selfId"].as_str().unwrap().to_string();
+
+    // 1. Non-host Maya cannot control Sky/Meteor Shower (400); Host Ella CAN set Aurora Night & launch Meteor Shower!
+    let (st_maya_sky, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/sky",
+        Some(json!({ "token": maya_token, "action": "start_meteor_shower" })),
+    )
+    .await;
+    assert_eq!(st_maya_sky, 400);
+
+    let (st_ella_sky, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/sky",
+        Some(json!({ "token": ella_token, "action": "set_sky", "mode": "aurora_night" })),
+    )
+    .await;
+    assert_eq!(st_ella_sky, 200);
+
+    let (st_meteor, meteor_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/sky",
+        Some(json!({ "token": ella_token, "action": "start_meteor_shower" })),
+    )
+    .await;
+    assert_eq!(st_meteor, 200);
+    let stars = meteor_res["sky"]["fallingStars"].as_array().unwrap();
+    assert!(!stars.is_empty());
+    let first_star = &stars[0];
+    let star_id = first_star["id"].as_str().unwrap().to_string();
+    let sx = first_star["x"].as_f64().unwrap() as f32;
+    let sz = first_star["z"].as_f64().unwrap() as f32;
+
+    running
+        .world
+        .apply_c2s_state(
+            &maya_id,
+            DecodedC2SState {
+                seq: 1,
+                client_time_ms: 100,
+                x: sx,
+                y: 0.0,
+                z: sz,
+                ry: 0.0,
+                anim: "run".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: 0,
+            },
+        )
+        .await;
+    let (st_catch, catch_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/sky",
+        Some(json!({ "token": maya_token, "action": "catch_star", "starId": star_id })),
+    )
+    .await;
+    assert_eq!(st_catch, 200);
+    assert!(catch_res["coinsAwarded"].as_u64().unwrap() >= 16);
+
+    // 2. Both Ella and Maya enter Shadow Rift (`ZONE_ARENA`) and approach North Island Altar `(0, 0, -24.5)`!
+    for tok in [&ella_token, &maya_token] {
+        let (st_p, _) = http_json_request(
+            running.http_addr,
+            "POST",
+            "/api/ella-world/dungeon/portal",
+            Some(json!({ "token": tok, "targetZone": ZONE_ARENA })),
+        )
+        .await;
+        assert_eq!(st_p, 200);
+    }
+
+    // Expire Sanctuary spawn shields and place Ella grounded (`y = 0.0`) & Maya jumping (`y = 1.2`) at `z = -20.5`
+    {
+        let mut ar = running.world.arena.write().await;
+        for pid in [&ella_id, &maya_id] {
+            if let Some(st) = ar.player_statuses.get_mut(pid) {
+                st.invuln_until_ms = 0;
+            }
+        }
+    }
+    running
+        .world
+        .apply_c2s_state(
+            &ella_id,
+            DecodedC2SState {
+                seq: 2,
+                client_time_ms: 200,
+                x: 0.0,
+                y: 0.0,
+                z: -20.5,
+                ry: 0.0,
+                anim: "idle".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: ZONE_ARENA,
+            },
+        )
+        .await;
+    running
+        .world
+        .apply_c2s_state(
+            &maya_id,
+            DecodedC2SState {
+                seq: 2,
+                client_time_ms: 200,
+                x: 0.0,
+                y: 1.2, // Jumping cleanly over the ground shockwave ring (`y >= 0.65`)!
+                z: -20.5,
+                ry: 0.0,
+                anim: "jump".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: ZONE_ARENA,
+            },
+        )
+        .await;
+
+    // Summon Co-Op Obsidian Dragon Boss -> 2 players in Arena scales HP to `18 + 12 = 30 HP`!
+    let (st_boss, boss_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/arena/boss",
+        Some(json!({ "token": ella_token, "useBeacon": false })),
+    )
+    .await;
+    assert_eq!(st_boss, 200);
+    assert_eq!(boss_res["boss"]["active"], true);
+    assert_eq!(boss_res["boss"]["maxHp"], 30);
+
+    // 3. Inject an expanding Shockwave Ring passing across `dist = 4.0` from `(0, -24.5)`:
+    // Grounded Ella (`y = 0.0`) takes 18 DMG -> 82 HP; Jumping Maya (`y = 1.2`) dodges -> 100 HP!
+    {
+        let mut ar = running.world.arena.write().await;
+        ar.boss.shockwaves.push(BossShockwave {
+            id: 777,
+            x: 0.0,
+            z: -24.5,
+            radius: 3.6,
+            max_radius: 18.0,
+            spawned_at_ms: 0,
+        });
+    }
+    running.world.tick_arena_if_occupied().await;
+    {
+        let ar = running.world.arena.read().await;
+        assert_eq!(
+            ar.status_for(&ella_id).hp,
+            82,
+            "Grounded player must take 18 DMG from Obsidian Dragon Shockwave"
+        );
+        assert_eq!(
+            ar.status_for(&maya_id).hp,
+            100,
+            "Jumping player (y >= 0.65) must dodge Obsidian Dragon Shockwave"
+        );
+    }
+
+    // 4. Both Ella and Maya contribute hits and defeat the Boss -> BOTH get personal coins, rare loot & first-kill `pet_egg`!
+    {
+        let mut ar = running.world.arena.write().await;
+        ar.boss.x = 0.0;
+        ar.boss.y = 0.5;
+        ar.boss.z = -23.0;
+        ar.boss.hp = 3; // 2 hits to finish (`stomp` = 2 DMG, `blast` = 1 DMG)
+    }
+    let (st_hit_maya, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/attack",
+        Some(json!({ "token": maya_token, "mobId": "obsidian_dragon", "mode": "blast" })),
+    )
+    .await;
+    assert_eq!(st_hit_maya, 200);
+
+    let (st_kill_ella, kill_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/attack",
+        Some(json!({ "token": ella_token, "mobId": "obsidian_dragon", "mode": "stomp" })),
+    )
+    .await;
+    assert_eq!(st_kill_ella, 200);
+    assert_eq!(kill_res["defeated"], true);
+    let rewards = kill_res["bossRewards"].as_array().unwrap();
+    assert_eq!(
+        rewards.len(),
+        2,
+        "Every contributing player must receive fair personal loot without loot-stealing"
+    );
+    assert!(rewards.iter().all(|r| r["petEgg"] == true));
+
+    let cfg_snap = running.world.users_cfg.read().await;
+    for uname in ["ella", "maya"] {
+        let u = cfg_snap.users.iter().find(|u| u.username == uname).unwrap();
+        assert_eq!(u.inventory.get("pet_egg").copied(), Some(1));
+        assert!(u.coins >= 45);
+    }
+
+    running.http_task.abort();
+}

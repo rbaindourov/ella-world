@@ -88,6 +88,7 @@ pub fn anim_to_code(anim: &str) -> u8 {
         "walk" => 1,
         "run" => 2,
         "jump" => 3,
+        "hover" => 4,
         _ => 0,
     }
 }
@@ -97,6 +98,7 @@ pub fn code_to_anim(code: u8) -> &'static str {
         1 => "walk",
         2 => "run",
         3 => "jump",
+        4 => "hover",
         _ => "idle",
     }
 }
@@ -111,6 +113,7 @@ pub fn emote_to_code(emote: Option<&str>) -> u8 {
         Some("cheer") => 6,
         Some("flip") => 7,
         Some("sit") => 8,
+        Some("sleep") => 9,
         _ => 0,
     }
 }
@@ -125,6 +128,7 @@ pub fn code_to_emote(code: u8) -> Option<&'static str> {
         6 => Some("cheer"),
         7 => Some("flip"),
         8 => Some("sit"),
+        9 => Some("sleep"),
         _ => None,
     }
 }
@@ -510,6 +514,9 @@ mod tests {
                     role: "host".into(),
                     avatar: AvatarAppearance::default(),
                     moderation: Default::default(),
+                    equipped_pet: None,
+                    pet_nickname: None,
+                    equipped_mount: None,
                 },
                 avatar_hash: AvatarAppearance::default().short_hash(),
                 zone: decoded.zone,
@@ -542,6 +549,9 @@ mod tests {
                     role: "friend".into(),
                     avatar: AvatarAppearance::default(),
                     moderation: Default::default(),
+                    equipped_pet: None,
+                    pet_nickname: None,
+                    equipped_mount: None,
                 },
                 avatar_hash: AvatarAppearance::default().short_hash(),
                 zone: ZONE_PLAZA,
@@ -594,6 +604,9 @@ mod tests {
                     role: "friend".into(),
                     avatar: base_av.clone(),
                     moderation: Default::default(),
+                    equipped_pet: None,
+                    pet_nickname: None,
+                    equipped_mount: None,
                 },
                 avatar_hash: base_av.short_hash(),
                 zone: ZONE_PLAZA,

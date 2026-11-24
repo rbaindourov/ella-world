@@ -3913,3 +3913,407 @@ kbd {
   background: linear-gradient(135deg, #ef4444, #f97316);
   box-shadow: 0 8px 24px rgba(239, 68, 68, 0.45);
 }
+
+/* ============================================================================
+   Ella's World Expansion Pack Styles (Pets, Mounts, Homes, Crafting, Fashion
+   Show, Obby Speedruns, Dynamic Sky / Meteor Shower & Obsidian Dragon Boss)
+   Follows modern-web-guidance: dialog, persistent-toast-notifications, progress, tabs
+   ============================================================================ */
+
+/* Mandatory modal scroll containment (modern-web-guidance: dialog Rule 1) */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+/* HUD Expansion Chips & Sky Badge */
+.hud-sky-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.24rem;
+  padding: 0.14rem 0.54rem;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.24);
+  border: 1px solid rgba(165, 180, 252, 0.52);
+  color: #e0e7ff;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.hud-sky-pill.is-sunset {
+  background: rgba(244, 114, 182, 0.26);
+  border-color: rgba(251, 191, 36, 0.65);
+  color: #fef3c7;
+}
+
+.hud-sky-pill.is-aurora {
+  background: rgba(16, 185, 129, 0.24);
+  border-color: rgba(52, 211, 153, 0.65);
+  color: #a7f3d0;
+}
+
+.hud-chip-btn.pets-chip {
+  background: rgba(236, 72, 153, 0.22);
+  border-color: rgba(244, 114, 182, 0.62);
+  color: #fbcfe8;
+}
+
+.hud-chip-btn.mount-chip {
+  background: rgba(14, 165, 233, 0.22);
+  border-color: rgba(56, 189, 248, 0.62);
+  color: #bae6fd;
+}
+
+.hud-chip-btn.mount-chip.is-mounted {
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.85), rgba(168, 85, 247, 0.8));
+  border-color: #7dd3fc;
+  color: #ffffff;
+}
+
+.hud-chip-btn.home-chip {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(52, 211, 153, 0.58);
+  color: #d1fae5;
+}
+
+.hud-chip-btn.craft-chip {
+  background: rgba(168, 85, 247, 0.24);
+  border-color: rgba(192, 132, 252, 0.65);
+  color: #f3e8ff;
+}
+
+.hud-chip-btn.sky-chip {
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.48), rgba(236, 72, 153, 0.42));
+  border-color: rgba(165, 180, 252, 0.72);
+  color: #ffffff;
+}
+
+/* Timed DTI Fashion Show Controls & Countdown Progress */
+.runway-show-cta-btn {
+  padding: 0.24rem 0.62rem;
+  border-radius: 999px;
+  border: 1.5px solid rgba(251, 191, 36, 0.75);
+  background: linear-gradient(135deg, #ec4899, #8b5cf6);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 0.74rem;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.runway-show-cta-btn:hover {
+  filter: brightness(1.1);
+}
+
+.runway-show-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.16rem 0.52rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(244, 114, 182, 0.55);
+}
+
+.runway-show-status[hidden] {
+  display: none;
+}
+
+.runway-show-phase-text {
+  font-size: 0.74rem;
+  font-weight: 800;
+  color: #fdf2f8;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.runway-show-progress {
+  --arena-hp-track: #312e81;
+  --arena-hp-fill: #f472b6;
+  inline-size: 4.8rem;
+  block-size: 0.52rem;
+  flex: none;
+}
+
+.glam-show-timer-pill {
+  background: rgba(236, 72, 153, 0.34);
+  border-color: rgba(251, 191, 36, 0.8);
+  color: #fef3c7;
+}
+
+/* Shadow Rift Boss HP Bar */
+.arena-boss-row {
+  margin-top: 0.42rem;
+  padding-top: 0.38rem;
+  border-top: 1px solid rgba(248, 113, 113, 0.26);
+}
+
+.arena-boss-row[hidden] {
+  display: none;
+}
+
+.arena-boss-label {
+  color: #fde68a;
+}
+
+.arena-hp-progress.is-boss-bar {
+  --arena-hp-track: #2e1065;
+  --arena-hp-fill: #c084fc;
+}
+
+/* Floating Active Obby Speedrun Timer Pill (visible only during active run) */
+.obby-speedrun-banner {
+  position: fixed;
+  top: 4.2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1.5px solid rgba(52, 211, 153, 0.78);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.52);
+  backdrop-filter: blur(12px);
+  color: #f8fafc;
+  pointer-events: auto;
+  z-index: 29;
+}
+
+.game-hud.is-fullscreen-hud .obby-speedrun-banner {
+  top: 0.85rem;
+}
+
+.obby-speedrun-banner[hidden] {
+  display: none;
+}
+
+.obby-speedrun-course {
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: #a7f3d0;
+}
+
+.obby-speedrun-time {
+  font-size: 0.98rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #fef08a;
+  min-width: 4.2rem;
+  text-align: right;
+}
+
+.obby-cancel-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  background: rgba(127, 29, 29, 0.55);
+  color: #fecaca;
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+/* Non-Modal Top-Layer Notification Stack (popover="manual") */
+.world-notifications-region {
+  position: fixed;
+  top: 4.25rem;
+  right: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  z-index: 42;
+  pointer-events: none;
+}
+
+.world-toast-popover {
+  margin: 0;
+  inset: auto;
+  position: fixed;
+  top: 4.25rem;
+  right: 1rem;
+  width: min(360px, calc(100vw - 1.5rem));
+  padding: 0.9rem 1rem;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.94);
+  border: 1.5px solid rgba(244, 114, 182, 0.72);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(12px);
+  color: #f8fafc;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 180ms ease, transform 180ms ease, display 180ms ease, overlay 180ms ease;
+  transition-behavior: allow-discrete;
+}
+
+.world-toast-popover.is-doorbell {
+  top: 11.2rem;
+  border-color: rgba(52, 211, 153, 0.78);
+}
+
+.world-toast-popover:is(:popover-open, .\:popover-open) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.68rem;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@supports not selector(:popover-open) {
+  .world-toast-popover:not(.\:popover-open) {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-toast-popover {
+    transition: none;
+    transform: none;
+  }
+}
+
+.world-toast-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+
+.world-toast-icon {
+  font-size: 1.65rem;
+  line-height: 1;
+}
+
+.world-toast-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.world-toast-sub {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #e2e8f0;
+  line-height: 1.38;
+}
+
+.world-toast-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+/* Companions, Homes, Crafting, Obby Leaderboards & Sky Modal Layouts */
+.comp-panel-inner {
+  padding-top: 0.45rem;
+}
+
+.pet-nickname-form {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex: 1;
+  min-width: 210px;
+}
+
+.pet-nickname-form input {
+  flex: 1;
+  padding: 0.46rem 0.65rem;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  background: rgba(15, 23, 42, 0.9);
+  color: #f8fafc;
+  font-size: 0.82rem;
+}
+
+.craft-materials-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.65rem 0.8rem;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.26);
+}
+
+.craft-mat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  padding: 0.2rem 0.56rem;
+  border-radius: 999px;
+  background: rgba(30, 41, 59, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #f8fafc;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.craft-ing-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+
+.craft-ing-chip {
+  padding: 0.14rem 0.44rem;
+  border-radius: 7px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(52, 211, 153, 0.55);
+  color: #a7f3d0;
+}
+
+.craft-ing-chip.is-missing {
+  border-color: rgba(248, 113, 113, 0.6);
+  color: #fecaca;
+}
+
+.obby-leaderboard-list {
+  margin: 0.35rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+}
+
+.obby-rank-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+  padding: 0.48rem 0.68rem;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  font-size: 0.82rem;
+}
+
+.obby-rank-row.is-first {
+  border-color: rgba(251, 191, 36, 0.72);
+  background: rgba(120, 53, 15, 0.34);
+}
+
+.obby-rank-time {
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #fef08a;
+}
+
+.sky-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+

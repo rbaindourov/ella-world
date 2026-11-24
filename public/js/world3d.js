@@ -43,9 +43,11 @@ export const BUILD_CATALOG = [
   { kind: 'bath_tub', category: 'bathroom', icon: '🛁', label: 'Bubble Tub', height: 1 },
   { kind: 'bath_vanity', category: 'bathroom', icon: '🪞', label: 'Mirror Vanity', height: 1 },
   { kind: 'bath_toilet', category: 'bathroom', icon: '🚽', label: 'Toilet', height: 1 },
-  // Bedroom
+  // Bedroom & Living
   { kind: 'bed', category: 'bedroom', icon: '🛏️', label: 'Cozy Bed', height: 1 },
-  { kind: 'nightstand_lamp', category: 'bedroom', icon: '🛋️', label: 'Nightstand', height: 1 },
+  { kind: 'sofa', category: 'bedroom', icon: '🛋️', label: 'Plush Sofa', height: 1 },
+  { kind: 'nightstand_lamp', category: 'bedroom', icon: '🛋️', label: 'Nightstand Lamp', height: 1 },
+  { kind: 'crystal_lamp', category: 'bedroom', icon: '🏮', label: 'Crystal Lamp', height: 1 },
   { kind: 'wardrobe', category: 'bedroom', icon: '🚪', label: 'Wardrobe', height: 2 },
   { kind: 'rug', category: 'bedroom', icon: '🧶', label: 'Starlight Rug', height: 1 }
 ];
@@ -62,13 +64,21 @@ const PROP_TEMPLATE_BY_KIND = {
   bath_vanity: 'Prop_Bath_Vanity',
   bath_toilet: 'Prop_Bath_Toilet',
   bed: 'Prop_Bed',
+  sofa: 'Prop_Sofa',
   nightstand_lamp: 'Prop_Nightstand_Lamp',
+  crystal_lamp: 'Prop_Crystal_Lamp',
   wardrobe: 'Prop_Wardrobe',
   rug: 'Prop_Rug'
 };
 
 const LOOT_TEMPLATE_BY_ITEM_ID = {
   legendary_ray_gun: 'Loot_Ray_Gun',
+  crystal_blade: 'Loot_Crystal_Blade',
+  starlight_wand: 'Loot_Starlight_Wand',
+  aegis_heart_charm: 'Loot_Aegis_Charm',
+  rift_beacon: 'Loot_Rift_Beacon',
+  pet_egg: 'Loot_Pet_Egg',
+  aurora_crystal_lamp: 'Loot_Aurora_Lamp',
   geode_lamp: 'Loot_Geode_Lamp',
   slime_lava_lamp: 'Loot_Slime_Lamp',
   bat_plushie: 'Loot_Bat_Plush',
@@ -351,14 +361,16 @@ const EMOTE_TO_CLIP = {
   pose: 'Emote_Pose',
   peace: 'Emote_Peace',
   sit: 'Emote_Sit',
-  flip: 'Emote_Flip'
+  flip: 'Emote_Flip',
+  sleep: 'Idle_Glam'
 };
 
 const ANIM_TO_CLIP = {
   idle: 'Idle_Glam',
   walk: 'Walk_Runway',
   run: 'Run_Obby',
-  jump: 'Jump_Air'
+  jump: 'Jump_Air',
+  hover: 'Emote_Pose'
 };
 
 function createFaceTexture(faceType = 'happy', skinColor = '#ffdfc4', isMale = false) {
@@ -809,6 +821,302 @@ function buildRayGunAttachment(accentHex = '#ec4899', cloneGeo = false) {
   return group;
 }
 
+function buildCrystalBladeAttachment(accentHex = '#38bdf8', cloneGeo = false) {
+  const group = new THREE.Group();
+  const glbBlade = clonePropTemplate('Loot_Crystal_Blade', accentHex, null, cloneGeo);
+  if (glbBlade) {
+    glbBlade.position.set(0, -0.06, 0.04);
+    glbBlade.rotation.x = Math.PI * 0.34;
+    glbBlade.scale.setScalar(0.95);
+    group.add(glbBlade);
+    group.userData.isBlenderMesh = true;
+    return group;
+  }
+  const hiltMat = new THREE.MeshStandardMaterial({ color: '#fbbf24', metalness: 0.85, roughness: 0.2 });
+  const bladeMat = new THREE.MeshStandardMaterial({
+    color: accentHex || '#38bdf8',
+    emissive: '#0ea5e9',
+    emissiveIntensity: 0.95,
+    metalness: 0.4,
+    roughness: 0.12
+  });
+  const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.22, 8), hiltMat);
+  const guard = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.04, 0.05), hiltMat);
+  guard.position.y = 0.11;
+  const blade = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.62, 4), bladeMat);
+  blade.position.y = 0.43;
+  const sub = new THREE.Group();
+  sub.add(grip, guard, blade);
+  sub.rotation.x = Math.PI * 0.42;
+  group.add(sub);
+  return group;
+}
+
+function buildStarlightWandAttachment(accentHex = '#f472b6', cloneGeo = false) {
+  const group = new THREE.Group();
+  const glbWand = clonePropTemplate('Loot_Starlight_Wand', accentHex, null, cloneGeo);
+  if (glbWand) {
+    glbWand.position.set(0, -0.08, 0.03);
+    glbWand.rotation.x = Math.PI * 0.32;
+    glbWand.scale.setScalar(0.95);
+    group.add(glbWand);
+    group.userData.isBlenderMesh = true;
+    return group;
+  }
+  const shaftMat = new THREE.MeshStandardMaterial({ color: '#fde047', metalness: 0.82, roughness: 0.2 });
+  const starMat = new THREE.MeshStandardMaterial({
+    color: accentHex || '#f472b6',
+    emissive: '#ec4899',
+    emissiveIntensity: 1.1,
+    roughness: 0.12
+  });
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.024, 0.56, 8), shaftMat);
+  shaft.position.y = 0.2;
+  const star = new THREE.Mesh(new THREE.OctahedronGeometry(0.095, 0), starMat);
+  star.position.y = 0.5;
+  const halo = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.015, 8, 20), shaftMat);
+  halo.position.y = 0.5;
+  const sub = new THREE.Group();
+  sub.add(shaft, star, halo);
+  sub.rotation.x = Math.PI * 0.36;
+  group.add(sub);
+  return group;
+}
+
+function buildCompanionMountVisual(mountId) {
+  if (!mountId) return null;
+  const group = new THREE.Group();
+  const tplMap = {
+    starlight_board: 'Env_Mount_Hoverboard',
+    sunset_skates: 'Env_Mount_StarlightSkates',
+    comet_surfer: 'Env_Mount_CometSurfer'
+  };
+  const glbMount = tplMap[mountId] ? cloneEnvTemplate(tplMap[mountId]) : null;
+  if (glbMount) {
+    group.add(glbMount);
+    group.userData.isBlenderMesh = true;
+  } else {
+    const col = mountId === 'comet_surfer' ? '#a855f7' : mountId === 'sunset_skates' ? '#fb923c' : '#38bdf8';
+    const deck = new THREE.Mesh(
+      new THREE.BoxGeometry(0.56, 0.07, 1.38),
+      new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.48, roughness: 0.2, metalness: 0.45 })
+    );
+    deck.position.y = 0.14;
+    group.add(deck);
+  }
+  const glowRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.28, 0.52, 24),
+    new THREE.MeshBasicMaterial({
+      color: mountId === 'comet_surfer' ? '#f472b6' : '#38bdf8',
+      transparent: true,
+      opacity: 0.65,
+      side: THREE.DoubleSide
+    })
+  );
+  glowRing.rotation.x = -Math.PI / 2;
+  glowRing.position.y = 0.04;
+  group.add(glowRing);
+  group.userData.glowRing = glowRing;
+  return group;
+}
+
+function buildCompanionPetVisual(petId, petNickname = '') {
+  if (!petId) return null;
+  const root = new THREE.Group();
+  const bodyWrap = new THREE.Group();
+  root.add(bodyWrap);
+
+  let leftWing = null;
+  let rightWing = null;
+  let hasBlender = false;
+
+  if (petId === 'baby_crystal_dragon') {
+    const body = cloneEnvTemplate('Env_Pet_BabyDragon_Body');
+    const wL = cloneEnvTemplate('Env_Pet_BabyDragon_WingL');
+    const wR = cloneEnvTemplate('Env_Pet_BabyDragon_WingR');
+    if (body) {
+      bodyWrap.add(body);
+      if (wL) {
+        wL.position.set(-0.16, 0.42, -0.02);
+        bodyWrap.add(wL);
+        leftWing = wL;
+      }
+      if (wR) {
+        wR.position.set(0.16, 0.42, -0.02);
+        bodyWrap.add(wR);
+        rightWing = wR;
+      }
+      hasBlender = true;
+    }
+  } else {
+    const tplMap = {
+      cloud_puppy: 'Env_Pet_CloudPuppy',
+      starlight_kitsune: 'Env_Pet_StarlightKitsune',
+      shadow_kitty: 'Env_Pet_ShadowKitty'
+    };
+    const glbPet = tplMap[petId] ? cloneEnvTemplate(tplMap[petId]) : null;
+    if (glbPet) {
+      bodyWrap.add(glbPet);
+      hasBlender = true;
+    }
+  }
+
+  if (!hasBlender) {
+    const palette = {
+      cloud_puppy: '#f8fafc',
+      starlight_kitsune: '#fb923c',
+      shadow_kitty: '#312e81',
+      baby_crystal_dragon: '#38bdf8'
+    };
+    const col = palette[petId] || '#f8fafc';
+    const mat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.35 });
+    const torso = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 12), mat);
+    torso.position.y = 0.26;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.19, 14, 12), mat);
+    head.position.set(0, 0.46, 0.16);
+    bodyWrap.add(torso, head);
+  }
+
+  if (petNickname) {
+    const tag = createWorldBannerSprite(`🐾 ${petNickname}`, '', '#f472b6');
+    tag.scale.set(1.55, 0.34, 1);
+    tag.position.set(0, 0.92, 0);
+    root.add(tag);
+  }
+
+  root.userData = { petId, petNickname, bodyWrap, leftWing, rightWing, hasBlender };
+  return root;
+}
+
+function createPlotMailboxTexture(plot) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 176;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const claimed = Boolean(plot.ownerUsername);
+  ctx.fillStyle = claimed ? 'rgba(15, 23, 42, 0.92)' : 'rgba(15, 23, 42, 0.84)';
+  ctx.strokeStyle = claimed ? (plot.doorLocked ? '#fb7185' : '#34d399') : '#38bdf8';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.roundRect(12, 10, 488, 156, 26);
+  ctx.fill();
+  ctx.stroke();
+
+  const title = plot.customTitle || plot.defaultName || plot.plotId;
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 27px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(title).slice(0, 30), 256, 56);
+
+  ctx.fillStyle = claimed ? '#fef08a' : '#bae6fd';
+  ctx.font = '700 20px Inter, sans-serif';
+  const sub = claimed
+    ? `${plot.doorLocked ? '🔒 Locked • 🔔 Ring Doorbell (E)' : '🔓 Open Home'} • @${plot.ownerUsername}`
+    : '🏡 Available Plot — Press E to Claim!';
+  ctx.fillText(sub.slice(0, 42), 256, 116);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function createObbyLeaderboardTexture(heading, records = [], accentHex = '#38bdf8') {
+  const canvas = document.createElement('canvas');
+  canvas.width = 640;
+  canvas.height = 440;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#0f172a';
+  ctx.strokeStyle = accentHex;
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.roundRect(10, 10, 620, 420, 28);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = accentHex;
+  ctx.font = '900 32px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(heading, 320, 58);
+
+  ctx.fillStyle = '#cbd5e1';
+  ctx.font = '700 18px Inter, sans-serif';
+  ctx.fillText('Cross Green Start Gate on Foot → Summit Finish Gate!', 320, 92);
+
+  if (!Array.isArray(records) || records.length === 0) {
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '700 24px Inter, sans-serif';
+    ctx.fillText('⏱️ No times yet — set the #1 World Record!', 320, 245);
+  } else {
+    const medals = ['🥇 #1', '🥈 #2', '🥉 #3', '🏅 #4', '🏅 #5'];
+    records.slice(0, 5).forEach((rec, idx) => {
+      const ry = 138 + idx * 56;
+      ctx.fillStyle = idx === 0 ? 'rgba(251, 191, 36, 0.22)' : 'rgba(30, 41, 59, 0.88)';
+      ctx.beginPath();
+      ctx.roundRect(36, ry - 22, 568, 46, 14);
+      ctx.fill();
+
+      ctx.fillStyle = idx === 0 ? '#fde047' : '#f8fafc';
+      ctx.font = '800 23px Inter, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(`${medals[idx]}  ${String(rec.displayName || rec.username).slice(0, 18)}`, 56, ry + 8);
+
+      ctx.fillStyle = '#34d399';
+      ctx.textAlign = 'right';
+      ctx.fillText(rec.timeFormatted || `${(rec.elapsedMs / 1000).toFixed(2)}s`, 584, ry + 8);
+    });
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function createAuroraRibbonMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uOpacity: { value: 0 }
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      uniform float uTime;
+      void main() {
+        vUv = uv;
+        vec3 p = position;
+        p.x += sin(uv.x * 12.0 + uTime * 0.8) * 3.5;
+        p.z += cos(uv.x * 9.0 - uTime * 0.65) * 3.5;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform float uTime;
+      uniform float uOpacity;
+      void main() {
+        if (uOpacity <= 0.01) discard;
+        float wave = sin(vUv.x * 18.0 + uTime * 1.1) * 0.5 + 0.5;
+        float curtain = pow(sin(vUv.y * 3.14159), 1.6);
+        float streak = 0.55 + 0.45 * sin(vUv.x * 46.0 - uTime * 1.9);
+        vec3 colA = vec3(0.18, 0.92, 0.68);
+        vec3 colB = vec3(0.68, 0.36, 0.98);
+        vec3 colC = vec3(0.96, 0.42, 0.76);
+        vec3 col = mix(colA, colB, wave);
+        col = mix(col, colC, 0.35 * sin(vUv.x * 7.0 + uTime * 0.5 + 1.2) + 0.35);
+        float alpha = curtain * streak * uOpacity * 0.62;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+}
+
 function buildLootDecorVisual(lootItemId, tintHex, extraUserData) {
   const root = new THREE.Group();
   const stand = clonePropTemplate('Loot_Display_Pedestal', tintHex, extraUserData);
@@ -837,6 +1145,9 @@ function buildLootDecorVisual(lootItemId, tintHex, extraUserData) {
       relic.position.set(0, 0.08, -0.04);
       relic.rotation.x = -0.18;
       relic.scale.setScalar(1.12);
+    } else if (lootItemId === 'crystal_blade' || lootItemId === 'starlight_wand') {
+      relic.position.set(0, 0.06, 0);
+      relic.scale.setScalar(0.88);
     }
     trophyHolder.add(relic);
   } else {
@@ -849,7 +1160,14 @@ function buildLootDecorVisual(lootItemId, tintHex, extraUserData) {
       crown_relic: '#f59e0b',
       speed_potion: '#38bdf8',
       jump_potion: '#f472b6',
+      starlight_potion: '#a855f7',
       prism_block: '#e879f9',
+      pet_egg: '#fde047',
+      crystal_blade: '#38bdf8',
+      starlight_wand: '#f472b6',
+      aegis_heart_charm: '#fb7185',
+      rift_beacon: '#c084fc',
+      aurora_crystal_lamp: '#34d399',
       cosmetic_hat_shadow_hood: '#334155',
       cosmetic_acc_star_lantern: '#fbbf24',
       cosmetic_hat_obsidian_crown: '#a855f7',
@@ -1254,9 +1572,17 @@ class StylizedCharacterRig {
       this.dungeonRightHandMount.remove(this.dungeonRightHandMount.children[0]);
     }
     this.customRayGun = null;
+    this.customRightWeapon = null;
     if (accessory === 'ray_gun') {
       this.customRayGun = buildRayGunAttachment(accessoryColor, this.cloneGeometries);
+      this.customRightWeapon = this.customRayGun;
       this.dungeonRightHandMount.add(this.customRayGun);
+    } else if (accessory === 'crystal_blade') {
+      this.customRightWeapon = buildCrystalBladeAttachment(accessoryColor, this.cloneGeometries);
+      this.dungeonRightHandMount.add(this.customRightWeapon);
+    } else if (accessory === 'starlight_wand') {
+      this.customRightWeapon = buildStarlightWandAttachment(accessoryColor, this.cloneGeometries);
+      this.dungeonRightHandMount.add(this.customRightWeapon);
     }
   }
 
@@ -1287,6 +1613,14 @@ class StylizedCharacterRig {
       'Idle_Glam';
     this._playClip(desiredClip, false);
     this.mixer.update(dt);
+
+    if (emoteState === 'sleep') {
+      this.model.rotation.x = -Math.PI * 0.47;
+      this.model.position.set(0, 0.56, 0.36);
+    } else {
+      this.model.rotation.x = 0;
+      this.model.position.set(0, 0, 0);
+    }
 
     if (this.glitterMaterials.length > 0) {
       const shimmer = 0.13 + Math.sin(animClock * 6.5) * 0.05;
@@ -1452,6 +1786,16 @@ class ClassicBlockyRig {
       this.rayGunGroup.position.set(0.02, -0.88, 0.22);
       this.rayGunGroup.rotation.x = 0.55;
       this.rightArmPivot.add(this.rayGunGroup);
+    } else if (av.accessory === 'crystal_blade') {
+      this.rayGunGroup = buildCrystalBladeAttachment(av.accessoryColor || '#38bdf8', this.cloneGeometries);
+      this.rayGunGroup.scale.setScalar(0.95);
+      this.rayGunGroup.position.set(0.02, -0.88, 0.22);
+      this.rightArmPivot.add(this.rayGunGroup);
+    } else if (av.accessory === 'starlight_wand') {
+      this.rayGunGroup = buildStarlightWandAttachment(av.accessoryColor || '#f472b6', this.cloneGeometries);
+      this.rayGunGroup.scale.setScalar(0.95);
+      this.rayGunGroup.position.set(0.02, -0.88, 0.22);
+      this.rightArmPivot.add(this.rayGunGroup);
     }
     this.bodyGroup.add(this.leftArmPivot, this.rightArmPivot);
 
@@ -1537,6 +1881,17 @@ class ClassicBlockyRig {
       this.rightLegPivot.rotation.x = -Math.PI / 2;
       this.leftArmPivot.rotation.x = -0.25;
       this.rightArmPivot.rotation.x = -0.25;
+    } else if (emote === 'sleep') {
+      this.bodyGroup.rotation.x = -Math.PI * 0.47;
+      this.bodyGroup.position.set(0, 0.56, 0.36);
+      this.leftArmPivot.rotation.z = 0.16;
+      this.rightArmPivot.rotation.z = -0.16;
+    } else if (anim === 'hover') {
+      this.bodyGroup.rotation.y = 0.24;
+      this.leftArmPivot.rotation.z = 0.52;
+      this.rightArmPivot.rotation.z = -0.52;
+      this.leftLegPivot.rotation.x = -0.16;
+      this.rightLegPivot.rotation.x = 0.16;
     } else if (anim === 'jump') {
       this.leftArmPivot.rotation.x = Math.PI * 0.72;
       this.rightArmPivot.rotation.x = Math.PI * 0.72;
@@ -1606,8 +1961,10 @@ class WorldAvatar {
     this.user = playerData.user || { username: 'friend', displayName: 'Friend', avatar: {} };
     this.zone = Number(playerData.zone) || 0;
     this.group = new THREE.Group();
+    this.mountHolder = new THREE.Group();
+    this.petHolder = new THREE.Group();
     this.rigContainer = new THREE.Group();
-    this.group.add(this.rigContainer);
+    this.group.add(this.mountHolder, this.petHolder, this.rigContainer);
 
     this.targetPos = new THREE.Vector3(playerData.x || 0, playerData.y || 0, playerData.z || 0);
     this.group.position.copy(this.targetPos);
@@ -1628,6 +1985,18 @@ class WorldAvatar {
     this.voiceRing = null;
     this.labelSprite = null;
 
+    this.equippedPet = null;
+    this.petNickname = '';
+    this.equippedMount = null;
+    this.petVisual = null;
+    this.mountVisual = null;
+    this.petWorldPos = new THREE.Vector3(
+      (playerData.x || 0) - 1.1,
+      playerData.y || 0,
+      (playerData.z || 0) - 1.1
+    );
+    this.petYaw = this.targetRy;
+
     if (!this.studioMode) {
       const ringGeo = new THREE.RingGeometry(0.75, 1.02, 32);
       ringGeo.rotateX(-Math.PI / 2);
@@ -1642,8 +2011,56 @@ class WorldAvatar {
       this.group.add(this.voiceRing);
 
       this._refreshLabelSprite();
+      this.syncCompanions(this.user);
     }
     this._syncRigMode();
+  }
+
+  syncCompanions(compSource = null, forceRebuild = false) {
+    if (this.studioMode) return;
+    const src = compSource || this.user || {};
+    if (compSource && this.user) {
+      if (src.equippedPet !== undefined) this.user.equippedPet = src.equippedPet;
+      if (src.petNickname !== undefined) this.user.petNickname = src.petNickname;
+      if (src.equippedMount !== undefined) this.user.equippedMount = src.equippedMount;
+    }
+
+    const nextPet = src.equippedPet !== undefined ? src.equippedPet : this.user?.equippedPet || null;
+    const nextNick = String(
+      src.petNickname !== undefined ? src.petNickname : this.user?.petNickname || ''
+    ).trim();
+    const nextMount =
+      src.equippedMount !== undefined ? src.equippedMount : this.user?.equippedMount || null;
+
+    if (forceRebuild || nextPet !== this.equippedPet || nextNick !== this.petNickname) {
+      this.equippedPet = nextPet || null;
+      this.petNickname = nextNick;
+      this.petHolder.clear();
+      this.petVisual = this.equippedPet
+        ? buildCompanionPetVisual(this.equippedPet, this.petNickname)
+        : null;
+      if (this.petVisual) {
+        this.petHolder.add(this.petVisual);
+        const gx = this.group.position.x;
+        const gy = this.group.position.y;
+        const gz = this.group.position.z;
+        const ry = this.group.rotation.y;
+        this.petWorldPos.set(
+          gx - Math.sin(ry) * 1.25 + Math.cos(ry) * 0.75,
+          gy,
+          gz - Math.cos(ry) * 1.25 - Math.sin(ry) * 0.75
+        );
+      }
+    }
+
+    if (forceRebuild || nextMount !== this.equippedMount) {
+      this.equippedMount = nextMount || null;
+      this.mountHolder.clear();
+      this.mountVisual = this.equippedMount ? buildCompanionMountVisual(this.equippedMount) : null;
+      if (this.mountVisual) {
+        this.mountHolder.add(this.mountVisual);
+      }
+    }
   }
 
   _syncRigMode() {
@@ -1784,10 +2201,70 @@ class WorldAvatar {
       }
     }
 
+    const mountActive = !this.studioMode && Boolean(this.equippedMount) && this.zone === 0 && !this.emote;
+    this.mountHolder.visible = mountActive;
+    if (mountActive && this.mountVisual) {
+      const hoverBob = Math.sin(this.animClock * 5.4) * 0.05;
+      this.mountHolder.position.y = 0.06 + hoverBob;
+      this.rigContainer.position.y = 0.22 + hoverBob;
+      if (this.mountVisual.userData?.glowRing) {
+        const pulse = 0.92 + Math.sin(this.animClock * 8.0) * 0.12;
+        this.mountVisual.userData.glowRing.scale.set(pulse, pulse, 1);
+      }
+    } else {
+      this.rigContainer.position.y = 0;
+    }
+
+    if (!this.studioMode && this.petVisual) {
+      this.petHolder.visible = true;
+      const gx = this.group.position.x;
+      const gy = this.group.position.y;
+      const gz = this.group.position.z;
+      const ry = this.group.rotation.y;
+      const desiredX = gx - Math.sin(ry) * 1.28 + Math.cos(ry) * 0.76;
+      const desiredZ = gz - Math.cos(ry) * 1.28 - Math.sin(ry) * 0.76;
+      const desiredY = gy;
+      const distToPet = Math.hypot(desiredX - this.petWorldPos.x, desiredZ - this.petWorldPos.z);
+      if (distToPet > 11.0 || Math.abs(desiredY - this.petWorldPos.y) > 8.0) {
+        this.petWorldPos.set(desiredX, desiredY, desiredZ);
+      } else {
+        const followRate = Math.min(1, dt * (distToPet > 1.8 ? 6.5 : 3.8));
+        this.petWorldPos.x += (desiredX - this.petWorldPos.x) * followRate;
+        this.petWorldPos.z += (desiredZ - this.petWorldPos.z) * followRate;
+        this.petWorldPos.y += (desiredY - this.petWorldPos.y) * Math.min(1, dt * 8.5);
+      }
+      const lookPetYaw = Math.atan2(gx - this.petWorldPos.x, gz - this.petWorldPos.z);
+      let yawDiff = lookPetYaw - this.petYaw;
+      while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
+      while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
+      this.petYaw += yawDiff * Math.min(1, dt * 9.5);
+
+      const dx = this.petWorldPos.x - gx;
+      const dy = this.petWorldPos.y - gy;
+      const dz = this.petWorldPos.z - gz;
+      const cosR = Math.cos(ry);
+      const sinR = Math.sin(ry);
+      const hopBob =
+        this.equippedPet === 'baby_crystal_dragon'
+          ? 0.34 + Math.sin(this.animClock * 4.8) * 0.11
+          : Math.abs(Math.sin(this.animClock * (distToPet > 0.3 ? 8.2 : 2.8))) * (distToPet > 0.3 ? 0.16 : 0.05);
+      this.petHolder.position.set(dx * cosR - dz * sinR, dy + hopBob, dx * sinR + dz * cosR);
+      this.petHolder.rotation.y = this.petYaw - ry;
+
+      if (this.petVisual.userData?.leftWing && this.petVisual.userData?.rightWing) {
+        const flap = Math.sin(this.animClock * 11.0) * 0.42;
+        this.petVisual.userData.leftWing.rotation.z = flap;
+        this.petVisual.userData.rightWing.rotation.z = -flap;
+      }
+    } else {
+      this.petHolder.visible = false;
+    }
+
+    const effectiveAnim = mountActive && (this.anim === 'walk' || this.anim === 'run') ? 'hover' : this.anim;
     if (this.activeMode === 'stylized' && this.stylizedRig) {
-      this.stylizedRig.update(dt, this.animClock, this.anim, this.emote, this.speaking);
+      this.stylizedRig.update(dt, this.animClock, effectiveAnim, this.emote, this.speaking);
     } else if (this.blockyRig) {
-      this.blockyRig.update(dt, this.animClock, this.anim, this.emote);
+      this.blockyRig.update(dt, this.animClock, effectiveAnim, this.emote);
     }
   }
 }
@@ -1809,7 +2286,13 @@ export class BlockyWorld3D {
     onPrisonWork,
     onAttackMob,
     onPickupDrop,
-    onInteractionHint
+    onInteractionHint,
+    onManageHome,
+    onOpenCrafting,
+    onObbyGateCrossed,
+    onOpenObbyBoard,
+    onCatchFallingStar,
+    onSummonArenaBoss
   }) {
     this.container = container;
     this.onMove = onMove || (() => {});
@@ -1827,6 +2310,12 @@ export class BlockyWorld3D {
     this.onAttackMob = onAttackMob || (() => {});
     this.onPickupDrop = onPickupDrop || (() => {});
     this.onInteractionHint = onInteractionHint || (() => {});
+    this.onManageHome = onManageHome || (() => {});
+    this.onOpenCrafting = onOpenCrafting || (() => {});
+    this.onObbyGateCrossed = onObbyGateCrossed || (() => {});
+    this.onOpenObbyBoard = onOpenObbyBoard || (() => {});
+    this.onCatchFallingStar = onCatchFallingStar || (() => {});
+    this.onSummonArenaBoss = onSummonArenaBoss || (() => {});
 
     loadDtiWardrobePack().catch(() => {});
     loadPropsAndLootPack()
@@ -1870,6 +2359,39 @@ export class BlockyWorld3D {
     this.campLight = null;
     this.stargateInstances = [];
     this.scifiThrusters = [];
+
+    this.craftingBenchPos = { x: 12.5, y: 0, z: 6.5 };
+    this.craftingBenchGroup = new THREE.Group();
+    this.plazaGroup.add(this.craftingBenchGroup);
+    this.mailboxesGroup = new THREE.Group();
+    this.plazaGroup.add(this.mailboxesGroup);
+    this.mailboxesMap = new Map();
+    this.obbyGatesGroup = new THREE.Group();
+    this.plazaGroup.add(this.obbyGatesGroup);
+    this.obbyGates = {};
+    this.obbyBoardScreens = {};
+    this.activeObbyCourse = null;
+    this.lastObbyGateAt = { easy_start: 0, easy_finish: 0, hard_start: 0, hard_finish: 0 };
+
+    this.skyState = {
+      mode: 'auto',
+      cycleMs: 720000,
+      cycleOffsetMs: 0,
+      meteorShowerUntilMs: 0,
+      fallingStars: []
+    };
+    this.currentNightFactor = 0;
+    this.fallingStarsGroup = new THREE.Group();
+    this.plazaGroup.add(this.fallingStarsGroup);
+    this.fallingStarsMap = new Map();
+    this.auroraGroup = new THREE.Group();
+    this.plazaGroup.add(this.auroraGroup);
+    this.auroraMaterials = [];
+    this.nightStarPoints = null;
+    this.runwaySpotlightGroup = new THREE.Group();
+    this.plazaGroup.add(this.runwaySpotlightGroup);
+    this.runwayShowState = null;
+
     this.dungeonGroup = new THREE.Group();
     this.dungeonGroup.visible = false;
     this.scene.add(this.dungeonGroup);
@@ -1881,6 +2403,11 @@ export class BlockyWorld3D {
     this.scene.add(this.arenaGroup);
     this.arenaEntitiesGroup = new THREE.Group();
     this.arenaGroup.add(this.arenaEntitiesGroup);
+    this.bossAltarPos = { x: 0, y: 0, z: -24.5 };
+    this.bossAltarGroup = new THREE.Group();
+    this.arenaGroup.add(this.bossAltarGroup);
+    this.bossDragonEntry = null;
+    this.bossShockwavesMap = new Map();
 
     this.prisonGroup = new THREE.Group();
     this.prisonGroup.visible = false;
@@ -2028,11 +2555,13 @@ export class BlockyWorld3D {
         this.addBlockMesh(b);
       }
     }
-    if (this.selfAvatar && this.selfAvatar.user?.avatar?.accessory === 'ray_gun') {
+    const rightHandAcc = (acc) =>
+      acc === 'ray_gun' || acc === 'crystal_blade' || acc === 'starlight_wand';
+    if (this.selfAvatar && rightHandAcc(this.selfAvatar.user?.avatar?.accessory)) {
       this.selfAvatar.updateAvatarAppearance(this.selfAvatar.user.avatar);
     }
     for (const av of this.remoteAvatars.values()) {
-      if (av.user?.avatar?.accessory === 'ray_gun') {
+      if (rightHandAcc(av.user?.avatar?.accessory)) {
         av.updateAvatarAppearance(av.user.avatar);
       }
     }
@@ -3407,6 +3936,329 @@ export class BlockyWorld3D {
     crestGroup.position.set(rx, 4.1, -11.95);
     this.dtiStageDecorGroup.add(crestGroup);
     this.runwayStarCrest = crestGroup;
+
+    this._buildExpansionLandmarks();
+  }
+
+  _buildExpansionLandmarks() {
+    // 1. Starlight Crafting Workshop at (12.5, 0, 6.5)
+    this.craftingBenchGroup.position.set(
+      this.craftingBenchPos.x,
+      this.craftingBenchPos.y,
+      this.craftingBenchPos.z
+    );
+    const benchModelHost = new THREE.Group();
+    const benchTable = new THREE.Mesh(
+      new THREE.BoxGeometry(2.1, 0.92, 1.1),
+      new THREE.MeshStandardMaterial({ color: '#78350f', roughness: 0.65 })
+    );
+    benchTable.position.y = 0.46;
+    benchTable.castShadow = true;
+    const benchCrystal = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.28, 0),
+      new THREE.MeshStandardMaterial({
+        color: '#38bdf8',
+        emissive: '#0ea5e9',
+        emissiveIntensity: 0.95,
+        roughness: 0.15
+      })
+    );
+    benchCrystal.position.set(-0.55, 1.18, 0);
+    benchModelHost.add(benchTable, benchCrystal);
+    const benchRing = new THREE.Mesh(
+      new THREE.RingGeometry(1.45, 1.72, 32),
+      new THREE.MeshBasicMaterial({
+        color: '#38bdf8',
+        transparent: true,
+        opacity: 0.65,
+        side: THREE.DoubleSide
+      })
+    );
+    benchRing.rotation.x = -Math.PI / 2;
+    benchRing.position.y = 0.04;
+    const benchBanner = createWorldBannerSprite(
+      '⚒️ STARLIGHT WORKSHOP',
+      'Press E or Click • Craft Blades, Wands, Charms & Pet Eggs!',
+      '#38bdf8'
+    );
+    benchBanner.position.set(0, 2.55, 0);
+    this.craftingBenchGroup.add(benchModelHost, benchRing, benchBanner);
+    this.craftingBenchGroup.userData = {
+      landmarkKind: 'crafting_bench',
+      modelHost: benchModelHost,
+      floatingGem: benchCrystal
+    };
+    this.plazaColliders.push({
+      mesh: this.craftingBenchGroup,
+      w: 2.2,
+      h: 1.0,
+      d: 1.2,
+      minX: this.craftingBenchPos.x - 1.1,
+      maxX: this.craftingBenchPos.x + 1.1,
+      minZ: this.craftingBenchPos.z - 0.6,
+      maxZ: this.craftingBenchPos.z + 0.6,
+      topY: 1.0,
+      bottomY: 0,
+      type: 'solid',
+      cameraOccluder: false
+    });
+
+    // 2. Six Claimable Neighborhood Plot Mailboxes
+    const defaultPlots = [
+      { plotId: 'plot_1', defaultName: 'Sunrise Lawn Plot #1', mailboxPos: [52.0, 0.0, -16.2], mailboxRot: 0.0 },
+      { plotId: 'plot_2', defaultName: 'Rosewater Villa', mailboxPos: [79.0, 0.0, -16.2], mailboxRot: 0.0 },
+      { plotId: 'plot_3', defaultName: 'Starlight Cottage', mailboxPos: [49.5, 0.0, 10.2], mailboxRot: Math.PI },
+      { plotId: 'plot_4', defaultName: 'Meadow View Plot #4', mailboxPos: [82.0, 0.0, 10.2], mailboxRot: Math.PI },
+      { plotId: 'plot_5', defaultName: 'Woodland Chalet', mailboxPos: [-61.5, 0.0, -5.2], mailboxRot: 0.0 },
+      { plotId: 'plot_6', defaultName: 'Pinecrest Plot #6', mailboxPos: [-64.0, 0.0, 21.2], mailboxRot: Math.PI }
+    ];
+    for (const p of defaultPlots) {
+      this._upsertMailboxEntry(p);
+    }
+
+    // 3. Obby Speedrun Start/Finish Laser Gates + 3D Top-5 Leaderboard Boards
+    const buildGateVisual = (x, y, z, ry, isFinish, titleText, subText) => {
+      const grp = new THREE.Group();
+      grp.position.set(x, y, z);
+      grp.rotation.y = ry;
+      const modelHost = new THREE.Group();
+      const postMat = new THREE.MeshStandardMaterial({ color: '#1e293b', metalness: 0.7, roughness: 0.25 });
+      const beamColor = isFinish ? '#fbbf24' : '#34d399';
+      const beamMat = new THREE.MeshBasicMaterial({
+        color: beamColor,
+        transparent: true,
+        opacity: 0.42,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      });
+      for (const side of [-1, 1]) {
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 3.4, 12), postMat);
+        post.position.set(side * 1.85, 1.7, 0);
+        modelHost.add(post);
+      }
+      const curtain = new THREE.Mesh(new THREE.PlaneGeometry(3.5, 3.0), beamMat);
+      curtain.position.set(0, 1.65, 0);
+      modelHost.add(curtain);
+      const banner = createWorldBannerSprite(titleText, subText, beamColor);
+      banner.position.set(0, 4.05, 0);
+      grp.add(modelHost, banner);
+      this.obbyGatesGroup.add(grp);
+      return { grp, modelHost, isFinish, beamColor, pos: { x, y, z } };
+    };
+
+    this.obbyGates = {
+      easy: {
+        start: buildGateVisual(
+          0.0,
+          0.0,
+          -13.5,
+          0,
+          false,
+          '⏱️ SKY OBBY START',
+          'Run Through on Foot to Start Timer!',
+          '#34d399'
+        ),
+        finish: buildGateVisual(
+          6.5,
+          16.5,
+          -20.0,
+          0,
+          true,
+          '🏁 SKY OBBY FINISH',
+          'Cross Gate to Record Best Time!',
+          '#fbbf24'
+        ),
+        radius: 4.2
+      },
+      hard: {
+        start: buildGateVisual(
+          54.2,
+          0.0,
+          52.0,
+          Math.PI * 0.25,
+          false,
+          '⏱️ PRO GAUNTLET START',
+          'Run Through on Foot to Start Timer!',
+          '#34d399'
+        ),
+        finish: buildGateVisual(
+          72.6,
+          40.2,
+          69.2,
+          Math.PI * 0.25,
+          true,
+          '🏁 PRO GAUNTLET FINISH',
+          'Cross Gate to Claim Record!',
+          '#fbbf24'
+        ),
+        radius: 4.8
+      }
+    };
+
+    const buildLeaderboardBoard = (courseKey, x, y, z, ry, heading, accentHex) => {
+      const grp = new THREE.Group();
+      grp.position.set(x, y, z);
+      grp.rotation.y = ry;
+      grp.userData = { landmarkKind: 'obby_board', course: courseKey };
+      const frameHost = new THREE.Group();
+      const postL = new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 3.2, 0.18),
+        new THREE.MeshStandardMaterial({ color: '#1e293b', metalness: 0.72, roughness: 0.28 })
+      );
+      postL.position.set(-1.55, 1.6, 0);
+      const postR = postL.clone();
+      postR.position.set(1.55, 1.6, 0);
+      const backing = new THREE.Mesh(
+        new THREE.BoxGeometry(3.4, 2.35, 0.16),
+        new THREE.MeshStandardMaterial({ color: '#0f172a', metalness: 0.5, roughness: 0.35 })
+      );
+      backing.position.set(0, 2.25, 0);
+      frameHost.add(postL, postR, backing);
+
+      const tex = createObbyLeaderboardTexture(heading, [], accentHex);
+      const screenMat = new THREE.MeshBasicMaterial({ map: tex });
+      const screenMesh = new THREE.Mesh(new THREE.PlaneGeometry(3.08, 2.12), screenMat);
+      screenMesh.position.set(0, 2.25, 0.12);
+      screenMesh.userData = { landmarkKind: 'obby_board', course: courseKey };
+      grp.add(frameHost, screenMesh);
+      this.obbyGatesGroup.add(grp);
+      this.obbyBoardScreens[courseKey] = {
+        grp,
+        frameHost,
+        screenMat,
+        screenMesh,
+        heading,
+        accentHex,
+        pos: { x, y, z }
+      };
+    };
+
+    buildLeaderboardBoard('easy', -5.8, 0, -12.6, 0.32, '🏆 SKY OBBY TOP 5', '#38bdf8');
+    buildLeaderboardBoard('hard', 48.2, 0, 49.5, 0.56, '🔥 PRO GAUNTLET TOP 5', '#f472b6');
+
+    // 4. DTI Fashion Show Dynamic Catwalk Spotlight
+    const spotConeMat = new THREE.MeshBasicMaterial({
+      color: '#fde047',
+      transparent: true,
+      opacity: 0.18,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    const spotCone = new THREE.Mesh(new THREE.ConeGeometry(1.85, 6.4, 24, 1, true), spotConeMat);
+    spotCone.position.set(0, 3.25, 0);
+    const spotRing = new THREE.Mesh(
+      new THREE.RingGeometry(1.15, 1.55, 32),
+      new THREE.MeshBasicMaterial({
+        color: '#fde047',
+        transparent: true,
+        opacity: 0.78,
+        side: THREE.DoubleSide
+      })
+    );
+    spotRing.rotation.x = -Math.PI / 2;
+    spotRing.position.y = 0.52;
+    const spotPoint = new THREE.PointLight('#fef08a', 2.4, 14);
+    spotPoint.position.set(0, 4.8, 0);
+    this.runwaySpotlightGroup.add(spotCone, spotRing, spotPoint);
+    this.runwaySpotlightGroup.position.set(-24, 0, 2.0);
+    this.runwaySpotlightGroup.visible = false;
+
+    // 5. Dynamic Aurora Night Sky Ribbons + Twinkling Starfield
+    this.auroraMaterials = [];
+    const ribbonSpecs = [
+      { y: 68, z: -48, rotY: 0.14, scaleX: 1.15 },
+      { y: 74, z: -8, rotY: -0.18, scaleX: 1.25 },
+      { y: 71, z: 34, rotY: 0.1, scaleX: 1.1 }
+    ];
+    for (const rs of ribbonSpecs) {
+      const mat = createAuroraRibbonMaterial();
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(165, 26, 48, 8), mat);
+      mesh.position.set(0, rs.y, rs.z);
+      mesh.rotation.y = rs.rotY;
+      mesh.rotation.x = Math.PI * 0.18;
+      mesh.scale.x = rs.scaleX;
+      this.auroraGroup.add(mesh);
+      this.auroraMaterials.push(mat);
+    }
+
+    const starCount = 260;
+    const starPositions = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.random() * Math.PI * 0.44 + 0.06;
+      const r = 148 + Math.random() * 24;
+      starPositions[i * 3] = Math.cos(theta) * Math.sin(phi) * r;
+      starPositions[i * 3 + 1] = Math.cos(phi) * r;
+      starPositions[i * 3 + 2] = Math.sin(theta) * Math.sin(phi) * r;
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+    const starMat = new THREE.PointsMaterial({
+      color: '#f8fafc',
+      size: 1.25,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false
+    });
+    this.nightStarPoints = new THREE.Points(starGeo, starMat);
+    this.auroraGroup.add(this.nightStarPoints);
+  }
+
+  _upsertMailboxEntry(plot) {
+    if (!plot || !plot.plotId) return;
+    let entry = this.mailboxesMap.get(plot.plotId);
+    const mbPos = Array.isArray(plot.mailboxPos) ? plot.mailboxPos : [52, 0, -16.2];
+    const mbRot = Number(plot.mailboxRotY ?? plot.mailboxRot) || 0;
+
+    if (!entry) {
+      const group = new THREE.Group();
+      group.position.set(mbPos[0], mbPos[1] || 0, mbPos[2]);
+      group.rotation.y = mbRot;
+      const modelHost = new THREE.Group();
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.07, 0.09, 1.05, 8),
+        new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.4 })
+      );
+      post.position.y = 0.52;
+      const box = new THREE.Mesh(
+        new THREE.BoxGeometry(0.38, 0.28, 0.52),
+        new THREE.MeshStandardMaterial({ color: '#ec4899', roughness: 0.35, metalness: 0.25 })
+      );
+      box.position.y = 1.12;
+      modelHost.add(post, box);
+      if (envTemplates.has('Env_Plot_Mailbox')) {
+        const glbMb = cloneEnvTemplate('Env_Plot_Mailbox');
+        if (glbMb) {
+          modelHost.clear();
+          modelHost.add(glbMb);
+        }
+      }
+
+      const tex = createPlotMailboxTexture(plot);
+      const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+      const sprite = new THREE.Sprite(spriteMat);
+      sprite.scale.set(3.5, 1.2, 1);
+      sprite.position.set(0, 2.08, 0);
+
+      group.add(modelHost, sprite);
+      group.traverse((n) => {
+        n.userData = { ...(n.userData || {}), landmarkKind: 'mailbox', plotId: plot.plotId };
+      });
+      this.mailboxesGroup.add(group);
+      entry = { plotId: plot.plotId, data: plot, group, modelHost, sprite };
+      this.mailboxesMap.set(plot.plotId, entry);
+      return;
+    }
+
+    entry.data = { ...entry.data, ...plot };
+    entry.group.position.set(mbPos[0], mbPos[1] || 0, mbPos[2]);
+    entry.group.rotation.y = mbRot;
+    if (entry.sprite.material.map) {
+      entry.sprite.material.map.dispose();
+    }
+    entry.sprite.material.map = createPlotMailboxTexture(entry.data);
+    entry.sprite.material.needsUpdate = true;
   }
 
   _upgradeEnvironmentModels() {
@@ -3619,6 +4471,92 @@ export class BlockyWorld3D {
     }
     for (const entry of this.arenaMobsMap.values()) {
       this._populateMobVisual(entry);
+    }
+
+    // 6. Upgrade Expansion Landmarks (Crafting Workshop, Mailboxes, Obby Gates/Boards, Boss Altar & Dragon, Companion Pets/Mounts)
+    if (envTemplates.has('Env_Crafting_Bench') && this.craftingBenchGroup.userData?.modelHost) {
+      const benchGlb = cloneEnvTemplate('Env_Crafting_Bench');
+      if (benchGlb) {
+        this.craftingBenchGroup.userData.modelHost.clear();
+        benchGlb.traverse((n) => {
+          n.userData = { ...(n.userData || {}), landmarkKind: 'crafting_bench' };
+        });
+        this.craftingBenchGroup.userData.modelHost.add(benchGlb);
+        this.craftingBenchGroup.userData.floatingGem = null;
+      }
+    }
+
+    if (envTemplates.has('Env_Plot_Mailbox')) {
+      for (const mb of this.mailboxesMap.values()) {
+        const glbMb = cloneEnvTemplate('Env_Plot_Mailbox');
+        if (glbMb) {
+          mb.modelHost.clear();
+          glbMb.traverse((n) => {
+            n.userData = { ...(n.userData || {}), landmarkKind: 'mailbox', plotId: mb.plotId };
+          });
+          mb.modelHost.add(glbMb);
+        }
+      }
+    }
+
+    if (envTemplates.has('Env_Obby_Gate')) {
+      for (const courseObj of Object.values(this.obbyGates)) {
+        for (const gateRef of [courseObj.start, courseObj.finish]) {
+          if (!gateRef || !gateRef.modelHost) continue;
+          const glbGate = cloneEnvTemplate('Env_Obby_Gate');
+          if (glbGate) {
+            gateRef.modelHost.clear();
+            const curtain = new THREE.Mesh(
+              new THREE.PlaneGeometry(3.4, 3.1),
+              new THREE.MeshBasicMaterial({
+                color: gateRef.beamColor,
+                transparent: true,
+                opacity: 0.34,
+                side: THREE.DoubleSide,
+                depthWrite: false
+              })
+            );
+            curtain.position.set(0, 1.75, 0);
+            gateRef.modelHost.add(glbGate, curtain);
+          }
+        }
+      }
+    }
+
+    if (envTemplates.has('Env_Leaderboard_Board')) {
+      for (const [courseKey, bd] of Object.entries(this.obbyBoardScreens)) {
+        const glbBoard = cloneEnvTemplate('Env_Leaderboard_Board');
+        if (glbBoard && bd.frameHost) {
+          bd.frameHost.clear();
+          glbBoard.traverse((n) => {
+            n.userData = { ...(n.userData || {}), landmarkKind: 'obby_board', course: courseKey };
+          });
+          bd.frameHost.add(glbBoard);
+          bd.screenMesh.position.set(0, 2.15, 0.14);
+        }
+      }
+    }
+
+    if (envTemplates.has('Env_Boss_Altar') && this.bossAltarGroup.userData?.modelHost) {
+      const glbAltar = cloneEnvTemplate('Env_Boss_Altar');
+      if (glbAltar) {
+        this.bossAltarGroup.userData.modelHost.clear();
+        glbAltar.traverse((n) => {
+          n.userData = { ...(n.userData || {}), landmarkKind: 'boss_altar' };
+        });
+        this.bossAltarGroup.userData.modelHost.add(glbAltar);
+      }
+    }
+
+    if (this.bossDragonEntry) {
+      this._populateBossDragonVisual(this.bossDragonEntry);
+    }
+
+    if (this.selfAvatar) {
+      this.selfAvatar.syncCompanions(null, true);
+    }
+    for (const av of this.remoteAvatars.values()) {
+      av.syncCompanions(null, true);
     }
   }
 
@@ -3917,6 +4855,120 @@ export class BlockyWorld3D {
       grp.position.set(sx, 0, sz);
       this.arenaGroup.add(grp);
     });
+
+    // North Island Obsidian Rift Dragon Summoning Altar at (0, 0, -24.5)
+    this.bossAltarGroup.position.set(
+      this.bossAltarPos.x,
+      this.bossAltarPos.y,
+      this.bossAltarPos.z
+    );
+    const altarModelHost = new THREE.Group();
+    const altarPlinth = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.85, 2.25, 0.62, 8),
+      obsidianMat
+    );
+    altarPlinth.position.y = 0.31;
+    const altarGem = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.52, 0),
+      new THREE.MeshStandardMaterial({
+        color: '#c084fc',
+        emissive: '#9333ea',
+        emissiveIntensity: 1.1,
+        roughness: 0.14
+      })
+    );
+    altarGem.position.y = 1.45;
+    altarModelHost.add(altarPlinth, altarGem);
+    const altarHalo = new THREE.Mesh(
+      new THREE.RingGeometry(2.35, 2.65, 36),
+      new THREE.MeshBasicMaterial({
+        color: '#c084fc',
+        transparent: true,
+        opacity: 0.72,
+        side: THREE.DoubleSide
+      })
+    );
+    altarHalo.rotation.x = -Math.PI / 2;
+    altarHalo.position.y = 0.05;
+    const altarBanner = createWorldBannerSprite(
+      '🐉 OBSIDIAN DRAGON ALTAR',
+      'Press E or Click • Summon Co-Op World Boss!',
+      '#c084fc'
+    );
+    altarBanner.position.set(0, 3.45, 0);
+    this.bossAltarGroup.add(altarModelHost, altarHalo, altarBanner);
+    this.bossAltarGroup.userData = {
+      landmarkKind: 'boss_altar',
+      modelHost: altarModelHost,
+      banner: altarBanner
+    };
+  }
+
+  _populateBossDragonVisual(entry) {
+    if (!entry || !entry.visual) return;
+    entry.visual.clear();
+    entry.leftWing = null;
+    entry.rightWing = null;
+    const glbBody = cloneEnvTemplate('Env_Boss_ObsidianDragon_Body');
+    const glbWingL = cloneEnvTemplate('Env_Boss_ObsidianDragon_WingL');
+    const glbWingR = cloneEnvTemplate('Env_Boss_ObsidianDragon_WingR');
+    if (glbBody && glbWingL && glbWingR) {
+      glbWingL.position.set(-0.95, 2.35, -0.15);
+      glbWingR.position.set(0.95, 2.35, -0.15);
+      entry.leftWing = glbWingL;
+      entry.rightWing = glbWingR;
+      entry.visual.add(glbBody, glbWingL, glbWingR);
+      return;
+    }
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: '#0f172a',
+      emissive: '#7e22ce',
+      emissiveIntensity: 0.35,
+      metalness: 0.55,
+      roughness: 0.3
+    });
+    const wingMat = new THREE.MeshStandardMaterial({
+      color: '#c084fc',
+      emissive: '#dc2626',
+      emissiveIntensity: 0.72,
+      side: THREE.DoubleSide
+    });
+    const body = new THREE.Mesh(new THREE.ConeGeometry(1.25, 3.4, 8), bodyMat);
+    body.position.y = 1.9;
+    entry.leftWing = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.35, 0.1), wingMat);
+    entry.leftWing.position.set(-1.6, 2.2, 0);
+    entry.rightWing = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.35, 0.1), wingMat);
+    entry.rightWing.position.set(1.6, 2.2, 0);
+    entry.visual.add(body, entry.leftWing, entry.rightWing);
+  }
+
+  _ensureBossDragonEntry() {
+    if (this.bossDragonEntry) return this.bossDragonEntry;
+    const group = new THREE.Group();
+    group.visible = false;
+    const visual = new THREE.Group();
+    const label = createWorldBannerSprite(
+      '🐉 Obsidian Rift Dragon',
+      'JUMP over Purple Shockwaves! Attack with Blade, Wand, Ray Gun or Stomp!',
+      '#c084fc'
+    );
+    label.position.set(0, 4.95, 0);
+    group.add(visual, label);
+    this.arenaEntitiesGroup.add(group);
+    const entry = {
+      group,
+      visual,
+      leftWing: null,
+      rightWing: null,
+      label,
+      data: null,
+      lastHpSig: '',
+      targetPos: new THREE.Vector3(0, 0, -22),
+      lastStompAt: 0
+    };
+    this._populateBossDragonVisual(entry);
+    this.bossDragonEntry = entry;
+    return entry;
   }
 
   _buildPrisonEnvironment() {
@@ -4616,19 +5668,21 @@ export class BlockyWorld3D {
         cameraOccluder: false
       });
     } else {
-      // Kitchen, Bathroom & Bedroom 3D Interior Props
+      // Kitchen, Bathroom, Living Room & Bedroom 3D Interior Props
       const tplName = PROP_TEMPLATE_BY_KIND[kind];
       const propObj = tplName ? clonePropTemplate(tplName, color, meta) : null;
       const isTwoTall = kind === 'kitchen_fridge' || kind === 'wardrobe';
       const isRug = kind === 'rug';
-      const isLowSeat = kind === 'chair' || kind === 'bed';
+      const isLowSeat = kind === 'chair' || kind === 'sofa' || kind === 'bed';
+      const isLamp = kind === 'nightstand_lamp' || kind === 'crystal_lamp';
 
       if (propObj) {
         root.add(propObj);
       } else {
+        const fbW = kind === 'sofa' ? 1.62 : 0.92;
         const fbH = isRug ? 0.05 : isTwoTall ? 1.95 : isLowSeat ? 0.5 : 0.92;
         const fb = new THREE.Mesh(
-          new THREE.BoxGeometry(0.92, fbH, 0.92),
+          new THREE.BoxGeometry(fbW, fbH, 0.92),
           new THREE.MeshStandardMaterial({ color, roughness: 0.42 })
         );
         fb.position.y = fbH / 2;
@@ -4636,6 +5690,44 @@ export class BlockyWorld3D {
         fb.receiveShadow = true;
         Object.assign(fb.userData, meta);
         root.add(fb);
+      }
+
+      if (isLamp) {
+        const isLit = !isOpen; // open === false means LIT by default; open === true means switched OFF
+        const glowHex = kind === 'crystal_lamp' ? '#34d399' : '#fde047';
+        root.traverse((n) => {
+          if (n.isMesh && n.material) {
+            const mats = Array.isArray(n.material) ? n.material : [n.material];
+            for (const m of mats) {
+              if (!m || !m.emissive) continue;
+              const mName = m.name || '';
+              if (
+                mName.includes('Lamp') ||
+                mName.includes('Crystal') ||
+                mName.includes('Tint') ||
+                m.emissiveIntensity > 0.05
+              ) {
+                m.emissive.set(isLit ? glowHex : '#0f172a');
+                m.emissiveIntensity = isLit ? (kind === 'crystal_lamp' ? 1.15 : 0.88) : 0.02;
+              }
+            }
+          }
+        });
+        if (isLit) {
+          const halo = new THREE.Mesh(
+            new THREE.SphereGeometry(kind === 'crystal_lamp' ? 0.28 : 0.24, 12, 10),
+            new THREE.MeshBasicMaterial({
+              color: glowHex,
+              transparent: true,
+              opacity: 0.26,
+              depthWrite: false,
+              blending: THREE.AdditiveBlending
+            })
+          );
+          halo.position.y = kind === 'crystal_lamp' ? 0.62 : 0.76;
+          Object.assign(halo.userData, meta);
+          root.add(halo);
+        }
       }
 
       const colH = isRug
@@ -4649,17 +5741,19 @@ export class BlockyWorld3D {
               : kind === 'dining_table'
                 ? 0.85
                 : 0.94;
-      const pad = kind === 'chair' ? 0.32 : 0.45;
+      const isEW = rot % 2 === 1;
+      const padX = kind === 'chair' ? 0.32 : kind === 'sofa' ? (isEW ? 0.44 : 0.78) : 0.45;
+      const padZ = kind === 'chair' ? 0.32 : kind === 'sofa' ? (isEW ? 0.78 : 0.44) : 0.45;
       this.voxelColliders.push({
         mesh: root,
         voxelKey: key,
-        w: pad * 2,
+        w: padX * 2,
         h: colH,
-        d: pad * 2,
-        minX: x - pad,
-        maxX: x + pad,
-        minZ: z - pad,
-        maxZ: z + pad,
+        d: padZ * 2,
+        minX: x - padX,
+        maxX: x + padX,
+        minZ: z - padZ,
+        maxZ: z + padZ,
         topY: baseBottomY + colH,
         bottomY: baseBottomY,
         type: 'voxel',
@@ -4724,6 +5818,19 @@ export class BlockyWorld3D {
         if (prevSig !== nextSig) {
           av.updateAvatarAppearance(playerState.user.avatar || {});
         }
+        av.syncCompanions(playerState.user);
+      }
+    }
+  }
+
+  updateUserCompanions(username, compPayload = {}) {
+    if (!username) return;
+    if (this.selfAvatar && this.selfAvatar.user?.username === username) {
+      this.selfAvatar.syncCompanions(compPayload);
+    }
+    for (const av of this.remoteAvatars.values()) {
+      if (av.user?.username === username) {
+        av.syncCompanions(compPayload);
       }
     }
   }
@@ -5327,7 +6434,7 @@ export class BlockyWorld3D {
       }
     }
 
-    this.syncArenaMobs(arena.mobs || []);
+    this.syncArenaMobs(arena.mobs || [], arena.boss || null);
 
     const nextDropIds = new Set();
     for (const drop of arena.drops || []) {
@@ -5347,24 +6454,201 @@ export class BlockyWorld3D {
     }
   }
 
-  syncArenaMobs(mobs) {
-    if (!Array.isArray(mobs)) return;
-    for (const mob of mobs) {
-      let entry = this.arenaMobsMap.get(mob.id);
-      if (!entry) {
-        entry = this._buildDungeonMobEntry(mob, this.arenaEntitiesGroup);
-        this.arenaMobsMap.set(mob.id, entry);
+  syncArenaMobs(mobs, boss = undefined) {
+    if (Array.isArray(mobs)) {
+      for (const mob of mobs) {
+        let entry = this.arenaMobsMap.get(mob.id);
+        if (!entry) {
+          entry = this._buildDungeonMobEntry(mob, this.arenaEntitiesGroup);
+          this.arenaMobsMap.set(mob.id, entry);
+        }
+        entry.data = mob;
+        entry.targetPos.set(mob.x, mob.y, mob.z);
+        entry.group.visible = Boolean(mob.alive);
+        if (entry.lastHp !== mob.hp && mob.alive) {
+          entry.lastHp = mob.hp;
+          const bannerCfg = this._mobBannerConfig(mob);
+          entry.group.remove(entry.label);
+          entry.label = createWorldBannerSprite(bannerCfg.title, bannerCfg.sub, bannerCfg.color);
+          entry.label.position.set(0, bannerCfg.y, 0);
+          entry.group.add(entry.label);
+        }
       }
-      entry.data = mob;
-      entry.targetPos.set(mob.x, mob.y, mob.z);
-      entry.group.visible = Boolean(mob.alive);
-      if (entry.lastHp !== mob.hp && mob.alive) {
-        entry.lastHp = mob.hp;
-        const bannerCfg = this._mobBannerConfig(mob);
+    }
+    if (boss !== undefined) {
+      this.syncArenaBoss(boss);
+    }
+  }
+
+  syncArenaBoss(boss) {
+    const entry = this._ensureBossDragonEntry();
+    entry.data = boss || null;
+    const isAlive = Boolean(boss && boss.active && boss.hp > 0);
+    entry.group.visible = isAlive;
+
+    if (isAlive) {
+      if (!entry.wasAlive) {
+        entry.group.position.set(boss.x || 0, boss.y || 0, boss.z || -22);
+      }
+      entry.targetPos.set(boss.x || 0, boss.y || 0, boss.z || -22);
+      entry.group.rotation.y = boss.ry || 0;
+      const hpSig = `${boss.hp}/${boss.maxHp}`;
+      if (hpSig !== entry.lastHpSig) {
+        entry.lastHpSig = hpSig;
         entry.group.remove(entry.label);
-        entry.label = createWorldBannerSprite(bannerCfg.title, bannerCfg.sub, bannerCfg.color);
-        entry.label.position.set(0, bannerCfg.y, 0);
+        entry.label = createWorldBannerSprite(
+          `🐉 ${boss.name || 'Obsidian Rift Dragon'} (${hpSig} HP)`,
+          'JUMP Over Purple Shockwaves! Blade / Wand / Ray Gun / Stomp!',
+          '#c084fc'
+        );
+        entry.label.position.set(0, 4.95, 0);
         entry.group.add(entry.label);
+      }
+    }
+    entry.wasAlive = isAlive;
+
+    const nextSwIds = new Set();
+    for (const sw of boss?.shockwaves || []) {
+      nextSwIds.add(sw.id);
+      let swMesh = this.bossShockwavesMap.get(sw.id);
+      if (!swMesh) {
+        const ringGeo = new THREE.RingGeometry(0.86, 1.0, 48);
+        ringGeo.rotateX(-Math.PI / 2);
+        const ringMat = new THREE.MeshBasicMaterial({
+          color: '#e879f9',
+          transparent: true,
+          opacity: 0.85,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        });
+        swMesh = new THREE.Mesh(ringGeo, ringMat);
+        this.arenaEntitiesGroup.add(swMesh);
+        this.bossShockwavesMap.set(sw.id, swMesh);
+      }
+      const r = Math.max(0.6, Number(sw.radius) || 1.0);
+      const maxR = Math.max(2.0, Number(sw.maxRadius) || 18.0);
+      swMesh.position.set(sw.x || 0, 0.16, sw.z || -22);
+      swMesh.scale.set(r, 1, r);
+      swMesh.material.opacity = Math.max(0.18, 0.92 * (1 - r / (maxR * 1.08)));
+    }
+    for (const [swId, swMesh] of this.bossShockwavesMap.entries()) {
+      if (!nextSwIds.has(swId)) {
+        this.arenaEntitiesGroup.remove(swMesh);
+        this.bossShockwavesMap.delete(swId);
+      }
+    }
+  }
+
+  syncHomesSnapshot(homesPayload) {
+    const plots = Array.isArray(homesPayload)
+      ? homesPayload
+      : Array.isArray(homesPayload?.plots)
+        ? homesPayload.plots
+        : null;
+    if (!plots) return;
+    for (const plot of plots) {
+      this._upsertMailboxEntry(plot);
+    }
+  }
+
+  triggerDoorbellFx(plotId) {
+    const mb = this.mailboxesMap.get(plotId);
+    if (!mb) return;
+    this.spawnSparkleBurst(mb.group.position, '#fbbf24');
+  }
+
+  syncObbyLeaderboards(obbyPayload) {
+    if (!obbyPayload) return;
+    for (const courseKey of ['easy', 'hard']) {
+      const bd = this.obbyBoardScreens[courseKey];
+      const records = obbyPayload[courseKey];
+      if (bd && Array.isArray(records)) {
+        if (bd.screenMat.map) {
+          bd.screenMat.map.dispose();
+        }
+        bd.screenMat.map = createObbyLeaderboardTexture(bd.heading, records, bd.accentHex);
+        bd.screenMat.needsUpdate = true;
+      }
+    }
+  }
+
+  setActiveObbyRun(course) {
+    this.activeObbyCourse = course || null;
+  }
+
+  syncRunwayShowState(showState) {
+    this.runwayShowState = showState || null;
+  }
+
+  syncSkySnapshot(skyPayload) {
+    if (!skyPayload) return;
+    this.skyState = {
+      ...this.skyState,
+      ...skyPayload
+    };
+
+    const nextIds = new Set();
+    for (const star of skyPayload.fallingStars || []) {
+      nextIds.add(star.id);
+      let entry = this.fallingStarsMap.get(star.id);
+      if (!entry) {
+        const grp = new THREE.Group();
+        grp.position.set(star.x || 0, star.y || 0.6, star.z || 0);
+        const core = new THREE.Mesh(
+          new THREE.OctahedronGeometry(0.45, 0),
+          new THREE.MeshStandardMaterial({
+            color: '#fde047',
+            emissive: '#f59e0b',
+            emissiveIntensity: 1.25,
+            roughness: 0.12,
+            metalness: 0.4
+          })
+        );
+        core.position.y = 0.65;
+        const halo = new THREE.Mesh(
+          new THREE.RingGeometry(0.55, 0.82, 24),
+          new THREE.MeshBasicMaterial({
+            color: '#38bdf8',
+            transparent: true,
+            opacity: 0.78,
+            side: THREE.DoubleSide
+          })
+        );
+        halo.rotation.x = -Math.PI / 2;
+        halo.position.y = 0.05;
+        const beam = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.12, 0.32, 4.5, 14, 1, true),
+          new THREE.MeshBasicMaterial({
+            color: '#fde047',
+            transparent: true,
+            opacity: 0.22,
+            side: THREE.DoubleSide,
+            depthWrite: false
+          })
+        );
+        beam.position.y = 2.25;
+        const label = createWorldBannerSprite(
+          '🌠 FALLING STAR!',
+          'Walk Over or Press E • Catch Coins + Star Shards!',
+          '#fde047'
+        );
+        label.position.set(0, 1.85, 0);
+        grp.add(core, halo, beam, label);
+        grp.traverse((n) => {
+          n.userData = { ...(n.userData || {}), landmarkKind: 'falling_star', starId: star.id };
+        });
+        this.fallingStarsGroup.add(grp);
+        entry = { id: star.id, data: star, group: grp, core, lastCatchAttemptAt: 0 };
+        this.fallingStarsMap.set(star.id, entry);
+      } else {
+        entry.data = star;
+        entry.group.position.set(star.x || 0, star.y || 0.6, star.z || 0);
+      }
+    }
+    for (const [starId, entry] of this.fallingStarsMap.entries()) {
+      if (!nextIds.has(starId)) {
+        this.fallingStarsGroup.remove(entry.group);
+        this.fallingStarsMap.delete(starId);
       }
     }
   }
@@ -5380,7 +6664,7 @@ export class BlockyWorld3D {
     this.sparkleRings.push({ mesh: ring, bornAt: performance.now() });
   }
 
-  spawnRayGunBeam(fromArr, toArr, isDungeonHit = false) {
+  spawnRayGunBeam(fromArr, toArr, isDungeonHit = false, style = null) {
     if (!Array.isArray(fromArr) || !Array.isArray(toArr)) return;
     const fromVec = new THREE.Vector3(Number(fromArr[0]) || 0, Number(fromArr[1]) || 0, Number(fromArr[2]) || 0);
     const toVec = new THREE.Vector3(Number(toArr[0]) || 0, Number(toArr[1]) || 0, Number(toArr[2]) || 0);
@@ -5394,24 +6678,32 @@ export class BlockyWorld3D {
     beamGroup.position.copy(mid);
     beamGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
 
+    const coreHex = style === 'star_bolt' ? '#fef08a' : '#ffffff';
+    const outerColor =
+      style === 'star_bolt'
+        ? '#f472b6'
+        : style === 'crystal_slash'
+          ? '#38bdf8'
+          : isDungeonHit
+            ? '#22d3ee'
+            : '#f472b6';
     const coreMat = new THREE.MeshBasicMaterial({
-      color: '#ffffff',
+      color: coreHex,
       transparent: true,
       opacity: 0.96
     });
-    const outerColor = isDungeonHit ? '#22d3ee' : '#f472b6';
     const outerMat = new THREE.MeshBasicMaterial({
       color: outerColor,
       transparent: true,
-      opacity: 0.62,
+      opacity: 0.68,
       depthWrite: false
     });
 
-    const core = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.042, dist, 8), coreMat);
-    const sheath = new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.115, dist, 10), outerMat);
-    const muzzleFlash = new THREE.Mesh(new THREE.SphereGeometry(0.15, 10, 10), outerMat);
+    const core = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, dist, 8), coreMat);
+    const sheath = new THREE.Mesh(new THREE.CylinderGeometry(0.125, 0.125, dist, 10), outerMat);
+    const muzzleFlash = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 10), outerMat);
     muzzleFlash.position.y = -dist * 0.5;
-    const impactFlash = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 10), coreMat);
+    const impactFlash = new THREE.Mesh(new THREE.OctahedronGeometry(0.26, 0), coreMat);
     impactFlash.position.y = dist * 0.5;
 
     beamGroup.add(core, sheath, muzzleFlash, impactFlash);
@@ -5432,7 +6724,15 @@ export class BlockyWorld3D {
     let best = null;
     let bestDist = maxDist;
     for (const b of this.savedBlocksByKey.values()) {
-      if (b.kind !== 'door' && b.kind !== 'double_door' && b.kind !== 'window') continue;
+      if (
+        b.kind !== 'door' &&
+        b.kind !== 'double_door' &&
+        b.kind !== 'window' &&
+        b.kind !== 'nightstand_lamp' &&
+        b.kind !== 'crystal_lamp'
+      ) {
+        continue;
+      }
       let cx = b.x;
       let cz = b.z;
       if (b.kind === 'double_door') {
@@ -5445,6 +6745,54 @@ export class BlockyWorld3D {
       if (d < bestDist) {
         bestDist = d;
         best = b;
+      }
+    }
+    return best;
+  }
+
+  _findNearestInteractiveFurniture(maxDist = 2.65) {
+    if (!this.selfAvatar || this.currentZone !== 0) return null;
+    const pos = this.selfAvatar.group.position;
+    let best = null;
+    let bestDist = maxDist;
+    for (const b of this.savedBlocksByKey.values()) {
+      if (b.kind !== 'chair' && b.kind !== 'sofa' && b.kind !== 'bed') continue;
+      const d = Math.hypot(pos.x - b.x, pos.y + 0.5 - (b.y - 0.5), pos.z - b.z);
+      if (d < bestDist) {
+        bestDist = d;
+        best = b;
+      }
+    }
+    return best;
+  }
+
+  _interactWithFurniture(b) {
+    if (!this.selfAvatar || !b) return;
+    const wantEmote = b.kind === 'bed' ? 'sleep' : 'sit';
+    if (this.selfAvatar.emote === wantEmote) {
+      this.selfAvatar.emote = null;
+      this._emitMoveNow();
+      return;
+    }
+    this.selfAvatar.group.position.set(b.x, b.y - 0.5, b.z);
+    this.selfAvatar.group.rotation.y = ((b.rot || 0) % 4) * (Math.PI / 2);
+    this.velocity.set(0, 0, 0);
+    this.isGrounded = true;
+    this.selfAvatar.anim = 'idle';
+    this.selfAvatar.emote = wantEmote;
+    this._emitMoveNow();
+  }
+
+  _findNearestMailbox(maxDist = 4.2) {
+    if (!this.selfAvatar || this.currentZone !== 0) return null;
+    const pos = this.selfAvatar.group.position;
+    let best = null;
+    let bestDist = maxDist;
+    for (const mb of this.mailboxesMap.values()) {
+      const d = Math.hypot(pos.x - mb.group.position.x, pos.z - mb.group.position.z);
+      if (d < bestDist) {
+        bestDist = d;
+        best = mb;
       }
     }
     return best;
@@ -5466,11 +6814,53 @@ export class BlockyWorld3D {
     );
 
     if (this.currentZone === 0) {
+      // 1. Catch nearest Falling Star
+      for (const star of this.fallingStarsMap.values()) {
+        if (pos.distanceTo(star.group.position) < 4.2) {
+          star.lastCatchAttemptAt = performance.now();
+          this.spawnSparkleBurst(star.group.position, '#fde047');
+          this.onCatchFallingStar(star.id);
+          return;
+        }
+      }
+
+      // 2. Interact with Neighborhood Home Mailbox
+      const nearMb = this._findNearestMailbox(4.1);
+      if (nearMb) {
+        this.onManageHome(nearMb.data);
+        return;
+      }
+
+      // 3. Interact with Starlight Crafting Bench
+      const dCraft = Math.hypot(pos.x - this.craftingBenchPos.x, pos.z - this.craftingBenchPos.z);
+      if (dCraft < 4.2) {
+        this.onOpenCrafting();
+        return;
+      }
+
+      // 4. Interact with Obby Speedrun Leaderboard Boards
+      for (const [courseKey, bd] of Object.entries(this.obbyBoardScreens)) {
+        if (Math.hypot(pos.x - bd.pos.x, pos.z - bd.pos.z) < 4.2) {
+          this.onOpenObbyBoard(courseKey);
+          return;
+        }
+      }
+
+      // 5. Doors, Windows & Toggleable Lamps
       const toggleTarget = this._findNearestToggleableBlock(3.8);
       if (toggleTarget) {
         this.onToggleBlock({ x: toggleTarget.x, y: toggleTarget.y, z: toggleTarget.z });
         return;
       }
+
+      // 6. Interactive Chairs, Sofas & Beds
+      const furnTarget = this._findNearestInteractiveFurniture(2.65);
+      if (furnTarget) {
+        this._interactWithFurniture(furnTarget);
+        return;
+      }
+
+      // 7. Zone Stargates
       const dPortal = Math.hypot(pos.x - this.plazaPortalPos.x, pos.z - this.plazaPortalPos.z);
       if (dPortal < 4.2) {
         this.lastPortalTriggerAt = performance.now();
@@ -5486,17 +6876,21 @@ export class BlockyWorld3D {
         this.onRequestZonePortal(3);
         return;
       }
+
+      // 8. Equipped Right-Hand Ray Gun or Starlight Wand Sparkle Beam in Plaza
+      const acc = this.selfAvatar.user?.avatar?.accessory;
       if (
         !this.buildMode &&
-        this.selfAvatar.user?.avatar?.accessory === 'ray_gun' &&
+        (acc === 'ray_gun' || acc === 'starlight_wand') &&
         performance.now() - this.lastLocalBeamAt > 210
       ) {
         const ry = this.selfAvatar.group.rotation.y;
         const fromArr = [pos.x + Math.sin(ry) * 0.55, pos.y + 1.05, pos.z + Math.cos(ry) * 0.55];
         const toArr = [pos.x + Math.sin(ry) * 11.0, pos.y + 1.12, pos.z + Math.cos(ry) * 11.0];
         this.lastLocalBeamAt = performance.now();
-        this.spawnRayGunBeam(fromArr, toArr, false);
-        this.onFireRayGun(toArr);
+        const beamStyle = acc === 'starlight_wand' ? 'star_bolt' : null;
+        this.spawnRayGunBeam(fromArr, toArr, false, beamStyle);
+        this.onFireRayGun(toArr, beamStyle);
       }
       return;
     }
@@ -5539,9 +6933,35 @@ export class BlockyWorld3D {
       return;
     }
 
-    const hasRayGun = this.selfAvatar.user?.avatar?.accessory === 'ray_gun';
+    const acc = this.selfAvatar.user?.avatar?.accessory;
+    const hasRayGun = acc === 'ray_gun';
+    const hasWand = acc === 'starlight_wand';
+    const hasBlade = acc === 'crystal_blade';
+    const maxWeaponRange = hasWand ? 16.2 : hasRayGun ? 14.2 : hasBlade ? 6.2 : 5.6;
+    const beamStyle = hasWand ? 'star_bolt' : hasBlade ? 'crystal_slash' : null;
+
+    // In Shadow Rift Arena, check live Co-Op Obsidian Rift Dragon Boss first!
+    if (
+      this.currentZone === 3 &&
+      this.bossDragonEntry?.data?.active &&
+      this.bossDragonEntry.data.hp > 0
+    ) {
+      const bPos = this.bossDragonEntry.group.position;
+      const dBoss = pos.distanceTo(bPos);
+      if (dBoss < maxWeaponRange + 1.8) {
+        const ry = Math.atan2(bPos.x - pos.x, bPos.z - pos.z);
+        this.selfAvatar.group.rotation.y = ry;
+        const fromArr = [pos.x + Math.sin(ry) * 0.55, pos.y + 1.05, pos.z + Math.cos(ry) * 0.55];
+        const toArr = [bPos.x, bPos.y + 1.8, bPos.z];
+        this.lastLocalBeamAt = performance.now();
+        this.spawnRayGunBeam(fromArr, toArr, true, beamStyle);
+        this.onAttackMob('obsidian_dragon', hasRayGun ? 'raygun' : 'blast');
+        return;
+      }
+    }
+
     let nearestMob = null;
-    let nearestMobDist = hasRayGun ? 14.2 : 5.6;
+    let nearestMobDist = maxWeaponRange;
     for (const entry of activeMobsMap.values()) {
       if (!entry.data.alive) continue;
       const d = pos.distanceTo(entry.group.position);
@@ -5551,17 +6971,25 @@ export class BlockyWorld3D {
       }
     }
     if (nearestMob) {
-      if (hasRayGun) {
-        const ry = Math.atan2(nearestMob.x - pos.x, nearestMob.z - pos.z);
-        this.selfAvatar.group.rotation.y = ry;
+      const ry = Math.atan2(nearestMob.x - pos.x, nearestMob.z - pos.z);
+      this.selfAvatar.group.rotation.y = ry;
+      if (hasRayGun || hasWand || hasBlade) {
         const fromArr = [pos.x + Math.sin(ry) * 0.55, pos.y + 1.05, pos.z + Math.cos(ry) * 0.55];
         const toArr = [nearestMob.x, nearestMob.y + 0.75, nearestMob.z];
         this.lastLocalBeamAt = performance.now();
-        this.spawnRayGunBeam(fromArr, toArr, true);
-        this.onAttackMob(nearestMob.id, 'raygun');
-      } else {
-        this.onAttackMob(nearestMob.id, 'blast');
+        this.spawnRayGunBeam(fromArr, toArr, true, beamStyle);
       }
+      this.onAttackMob(nearestMob.id, hasRayGun ? 'raygun' : 'blast');
+      return;
+    }
+
+    // Summon Obsidian Dragon at North Island Altar if not active
+    if (
+      this.currentZone === 3 &&
+      Math.hypot(pos.x - this.bossAltarPos.x, pos.z - this.bossAltarPos.z) < 5.4 &&
+      !(this.bossDragonEntry?.data?.active && this.bossDragonEntry.data.hp > 0)
+    ) {
+      this.onSummonArenaBoss();
       return;
     }
 
@@ -5769,17 +7197,68 @@ export class BlockyWorld3D {
           }
         } else if (this.currentZone === 0 && this.selfAvatar) {
           this.raycaster.setFromCamera(this.pointerNdc, this.camera);
+          const p = this.selfAvatar.group.position;
+
+          // Check Plaza Expansion Landmarks (Falling Stars, Mailboxes, Crafting Bench, Obby Boards)
+          const landmarkTargets = [
+            ...this.fallingStarsGroup.children,
+            ...this.mailboxesGroup.children,
+            this.craftingBenchGroup,
+            ...this.obbyGatesGroup.children
+          ];
+          const lmHits = this.raycaster.intersectObjects(landmarkTargets, true);
+          if (lmHits.length > 0 && lmHits[0].distance <= 14.0) {
+            const lmUd = lmHits[0].object.userData || {};
+            if (lmUd.landmarkKind === 'falling_star' && lmUd.starId) {
+              const star = this.fallingStarsMap.get(lmUd.starId);
+              if (star && p.distanceTo(star.group.position) <= 6.2) {
+                this.spawnSparkleBurst(star.group.position, '#fde047');
+                this.onCatchFallingStar(star.id);
+                return;
+              }
+            } else if (lmUd.landmarkKind === 'mailbox' && lmUd.plotId) {
+              const mb = this.mailboxesMap.get(lmUd.plotId);
+              if (mb && Math.hypot(p.x - mb.group.position.x, p.z - mb.group.position.z) <= 7.5) {
+                this.onManageHome(mb.data);
+                return;
+              }
+            } else if (lmUd.landmarkKind === 'crafting_bench') {
+              if (Math.hypot(p.x - this.craftingBenchPos.x, p.z - this.craftingBenchPos.z) <= 7.5) {
+                this.onOpenCrafting();
+                return;
+              }
+            } else if (lmUd.landmarkKind === 'obby_board' && lmUd.course) {
+              this.onOpenObbyBoard(lmUd.course);
+              return;
+            }
+          }
+
           const voxelHits = this.raycaster.intersectObjects(this.voxelGroup.children, true);
           if (voxelHits.length > 0 && voxelHits[0].distance <= 9.5) {
             const ud = voxelHits[0].object.userData || {};
             if (
-              (ud.voxelKind === 'door' || ud.voxelKind === 'double_door' || ud.voxelKind === 'window') &&
+              (ud.voxelKind === 'door' ||
+                ud.voxelKind === 'double_door' ||
+                ud.voxelKind === 'window' ||
+                ud.voxelKind === 'nightstand_lamp' ||
+                ud.voxelKind === 'crystal_lamp') &&
               ud.voxelCoords
             ) {
-              const p = this.selfAvatar.group.position;
               const d = Math.hypot(p.x - ud.voxelCoords.x, p.y + 0.9 - ud.voxelCoords.y, p.z - ud.voxelCoords.z);
               if (d <= 6.2) {
                 this.onToggleBlock(ud.voxelCoords);
+                return;
+              }
+            } else if (
+              (ud.voxelKind === 'chair' || ud.voxelKind === 'sofa' || ud.voxelKind === 'bed') &&
+              ud.voxelCoords
+            ) {
+              const savedB = this.savedBlocksByKey.get(
+                `${ud.voxelCoords.x},${ud.voxelCoords.y},${ud.voxelCoords.z}`
+              );
+              const d = Math.hypot(p.x - ud.voxelCoords.x, p.y + 0.5 - (ud.voxelCoords.y - 0.5), p.z - ud.voxelCoords.z);
+              if (savedB && d <= 4.2) {
+                this._interactWithFurniture(savedB);
                 return;
               }
             }
@@ -5788,7 +7267,6 @@ export class BlockyWorld3D {
           if (this.plazaPortalGroup) {
             const portalHits = this.raycaster.intersectObject(this.plazaPortalGroup, true);
             if (portalHits.length > 0 && portalHits[0].distance <= 14.0) {
-              const p = this.selfAvatar.group.position;
               const dPortal = Math.hypot(p.x - this.plazaPortalPos.x, p.z - this.plazaPortalPos.z);
               if (dPortal <= 6.5 && performance.now() - this.lastPortalTriggerAt > 1200) {
                 this.lastPortalTriggerAt = performance.now();
@@ -5801,7 +7279,6 @@ export class BlockyWorld3D {
           if (this.plazaArenaPortalGroup) {
             const arenaPortalHits = this.raycaster.intersectObject(this.plazaArenaPortalGroup, true);
             if (arenaPortalHits.length > 0 && arenaPortalHits[0].distance <= 14.0) {
-              const p = this.selfAvatar.group.position;
               const dArena = Math.hypot(
                 p.x - this.plazaArenaPortalPos.x,
                 p.z - this.plazaArenaPortalPos.z
@@ -5814,9 +7291,10 @@ export class BlockyWorld3D {
             }
           }
 
+          const acc = this.selfAvatar.user?.avatar?.accessory;
           if (
             e.button === 0 &&
-            this.selfAvatar.user?.avatar?.accessory === 'ray_gun' &&
+            (acc === 'ray_gun' || acc === 'starlight_wand') &&
             performance.now() - this.lastLocalBeamAt > 210
           ) {
             const aimTargets = [...this.plazaGroup.children, ...this.voxelGroup.children];
@@ -5835,8 +7313,9 @@ export class BlockyWorld3D {
             const fromArr = [pos.x + Math.sin(ry) * 0.55, pos.y + 1.05, pos.z + Math.cos(ry) * 0.55];
             const toArr = [aimVec.x, aimVec.y, aimVec.z];
             this.lastLocalBeamAt = performance.now();
-            this.spawnRayGunBeam(fromArr, toArr, false);
-            this.onFireRayGun(toArr);
+            const beamStyle = acc === 'starlight_wand' ? 'star_bolt' : null;
+            this.spawnRayGunBeam(fromArr, toArr, false, beamStyle);
+            this.onFireRayGun(toArr, beamStyle);
           }
         }
       }
@@ -6205,12 +7684,75 @@ export class BlockyWorld3D {
           bulb.material.emissiveIntensity = active ? 1.15 : 0.35;
         });
       }
+
+      // Dynamic 12-Minute Sky / Cotton-Candy Sunset / Aurora Night Cycle
+      this._applyPlazaSkyCycle(serverNowMs, tSec);
+
+      // Spinning & bobbing Falling Stars
+      for (const star of this.fallingStarsMap.values()) {
+        if (star.core) {
+          star.core.rotation.y = tSec * 2.8;
+          star.core.rotation.x = Math.sin(tSec * 2.1) * 0.35;
+          star.core.position.y = 0.65 + Math.sin(tSec * 3.8) * 0.16;
+        }
+      }
+
+      // Crafting Bench floating crystal idle bob
+      if (this.craftingBenchGroup.userData?.floatingGem) {
+        this.craftingBenchGroup.userData.floatingGem.rotation.y = tSec * 1.8;
+        this.craftingBenchGroup.userData.floatingGem.position.y = 1.18 + Math.sin(tSec * 3.0) * 0.08;
+      }
+
+      // Timed Fashion Show Catwalk Spotlight
+      const rwShow = this.runwayShowState;
+      if (rwShow && rwShow.phase && rwShow.phase !== 'idle') {
+        this.runwaySpotlightGroup.visible = true;
+        let spotX = -24;
+        let spotZ = 2.0;
+        const spotUser = rwShow.spotlightUsername || rwShow.activeContestant || null;
+        if ((rwShow.phase === 'catwalk' || rwShow.phase === 'walking') && spotUser) {
+          let foundAv = null;
+          if (this.selfAvatar?.user?.username === spotUser) {
+            foundAv = this.selfAvatar;
+          } else {
+            for (const rAv of this.remoteAvatars.values()) {
+              if (rAv.zone === 0 && rAv.user?.username === spotUser) {
+                foundAv = rAv;
+                break;
+              }
+            }
+          }
+          if (foundAv && foundAv.group.position.x < -14 && foundAv.group.position.x > -34) {
+            spotX = foundAv.group.position.x;
+            spotZ = foundAv.group.position.z;
+          } else {
+            spotZ = 2.0 + Math.sin(tSec * 1.4) * 6.5;
+          }
+        } else if (rwShow.phase === 'podium') {
+          spotZ = 11.2;
+        } else {
+          spotZ = 1.5 + Math.sin(tSec * 0.9) * 5.0;
+        }
+        this.runwaySpotlightGroup.position.x += (spotX - this.runwaySpotlightGroup.position.x) * Math.min(1, dt * 8);
+        this.runwaySpotlightGroup.position.z += (spotZ - this.runwaySpotlightGroup.position.z) * Math.min(1, dt * 8);
+      } else {
+        this.runwaySpotlightGroup.visible = false;
+      }
     } else {
-      // Animate Crystal Cavern & Shadow Rift Arena mobs, molten lava, and spinning loot orbs
+      // Animate Crystal Cavern & Shadow Rift Arena mobs, Boss Dragon, molten lava, and spinning loot orbs
       if (this.currentZone === 3) {
         const lavaPulse = 1.2 + Math.sin(tSec * 3.4) * 0.28;
         for (const lm of this.arenaLavaMeshes) {
           if (lm.material) lm.material.emissiveIntensity = lavaPulse;
+        }
+        if (this.bossDragonEntry && this.bossDragonEntry.group.visible && this.bossDragonEntry.data) {
+          const bd = this.bossDragonEntry;
+          bd.group.position.lerp(bd.targetPos, Math.min(1, dt * 7.5));
+          bd.group.rotation.y = bd.data.ry || 0;
+          const flap = Math.sin(tSec * 6.4) * 0.42;
+          if (bd.leftWing) bd.leftWing.rotation.z = flap;
+          if (bd.rightWing) bd.rightWing.rotation.z = -flap;
+          bd.visual.position.y = 0.28 + Math.sin(tSec * 3.2) * 0.22;
         }
       }
       const activeMobs = this.currentZone === 3 ? this.arenaMobsMap : this.dungeonMobsMap;
@@ -6283,8 +7825,17 @@ export class BlockyWorld3D {
       }
 
       const isSprinting = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
-      const speedMult = serverNowMs < this.speedBoostUntilMs ? 1.35 : 1.0;
-      const speed = (isSprinting ? 11.4 : 8.4) * speedMult;
+      const potionMult = serverNowMs < this.speedBoostUntilMs ? 1.35 : 1.0;
+      const eqMount = this.currentZone === 0 && !this.selfAvatar.emote ? this.selfAvatar.equippedMount : null;
+      const mountMult =
+        eqMount === 'comet_surfer'
+          ? 1.78
+          : eqMount === 'sunset_skates'
+            ? 1.68
+            : eqMount === 'starlight_board'
+              ? 1.62
+              : 1.0;
+      const speed = (isSprinting ? 11.4 : 8.4) * Math.max(potionMult, mountMult);
       const forwardVec = new THREE.Vector3(-Math.sin(this.cameraYaw), 0, -Math.cos(this.cameraYaw));
       const rightVec = new THREE.Vector3(Math.cos(this.cameraYaw), 0, -Math.sin(this.cameraYaw));
 
@@ -6503,6 +8054,57 @@ export class BlockyWorld3D {
         }
       }
 
+      // Obby Speedrun Start & Finish Laser Gate Crossing (Zone 0)
+      if (this.currentZone === 0 && !this.salonMirrorMode) {
+        if (!this._inStartGate) this._inStartGate = { easy: false, hard: false };
+        for (const [courseKey, cfg] of Object.entries(this.obbyGates)) {
+          if (!cfg || !cfg.start || !cfg.finish) continue;
+          const dStart = Math.hypot(
+            pos.x - cfg.start.pos.x,
+            pos.y - (cfg.start.pos.y + 0.8),
+            pos.z - cfg.start.pos.z
+          );
+          const insideStart = dStart <= 2.9;
+          if (
+            insideStart &&
+            !this._inStartGate[courseKey] &&
+            horizDist > 0.0005 &&
+            now - (this.lastObbyGateAt[`${courseKey}_start`] || 0) > 2200
+          ) {
+            this.lastObbyGateAt[`${courseKey}_start`] = now;
+            this.spawnSparkleBurst(pos, '#34d399');
+            this.onObbyGateCrossed(courseKey, 'start');
+          }
+          this._inStartGate[courseKey] = insideStart;
+
+          if (this.activeObbyCourse === courseKey) {
+            const dFin = Math.hypot(
+              pos.x - cfg.finish.pos.x,
+              pos.y - (cfg.finish.pos.y + 0.6),
+              pos.z - cfg.finish.pos.z
+            );
+            if (dFin <= 3.6 && now - (this.lastObbyGateAt[`${courseKey}_finish`] || 0) > 2500) {
+              this.lastObbyGateAt[`${courseKey}_finish`] = now;
+              this.activeObbyCourse = null;
+              this.spawnCelebrationConfetti(pos);
+              this.onObbyGateCrossed(courseKey, 'finish');
+            }
+          }
+        }
+
+        // Auto-catch Falling Stars when walking right through them!
+        for (const star of this.fallingStarsMap.values()) {
+          if (
+            pos.distanceTo(star.group.position) < 2.35 &&
+            now - (star.lastCatchAttemptAt || 0) > 750
+          ) {
+            star.lastCatchAttemptAt = now;
+            this.spawnSparkleBurst(star.group.position, '#fde047');
+            this.onCatchFallingStar(star.id);
+          }
+        }
+      }
+
       // Spinning Sweeper Beam Collision (Pro Obby Stage 4 — Jump Over!)
       if (this.currentZone === 0 && this.sweeperHazards.length > 0 && now - this.lastSweeperHitAt > 480) {
         for (const sw of this.sweeperHazards) {
@@ -6559,9 +8161,12 @@ export class BlockyWorld3D {
         }
       }
 
-      // Zone-specific proximity, portal walk-in, doors/windows, jump-stomp, auto-pickup & contextual HUD prompt
+      // Zone-specific proximity, portal walk-in, doors/windows/lamps, furniture, jump-stomp, auto-pickup & contextual HUD prompt
       let nextHint = '';
-      const hasRayGun = this.selfAvatar.user?.avatar?.accessory === 'ray_gun';
+      const acc = this.selfAvatar.user?.avatar?.accessory;
+      const hasRayGun = acc === 'ray_gun';
+      const hasWand = acc === 'starlight_wand';
+      const hasBlade = acc === 'crystal_blade';
       if (this.currentZone === 0) {
         const isNowNearRunway = pos.x < -14.5 && pos.x > -33.5 && pos.z > -15.5 && pos.z < 16.5;
         if (isNowNearRunway !== this.nearRunway) {
@@ -6573,6 +8178,9 @@ export class BlockyWorld3D {
           pos.x - this.plazaArenaPortalPos.x,
           pos.z - this.plazaArenaPortalPos.z
         );
+        const dCraft = Math.hypot(pos.x - this.craftingBenchPos.x, pos.z - this.craftingBenchPos.z);
+        const nearMb = this._findNearestMailbox(4.1);
+
         if (dPortal < 2.65 && Math.abs(pos.y - this.plazaPortalPos.y) < 3.5 && now - this.lastPortalTriggerAt > 2600) {
           this.lastPortalTriggerAt = now;
           this.onRequestZonePortal(1);
@@ -6587,22 +8195,55 @@ export class BlockyWorld3D {
           nextHint = '🌀 Step In or Press E — Enter Crystal Cavern Dungeon!';
         } else if (dArenaPortal < 5.5) {
           nextHint = '⚔️ Step In or Press E — Enter Shadow Rift Mortal Arena (Watch HP & Lava!)';
+        } else if (nearMb) {
+          const pl = nearMb.data || {};
+          if (!pl.ownerUsername) {
+            nextHint = `🏡 Press E or Click — Claim ${pl.defaultName || pl.plotId}!`;
+          } else if (pl.doorLocked) {
+            nextHint = `🔔 Press E or Click — Ring Doorbell at ${pl.customTitle || pl.defaultName} (@${pl.ownerUsername})`;
+          } else {
+            nextHint = `🏡 Press E or Click — View ${pl.customTitle || pl.defaultName} (@${pl.ownerUsername})`;
+          }
+        } else if (dCraft < 4.5) {
+          nextHint = '⚒️ Press E or Click — Open Starlight Crafting Workshop (Craft Gear & Pet Eggs!)';
         } else {
-          const nearToggle = this._findNearestToggleableBlock(3.8);
-          if (nearToggle) {
-            const noun =
-              nearToggle.kind === 'double_door'
-                ? 'Double Door'
-                : nearToggle.kind === 'door'
-                  ? 'Door'
-                  : 'Window';
-            const verb = nearToggle.open ? 'Close' : 'Open';
-            const icon = nearToggle.kind === 'window' ? '🪟' : '🚪';
-            nextHint = this.buildMode
-              ? `${icon} Press E — ${verb} ${noun}`
-              : `${icon} Press E or Click — ${verb} ${noun}`;
-          } else if (!this.buildMode && hasRayGun) {
-            nextHint = '🔫 Ray Gun Equipped — Press E or Click to Zap Starlight Beam!';
+          for (const [, bd] of Object.entries(this.obbyBoardScreens)) {
+            if (Math.hypot(pos.x - bd.pos.x, pos.z - bd.pos.z) < 4.4) {
+              nextHint = `🏆 Press E or Click — View ${bd.heading} Speedrun Records!`;
+              break;
+            }
+          }
+          if (!nextHint) {
+            const nearToggle = this._findNearestToggleableBlock(3.8);
+            const nearFurn = this._findNearestInteractiveFurniture(2.65);
+            if (nearToggle) {
+              const isLamp = nearToggle.kind === 'nightstand_lamp' || nearToggle.kind === 'crystal_lamp';
+              if (isLamp) {
+                const verb = nearToggle.open ? 'Turn On' : 'Dim';
+                nextHint = `💡 Press E or Click — ${verb} ${nearToggle.kind === 'crystal_lamp' ? 'Aurora Lamp' : 'Warm Lamp'}`;
+              } else {
+                const noun =
+                  nearToggle.kind === 'double_door'
+                    ? 'Double Door'
+                    : nearToggle.kind === 'door'
+                      ? 'Door'
+                      : 'Window';
+                const verb = nearToggle.open ? 'Close' : 'Open';
+                const icon = nearToggle.kind === 'window' ? '🪟' : '🚪';
+                nextHint = this.buildMode
+                  ? `${icon} Press E — ${verb} ${noun}`
+                  : `${icon} Press E or Click — ${verb} ${noun}`;
+              }
+            } else if (!this.buildMode && nearFurn) {
+              nextHint =
+                nearFurn.kind === 'bed'
+                  ? '😴 Press E or Click — Lie Down & Sleep on Bed!'
+                  : `🪑 Press E or Click — Sit on ${nearFurn.kind === 'sofa' ? 'Plush Sofa' : 'Chair'}!`;
+            } else if (!this.buildMode && hasRayGun) {
+              nextHint = '🔫 Ray Gun Equipped — Press E or Click to Zap Starlight Beam!';
+            } else if (!this.buildMode && hasWand) {
+              nextHint = '🪄 Starlight Wand Equipped — Press E or Click to Cast Star-Bolt!';
+            }
           }
         }
       } else if (this.currentZone === 2) {
@@ -6644,8 +8285,38 @@ export class BlockyWorld3D {
           nextHint = '🌟 Step In or Press E — Return to Starlight Plaza';
         }
 
+        // Boss Stomp & Boss Altar Hint in Shadow Rift (Zone 3)
+        if (this.currentZone === 3) {
+          if (this.bossDragonEntry?.data?.active && this.bossDragonEntry.data.hp > 0) {
+            const bPos = this.bossDragonEntry.group.position;
+            const hBoss = Math.hypot(pos.x - bPos.x, pos.z - bPos.z);
+            if (
+              this.velocity.y < -1.0 &&
+              hBoss < 2.8 &&
+              pos.y >= bPos.y + 0.4 &&
+              pos.y <= bPos.y + 4.8 &&
+              now - (this.bossDragonEntry.lastStompAt || 0) > 320
+            ) {
+              this.bossDragonEntry.lastStompAt = now;
+              this.velocity.y = 13.5;
+              this.isGrounded = false;
+              this.selfAvatar.anim = 'jump';
+              this.spawnSparkleBurst(bPos, '#c084fc');
+              this.onAttackMob('obsidian_dragon', 'stomp');
+            } else if (!nextHint && hBoss < 16.5) {
+              nextHint =
+                '🐉 Press E or Click to Strike Obsidian Dragon — JUMP Over Purple Shockwave Rings!';
+            }
+          } else if (
+            !nextHint &&
+            Math.hypot(pos.x - this.bossAltarPos.x, pos.z - this.bossAltarPos.z) < 5.8
+          ) {
+            nextHint = '🔮 Press E or Click — Summon Co-Op Obsidian Rift Dragon Boss!';
+          }
+        }
+
         // Mario-style Jump-Stomp on live mobs + nearest mob hint
-        const mobHintRange = hasRayGun ? 14.0 : 5.2;
+        const mobHintRange = hasWand ? 16.0 : hasRayGun ? 14.0 : hasBlade ? 6.2 : 5.2;
         for (const entry of activeMobsMap.values()) {
           if (!entry.data.alive) continue;
           const mPos = entry.group.position;
@@ -6667,7 +8338,11 @@ export class BlockyWorld3D {
           } else if (!nextHint && hDist < mobHintRange) {
             nextHint = hasRayGun
               ? `🔫 Press E or Click — Zap ${entry.data.name} with Ray Gun (3 DMG)!`
-              : `⚔️ Press E (Sparkle Blast) or Jump-Stomp ${entry.data.name}!`;
+              : hasWand
+                ? `🪄 Press E or Click — Cast Starlight Wand at ${entry.data.name} (2 DMG + Mend)!`
+                : hasBlade
+                  ? `⚔️ Press E or Click — Slash ${entry.data.name} with Crystal Blade (2 DMG)!`
+                  : `⚔️ Press E (Sparkle Blast) or Jump-Stomp ${entry.data.name}!`;
           }
         }
 
@@ -6685,10 +8360,16 @@ export class BlockyWorld3D {
           }
         }
 
-        // Auto-pickup Ground Loot Orbs
+        // Auto-pickup Ground Loot Orbs (extended magnet radius when a Pet is equipped!)
+        const petMagnet =
+          this.selfAvatar.equippedPet === 'baby_crystal_dragon'
+            ? 4.6
+            : this.selfAvatar.equippedPet
+              ? 3.85
+              : 2.55;
         for (const dropEntry of activeDropsMap.values()) {
           if (
-            pos.distanceTo(dropEntry.group.position) < 2.55 &&
+            pos.distanceTo(dropEntry.group.position) < petMagnet &&
             now - dropEntry.lastPickupAttemptAt > 650
           ) {
             dropEntry.lastPickupAttemptAt = now;
@@ -6758,6 +8439,200 @@ export class BlockyWorld3D {
     }
 
     this.renderer.render(this.scene, this.camera);
+  }
+
+  getSkyPhaseSummary(serverNowMs = Date.now() + this.serverClockOffsetMs) {
+    const meteorActive =
+      Boolean(this.skyState?.meteorShowerActive) ||
+      serverNowMs < (Number(this.skyState?.meteorShowerUntilMs) || 0);
+    const mode = this.skyState?.mode || 'auto';
+    if (meteorActive) {
+      return { icon: '🌠', label: 'Meteor Shower!', phase: 'meteor' };
+    }
+    if (mode === 'day') return { icon: '☀️', label: 'Sunny Day', phase: 'day' };
+    if (mode === 'sunset') return { icon: '🌅', label: 'Cotton-Candy Sunset', phase: 'sunset' };
+    if (mode === 'aurora_night' || mode === 'night') {
+      return { icon: '🌌', label: 'Aurora Night', phase: 'aurora_night' };
+    }
+
+    const cycleMs = Math.max(
+      60000,
+      Number(this.skyState?.cycleDurationMs || this.skyState?.cycleMs) || 720000
+    );
+    const anchorMs = Number(this.skyState?.cycleAnchorMs) || 0;
+    const elapsed = Math.max(0, serverNowMs - anchorMs);
+    const frac = (elapsed % cycleMs) / cycleMs;
+    if (frac < 0.42 || frac >= 0.96) return { icon: '☀️', label: 'Sunny Day', phase: 'day' };
+    if (frac < 0.64) return { icon: '🌅', label: 'Cotton-Candy Sunset', phase: 'sunset' };
+    if (frac < 0.91) return { icon: '🌌', label: 'Aurora Night', phase: 'aurora_night' };
+    return { icon: '🌸', label: 'Rosy Dawn', phase: 'dawn' };
+  }
+
+  _applyPlazaSkyCycle(serverNowMs, tSec) {
+    const cycleMs = Math.max(
+      60000,
+      Number(this.skyState?.cycleDurationMs || this.skyState?.cycleMs) || 720000
+    );
+    const mode = this.skyState?.mode || 'auto';
+    let frac = 0.18;
+    if (mode === 'day') frac = 0.18;
+    else if (mode === 'sunset') frac = 0.52;
+    else if (mode === 'aurora_night' || mode === 'night') frac = 0.78;
+    else {
+      const anchorMs = Number(this.skyState?.cycleAnchorMs) || 0;
+      const elapsed = Math.max(0, serverNowMs - anchorMs);
+      frac = (elapsed % cycleMs) / cycleMs;
+    }
+
+    const keyframes = [
+      {
+        t: 0.0,
+        bg: '#7dd3fc',
+        fog: '#bae6fd',
+        hemiSky: '#ffffff',
+        hemiGround: '#fbcfe8',
+        hemiInt: 0.92,
+        sunCol: '#fffbeb',
+        sunInt: 1.28,
+        fillCol: '#fdf2f8',
+        fillInt: 0.55,
+        aurora: 0.0,
+        stars: 0.0
+      },
+      {
+        t: 0.34,
+        bg: '#7dd3fc',
+        fog: '#bae6fd',
+        hemiSky: '#ffffff',
+        hemiGround: '#fbcfe8',
+        hemiInt: 0.92,
+        sunCol: '#fffbeb',
+        sunInt: 1.28,
+        fillCol: '#fdf2f8',
+        fillInt: 0.55,
+        aurora: 0.0,
+        stars: 0.0
+      },
+      {
+        t: 0.5,
+        bg: '#f472b6',
+        fog: '#fdba74',
+        hemiSky: '#fbcfe8',
+        hemiGround: '#7c2d12',
+        hemiInt: 0.86,
+        sunCol: '#fb923c',
+        sunInt: 1.08,
+        fillCol: '#c084fc',
+        fillInt: 0.62,
+        aurora: 0.22,
+        stars: 0.28
+      },
+      {
+        t: 0.66,
+        bg: '#0b1026',
+        fog: '#15193b',
+        hemiSky: '#818cf8',
+        hemiGround: '#1e1b4b',
+        hemiInt: 0.68,
+        sunCol: '#c4b5fd',
+        sunInt: 0.58,
+        fillCol: '#34d399',
+        fillInt: 0.5,
+        aurora: 0.95,
+        stars: 0.95
+      },
+      {
+        t: 0.86,
+        bg: '#0b1026',
+        fog: '#15193b',
+        hemiSky: '#818cf8',
+        hemiGround: '#1e1b4b',
+        hemiInt: 0.68,
+        sunCol: '#c4b5fd',
+        sunInt: 0.58,
+        fillCol: '#34d399',
+        fillInt: 0.5,
+        aurora: 0.95,
+        stars: 0.95
+      },
+      {
+        t: 0.95,
+        bg: '#f9a8d4',
+        fog: '#bae6fd',
+        hemiSky: '#fde68a',
+        hemiGround: '#fbcfe8',
+        hemiInt: 0.85,
+        sunCol: '#fde047',
+        sunInt: 1.05,
+        fillCol: '#38bdf8',
+        fillInt: 0.52,
+        aurora: 0.16,
+        stars: 0.2
+      },
+      {
+        t: 1.0,
+        bg: '#7dd3fc',
+        fog: '#bae6fd',
+        hemiSky: '#ffffff',
+        hemiGround: '#fbcfe8',
+        hemiInt: 0.92,
+        sunCol: '#fffbeb',
+        sunInt: 1.28,
+        fillCol: '#fdf2f8',
+        fillInt: 0.55,
+        aurora: 0.0,
+        stars: 0.0
+      }
+    ];
+
+    let k0 = keyframes[0];
+    let k1 = keyframes[1];
+    for (let i = 0; i < keyframes.length - 1; i++) {
+      if (frac >= keyframes[i].t && frac <= keyframes[i + 1].t) {
+        k0 = keyframes[i];
+        k1 = keyframes[i + 1];
+        break;
+      }
+    }
+    const span = Math.max(0.0001, k1.t - k0.t);
+    const alpha = Math.min(1, Math.max(0, (frac - k0.t) / span));
+
+    if (!this._tmpColA) {
+      this._tmpColA = new THREE.Color();
+      this._tmpColB = new THREE.Color();
+    }
+    this.scene.background.copy(this._tmpColA.set(k0.bg).lerp(this._tmpColB.set(k1.bg), alpha));
+    this.scene.fog.color.copy(this._tmpColA.set(k0.fog).lerp(this._tmpColB.set(k1.fog), alpha));
+    this.hemiLight.color.copy(this._tmpColA.set(k0.hemiSky).lerp(this._tmpColB.set(k1.hemiSky), alpha));
+    this.hemiLight.groundColor.copy(
+      this._tmpColA.set(k0.hemiGround).lerp(this._tmpColB.set(k1.hemiGround), alpha)
+    );
+    this.hemiLight.intensity = k0.hemiInt + (k1.hemiInt - k0.hemiInt) * alpha;
+    this.sunLight.color.copy(this._tmpColA.set(k0.sunCol).lerp(this._tmpColB.set(k1.sunCol), alpha));
+    this.sunLight.intensity = k0.sunInt + (k1.sunInt - k0.sunInt) * alpha;
+    this.fillLight.color.copy(this._tmpColA.set(k0.fillCol).lerp(this._tmpColB.set(k1.fillCol), alpha));
+    this.fillLight.intensity = k0.fillInt + (k1.fillInt - k0.fillInt) * alpha;
+
+    const meteorActive = serverNowMs < (Number(this.skyState?.meteorShowerUntilMs) || 0);
+    const auroraOp = Math.max(
+      meteorActive ? 0.85 : 0,
+      k0.aurora + (k1.aurora - k0.aurora) * alpha
+    );
+    const starOp = Math.max(meteorActive ? 0.85 : 0, k0.stars + (k1.stars - k0.stars) * alpha);
+    this.currentNightFactor = starOp;
+
+    for (let i = 0; i < this.auroraMaterials.length; i++) {
+      const m = this.auroraMaterials[i];
+      if (m && m.uniforms) {
+        m.uniforms.uTime.value = tSec + i * 2.1;
+        m.uniforms.uOpacity.value = auroraOp;
+      }
+    }
+    if (this.nightStarPoints) {
+      this.nightStarPoints.visible = starOp > 0.02;
+      this.nightStarPoints.material.opacity = starOp * (0.82 + Math.sin(tSec * 2.5) * 0.16);
+      this.nightStarPoints.rotation.y = tSec * 0.008;
+    }
   }
 }
 
@@ -6833,7 +8708,11 @@ export class GlamSalonStage3D {
     loadDtiWardrobePack().catch(() => {});
     loadPropsAndLootPack()
       .then(() => {
-        if (this.studioAvatar && this.studioAvatar.user?.avatar?.accessory === 'ray_gun') {
+        const acc = this.studioAvatar?.user?.avatar?.accessory;
+        if (
+          this.studioAvatar &&
+          (acc === 'ray_gun' || acc === 'crystal_blade' || acc === 'starlight_wand')
+        ) {
           this.studioAvatar.updateAvatarAppearance(this.studioAvatar.user.avatar);
         }
       })

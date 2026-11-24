@@ -8,15 +8,15 @@ Canonical inventory of all Blender `.blend`/`.glb` asset packs and remaining pro
 
 | Pack | Native `.blend` | Shipped `.glb` | Meshes | Total Polys | Total Verts | Optimization Status |
 | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
-| **`ella_world_environment`** *(Trees, DTI Stage, Stargate, Camping & 5 Mobs)* | `assets/blender/ella_world_environment.blend` (`25.0 MB`) | `public/models/ella_world_environment.glb` (`3.51 MB`, WebP 78%) | 30 | 35,655 | 32,742 | **P0 + Stargate/Camp + 5 Sculpted Mobs Shipped** — replaces cube trees, DTI stage, Stargates, glamping clearing & all 5 dungeon/arena monsters |
-| **`ella_world_props_loot`** *(Home Interiors, Doors, Loot & Ray Gun)* | `assets/blender/ella_world_props_loot.blend` (`627 KB`) | `public/models/ella_world_props_loot.glb` (`881 KB`) | 25 | 21,691 | 20,082 | **Well-Optimized** — add `Prop_Double_Door` (`2×2`) in P1 |
+| **`ella_world_environment`** *(Trees, DTI Stage, Stargates, Camp, 5 Mobs, 4 Pets, 3 Mounts, Workshop, Mailboxes, Obby Gates/Boards & Obsidian Dragon Boss)* | `assets/blender/ella_world_environment.blend` (`25.2 MB`) | `public/models/ella_world_environment.glb` (`3.91 MB` / `3,914.1 KB`, WebP 78%) | 47 | 42,336 | 41,231 | **P0 + Full Expansion Pack Shipped** — 47 PBR meshes covering botanical trees, DTI stage, Stargates, camp, mobs, pets, hoverboards, workshop, mailboxes, speedrun gates/boards & Dragon Boss |
+| **`ella_world_props_loot`** *(Home Interiors, Sofa/Lamps, Doors, Crafted Weapons & Relics)* | `assets/blender/ella_world_props_loot.blend` (`664.2 KB`) | `public/models/ella_world_props_loot.glb` (`1,072.4 KB`) | 33 | 26,211 | 24,640 | **Expansion Upgraded (`25 -> 33` meshes)** — added `Prop_Sofa`, `Prop_Crystal_Lamp`, `Loot_Crystal_Blade`, `Loot_Starlight_Wand`, `Loot_Aegis_Charm`, `Loot_Starlight_Potion`, `Loot_Rift_Beacon` & `Loot_Pet_Egg` |
 | **`ella_dti_wardrobe`** *(Rigged Characters & DTI Closet)* | `assets/blender/ella_dti_wardrobe.blend` (`7.32 MB`) | `public/models/ella_dti_wardrobe.glb` (`6.85 MB`) | 47 | 167,499 | 105,772 | **P1 Decimation Target** — heaviest meshes can drop ~60% with Draco/Meshopt |
 
 ---
 
-## 2. Completed P0 Upgrades (`public/models/ella_world_environment.glb`)
+## 2. Completed P0 & Expansion Pack Upgrades (`public/models/ella_world_environment.glb`)
 
-Built via headless Blender 5.2 LTS (`scripts/build_environment_pack.py`), sourcing real **PolyHaven CC0** botanical & architectural scans (`scratch/cc0_env_sources/`) alongside custom couture architectural assemblies, with `512×512` WebP-packed textures and pixel-baked blossom tints:
+Built via headless Blender 5.2 LTS (`scripts/build_environment_pack.py`), sourcing real **PolyHaven CC0** botanical & architectural scans (`scratch/cc0_env_sources/`) alongside custom couture & fantasy bmesh assemblies, with `512×512` WebP-packed textures:
 
 | Asset Node | Source | Polys | Verts | Dimensions (m) | World Usage |
 | :--- | :--- | ---: | ---: | :--- | :--- |
@@ -35,17 +35,30 @@ Built via headless Blender 5.2 LTS (`scripts/build_environment_pack.py`), sourci
 | `Env_Stargate_Frame` | Blender 5.2 Stargate Architecture | 1,158 | 1,440 | `6.51 × 2.60 × 6.48` | Stepped naquadah outer ring, 9 glowing chevrons & boarding ramp (both portals) |
 | `Env_Stargate_InnerRing` | Blender 5.2 Stargate Architecture | 648 | 864 | `5.26 × 0.44 × 5.26` | Continuously spinning constellation glyph ring inside Stargate aperture |
 | `Env_Camp_Tent` | Blender 5.2 Glamping Tent | 246 | 338 | `4.45 × 4.18 × 2.58` | Striped A-frame canvas glamping tent with cedar poles, sleeping mat & lantern |
-| `Env_Camp_LogBench` | Blender 5.2 Cedar Log Bench | 102 | 156 | `4.09 × 0.64 × 0.77` | 2 sculpted natural cedar log benches around campfire (preserving walkable colliders) |
+| `Env_Camp_LogBench` | Blender 5.2 Cedar Log Bench | 102 | 156 | `4.09 × 0.64 × 0.77` | 2 sculpted natural cedar log benches around campfire |
 | `Env_Camp_Lantern` | PolyHaven CC0 `Lantern_01` | 1,865 | 926 | `0.22 × 0.17 × 0.52` | Glowing brass camp lantern atop stump side-table |
 | `Env_Camp_Stool` | PolyHaven CC0 `folding_wooden_stool` | 1,344 | 841 | `0.69 × 0.72 × 0.58` | Campfire wooden folding stool |
 | `Env_Camp_Stump` | PolyHaven CC0 `tree_stump_01` | 1,231 | 637 | `1.78 × 1.98 × 0.72` | Rustic stump side-table beside campfire |
 | `Env_Camp_Pot` | PolyHaven CC0 `pot_enamel_01` | 1,288 | 642 | `0.42 × 0.29 × 0.29` | Enamel camp kettle/pot beside fire pit |
 | `Env_Camp_Boulder` | PolyHaven CC0 `rock_07` | 612 | 312 | `1.65 × 3.12 × 1.39` | 2 woodland clearing boulders framing the campsite |
-| `Env_Mob_ShadowSlime` | Blender 5.2 Sculpted Monster | 1,268 | 1,210 | `1.22 × 1.22 × 1.04` | Crowned translucent jelly Shadow Slime in Crystal Cavern |
-| `Env_Mob_CrystalBat_*` *(Body + WingL/R)* | Blender 5.2 Articulated Monster | 553 | 584 | `2.18 × 0.88 × 1.12` | Articulated flapping Crystal Bat in Crystal Cavern |
-| `Env_Mob_RiftSpider` | Blender 5.2 Sculpted Monster | 502 | 562 | `1.92 × 1.36 × 1.08` | Chasing obsidian & crimson arachnid in Shadow Rift Arena |
-| `Env_Mob_VoidWraith` | Blender 5.2 Sculpted Monster | 438 | 518 | `1.58 × 1.34 × 2.26` | Hovering cyan-eyed phantom wraith with rune halo & twin scythes |
-| `Env_Mob_LavaGolem_*` *(Body + ArmL/R)* | Blender 5.2 Articulated Boss | 480 | 653 | `2.36 × 1.18 × 2.74` | Boss Magma Colossus with swinging stone gauntlets in Shadow Rift Arena |
+| `Env_Mob_ShadowSlime` | Blender 5.2 Sculpted Monster | 1,268 | 1,180 | `1.47 × 1.48 × 1.23` | Crowned translucent jelly Shadow Slime in Crystal Cavern |
+| `Env_Mob_CrystalBat_*` *(Body + WingL/R)* | Blender 5.2 Articulated Monster | 553 | 582 | `2.18 × 1.09 × 1.08` | Articulated flapping Crystal Bat in Crystal Cavern |
+| `Env_Mob_RiftSpider` | Blender 5.2 Sculpted Monster | 502 | 520 | `1.97 × 1.72 × 1.08` | Chasing obsidian & crimson arachnid in Shadow Rift Arena |
+| `Env_Mob_VoidWraith` | Blender 5.2 Sculpted Monster | 438 | 498 | `1.80 × 1.54 × 2.40` | Hovering cyan-eyed phantom wraith with rune halo |
+| `Env_Mob_LavaGolem_*` *(Body + ArmL/R)* | Blender 5.2 Articulated Boss | 480 | 548 | `2.31 × 0.97 × 2.71` | Magma Colossus with swinging stone gauntlets in Shadow Rift |
+| `Env_Pet_CloudPuppy` | Blender 5.2 Companion Pet | 1,224 | 1,152 | `0.51 × 0.96 × 0.77` | Starter Cloud Puppy following players across all zones |
+| `Env_Pet_StarlightKitsune` | Blender 5.2 Companion Pet | 968 | 920 | `0.44 × 1.17 × 0.86` | Twin-tailed pastel Starlight Kitsune companion |
+| `Env_Pet_ShadowKitty` | Blender 5.2 Companion Pet | 650 | 636 | `0.41 × 0.83 × 0.80` | Star-bell velvet Shadow Kitty companion |
+| `Env_Pet_BabyDragon_*` *(Body + WingL/R)* | Blender 5.2 Articulated Pet | 704 | 668 | `1.19 × 1.05 × 0.78` | Articulated flapping Baby Crystal Dragon hatched from `pet_egg` |
+| `Env_Mount_Hoverboard` | Blender 5.2 Plaza Mount | 120 | 160 | `0.50 × 1.24 × 0.13` | Starter Starlight Hoverboard (`1.62×` Plaza speed) |
+| `Env_Mount_StarlightSkates` | Blender 5.2 Plaza Mount | 128 | 176 | `0.69 × 0.44 × 0.26` | Twin Sunset Neon Skates (`1.70×` Plaza speed) |
+| `Env_Mount_CometSurfer` | Blender 5.2 Plaza Mount | 314 | 306 | `1.12 × 1.51 × 0.22` | Winged Astral Comet Surfer (`1.78×` Plaza speed) |
+| `Env_Crafting_Bench` | Blender 5.2 Landmark | 390 | 430 | `2.10 × 1.00 × 1.56` | Starlight Workshop bench with anvil, floating crystal & elixirs at `(12.5, 0, 6.5)` |
+| `Env_Plot_Mailbox` | Blender 5.2 Landmark | 220 | 248 | `0.39 × 0.59 × 1.52` | 6 Neighborhood Claim Mailboxes with parcel flag & brass doorbell |
+| `Env_Obby_Gate` | Blender 5.2 Speedrun Arch | 412 | 472 | `4.28 × 0.72 × 3.95` | 4 Start/Finish Laser Gates across Sky Obby & Pro Obby Gauntlet |
+| `Env_Leaderboard_Board` | Blender 5.2 Hall of Fame | 474 | 480 | `3.54 × 0.48 × 3.68` | 2 standing Top-5 Speedrun Leaderboard frames |
+| `Env_Boss_Altar` | Blender 5.2 Arena Landmark | 238 | 264 | `3.70 × 3.70 × 2.18` | North Island 4-horn Obsidian Dragon Summoning Altar `(0, 0, -24.5)` |
+| `Env_Boss_ObsidianDragon_*` *(Body + WingL/R)* | Blender 5.2 Articulated Co-Op Boss | 839 | 906 | `6.49 × 4.50 × 3.72` | Co-Op Obsidian Rift Dragon Boss with Shockwave Ring attacks |
 
 ### Obby PBR Texture Pack (`public/textures/obby/`, `450.6 KB` total `512×512` progressive JPEG)
 - **`red_brick`** (PolyHaven CC0 `red_brick` diff/nor/rough) — Red & warm floating obby blocks on both Sky Obby & Pro Obby Gauntlet.

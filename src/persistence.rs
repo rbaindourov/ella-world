@@ -2,8 +2,8 @@ use crate::models::{
     default_blocked_words, default_chat_mode, default_curfew_end, default_curfew_start,
     default_debt_prison_threshold, default_ice_servers, default_prison_strike_threshold,
     default_profanity_fine_base, default_session_epoch, default_starter_blocks, default_world_name,
-    AvatarAppearance, BlockedChatEntry, BlocksDataFile, ChatMessage, DeviceEvasionEntry,
-    UserAccount, UsersConfigFile,
+    BlockedChatEntry, BlocksDataFile, ChatMessage, DeviceEvasionEntry, HomePlotsFile,
+    ObbyLeaderboardsFile, UserAccount, UsersConfigFile,
 };
 use anyhow::Context;
 use serde::de::DeserializeOwned;
@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 pub struct PersistenceStore {
     users_path: PathBuf,
     blocks_path: PathBuf,
+    homes_path: PathBuf,
+    leaderboards_path: PathBuf,
     seed_users_path: PathBuf,
     chat_log_path: PathBuf,
     blocked_chat_log_path: PathBuf,
@@ -44,6 +46,8 @@ impl PersistenceStore {
             canonical_blocks
         };
 
+        let homes_path = data_dir.join("world_homes.json");
+        let leaderboards_path = data_dir.join("world_leaderboards.json");
         let chat_log_path = data_dir.join("world_chat.jsonl");
         let blocked_chat_log_path = data_dir.join("world_chat_blocked.jsonl");
         let device_evasion_log_path = data_dir.join("world_device_evasion.jsonl");
@@ -51,6 +55,8 @@ impl PersistenceStore {
         Ok(Self {
             users_path,
             blocks_path,
+            homes_path,
+            leaderboards_path,
             seed_users_path: seed_users_path.to_path_buf(),
             chat_log_path,
             blocked_chat_log_path,
@@ -65,12 +71,15 @@ impl PersistenceStore {
     pub fn load_or_init_users(&self) -> anyhow::Result<UsersConfigFile> {
         if self.users_path.exists() {
             let raw = fs::read_to_string(&self.users_path)?;
-            let parsed: UsersConfigFile = serde_json::from_str(&raw)
+            let mut parsed: UsersConfigFile = serde_json::from_str(&raw)
                 .with_context(|| format!("Invalid JSON in {}", self.users_path.display()))?;
+            for u in &mut parsed.users {
+                u.ensure_starter_companions();
+            }
             return Ok(parsed);
         }
 
-        let seeded = if self.seed_users_path.exists() {
+        let mut seeded = if self.seed_users_path.exists() {
             let raw = fs::read_to_string(&self.seed_users_path)?;
             serde_json::from_str::<UsersConfigFile>(&raw)?
         } else {
@@ -93,30 +102,17 @@ impl PersistenceStore {
                 prison_strike_threshold: default_prison_strike_threshold(),
                 enforce_machine_signatures: true,
                 devices: Vec::new(),
-                users: vec![UserAccount {
-                    username: "ella".into(),
-                    display_name: "Ella".into(),
-                    password: "changeme-starlight".into(),
-                    role: "host".into(),
-                    token_epoch: 0,
-                    avatar: AvatarAppearance::default(),
-                    coins: 0,
-                    inventory: std::collections::HashMap::new(),
-                    cloneable_items: Default::default(),
-                    violation_strikes: 0,
-                    in_debtors_prison: false,
-                    prison_reason: None,
-                    prison_tasks_remaining: 0,
-                    voice_muted_by_parent: false,
-                    chat_mode: default_chat_mode(),
-                    suspended: false,
-                    can_build: true,
-                    can_trade: true,
-                    last_pos: None,
-                    last_pos_saved_at: None,
-                }],
+                users: vec![UserAccount::new_basic(
+                    "ella",
+                    "Ella",
+                    "changeme-starlight",
+                    "host",
+                )],
             }
         };
+        for u in &mut seeded.users {
+            u.ensure_starter_companions();
+        }
 
         self.save_users(&seeded)?;
         Ok(seeded)
@@ -145,6 +141,39 @@ impl PersistenceStore {
 
     pub fn save_blocks(&self, blocks: &BlocksDataFile) -> anyhow::Result<()> {
         write_atomic_json(&self.blocks_path, blocks)
+    }
+
+    pub fn load_or_init_homes(&self) -> anyhow::Result<HomePlotsFile> {
+        if self.homes_path.exists() {
+            let raw = fs::read_to_string(&self.homes_path)?;
+            let mut parsed: HomePlotsFile = serde_json::from_str(&raw)
+                .with_context(|| format!("Invalid JSON in {}", self.homes_path.display()))?;
+            parsed.normalize();
+            return Ok(parsed);
+        }
+        let initial = HomePlotsFile::default();
+        self.save_homes(&initial)?;
+        Ok(initial)
+    }
+
+    pub fn save_homes(&self, homes: &HomePlotsFile) -> anyhow::Result<()> {
+        write_atomic_json(&self.homes_path, homes)
+    }
+
+    pub fn load_or_init_leaderboards(&self) -> anyhow::Result<ObbyLeaderboardsFile> {
+        if self.leaderboards_path.exists() {
+            let raw = fs::read_to_string(&self.leaderboards_path)?;
+            let parsed: ObbyLeaderboardsFile = serde_json::from_str(&raw)
+                .with_context(|| format!("Invalid JSON in {}", self.leaderboards_path.display()))?;
+            return Ok(parsed);
+        }
+        let initial = ObbyLeaderboardsFile::default();
+        self.save_leaderboards(&initial)?;
+        Ok(initial)
+    }
+
+    pub fn save_leaderboards(&self, boards: &ObbyLeaderboardsFile) -> anyhow::Result<()> {
+        write_atomic_json(&self.leaderboards_path, boards)
     }
 
     pub fn append_chat(&self, msg: &ChatMessage) -> anyhow::Result<()> {

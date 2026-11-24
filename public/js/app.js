@@ -489,6 +489,83 @@ const tradeCancelBtn = document.getElementById('trade-cancel-btn');
 const tradeLockBtn = document.getElementById('trade-lock-btn');
 const tradeConfirmBtn = document.getElementById('trade-confirm-btn');
 
+// Expansion Pack State & DOM Elements (Pets/Boards, Homes/Doorbells, Crafting, Fashion Show, Obby Speedruns, Sky/Dragon Boss)
+let petCatalog = [];
+let mountCatalog = [];
+let craftingRecipes = [];
+let playerCompanions = {
+  ownedPets: ['cloud_puppy'],
+  equippedPet: 'cloud_puppy',
+  petNickname: '',
+  ownedMounts: ['starlight_board'],
+  equippedMount: null
+};
+let homesState = [];
+let obbyLeaderboards = { easy: [], hard: [] };
+let activeObbyRun = null;
+let skyState = {
+  mode: 'auto',
+  phase: 'day',
+  cycleDurationMs: 720000,
+  cycleAnchorMs: 0,
+  meteorShowerActive: false,
+  meteorShowerUntilMs: 0,
+  fallingStars: []
+};
+let runwayShowState = {
+  showId: 0,
+  phase: 'idle',
+  theme: '',
+  phaseStartedAt: 0,
+  phaseEndsAt: 0,
+  contestants: [],
+  spotlightIndex: 0,
+  spotlightUsername: null,
+  podiumWinners: []
+};
+let lastInvitedShowId = 0;
+let lastDoorbellPlotId = null;
+let arenaBossStatus = null;
+
+const hudSkyPill = document.getElementById('hud-sky-pill');
+const openObbyBoardBtn = document.getElementById('open-obby-board-btn');
+const openCompanionsBtn = document.getElementById('open-companions-btn');
+const toggleHoverboardBtn = document.getElementById('toggle-hoverboard-btn');
+const openHomesBtn = document.getElementById('open-homes-btn');
+const openCraftBtn = document.getElementById('open-craft-btn');
+const openSkyBtn = document.getElementById('open-sky-btn');
+
+const runwayStartShowBtn = document.getElementById('runway-start-show-btn');
+const runwayShowStatusEl = document.getElementById('runway-show-status');
+const runwayShowPhaseText = document.getElementById('runway-show-phase-text');
+const runwayShowProgress = document.getElementById('runway-show-progress');
+const runwayReadyBtn = document.getElementById('runway-ready-btn');
+const glamShowTimerPill = document.getElementById('glam-show-timer-pill');
+const glamShowTimerText = document.getElementById('glam-show-timer-text');
+
+const obbySpeedrunBanner = document.getElementById('obby-speedrun-banner');
+const obbySpeedrunCourseLabel = document.getElementById('obby-speedrun-course-label');
+const obbySpeedrunTime = document.getElementById('obby-speedrun-time');
+const obbySpeedrunCancelBtn = document.getElementById('obby-speedrun-cancel-btn');
+
+const arenaBossRow = document.getElementById('arena-boss-row');
+const arenaBossBar = document.getElementById('arena-boss-bar');
+const arenaBossHpText = document.getElementById('arena-boss-hp-text');
+
+const srLiveAnnouncements = document.getElementById('sr-live-announcements');
+const fashionInvitePopover = document.getElementById('fashion-invite-popover');
+const fashionInviteText = document.getElementById('fashion-invite-text');
+const fashionInviteJoinBtn = document.getElementById('fashion-invite-join-btn');
+const doorbellPopover = document.getElementById('doorbell-popover');
+const doorbellPopoverText = document.getElementById('doorbell-popover-text');
+const doorbellUnlockBtn = document.getElementById('doorbell-unlock-btn');
+
+const companionsDialog = document.getElementById('companions-dialog');
+const homesDialog = document.getElementById('homes-dialog');
+const craftDialog = document.getElementById('craft-dialog');
+const obbyBoardDialog = document.getElementById('obby-board-dialog');
+const skyDialog = document.getElementById('sky-dialog');
+
 let wsHandshakeProbeInFlight = false;
 let lastWsHandshakeProbeAt = 0;
 
@@ -499,12 +576,22 @@ function forceSessionRevokedToLogin(reason) {
   // Close player modals/popovers first so #login-screen is not inert when announcing
   if (isSalonOpen) closeGlamSalon(false);
   hideTradeInvitePopover();
+  hideTopLayerToastPopover(fashionInvitePopover);
+  hideTopLayerToastPopover(doorbellPopover);
   pendingInviteTrade = null;
   activeTrade = null;
+  activeObbyRun = null;
+  world3d.setActiveObbyRun(null);
+  if (obbySpeedrunBanner) obbySpeedrunBanner.hidden = true;
   draftTradeCoins = 0;
   draftTradeItems = {};
   if (tradeDialog && tradeDialog.open) tradeDialog.close('cancelled');
   if (backpackDialog && backpackDialog.open) backpackDialog.close();
+  if (companionsDialog && companionsDialog.open) companionsDialog.close();
+  if (homesDialog && homesDialog.open) homesDialog.close();
+  if (craftDialog && craftDialog.open) craftDialog.close();
+  if (obbyBoardDialog && obbyBoardDialog.open) obbyBoardDialog.close();
+  if (skyDialog && skyDialog.open) skyDialog.close();
   if (audioDialog && audioDialog.open) audioDialog.close();
   if (helpDialog && helpDialog.open) helpDialog.close();
 
@@ -763,7 +850,7 @@ const world3d = new BlockyWorld3D({
       runwayHudBar.classList.toggle('near-runway', Boolean(isNear));
     }
     if (isNear) {
-      showToast('💃 Welcome to the Fashion Runway! Strike a pose (1–8) & rate outfits 1–5 ⭐!');
+      showToast('💃 Welcome to the Fashion Runway! Strike a pose (1–9), vote 1–5 ⭐, or click 🎬 Start Show!');
     }
   },
   onRequestZonePortal: (targetZone) => {
@@ -789,6 +876,24 @@ const world3d = new BlockyWorld3D({
     } else {
       hudInteractPrompt.hidden = true;
     }
+  },
+  onManageHome: (plot) => {
+    handleWorldMailboxInteraction(plot);
+  },
+  onOpenCrafting: () => {
+    openCraftModal();
+  },
+  onObbyGateCrossed: (course, gateKind) => {
+    handleObbyGateCrossed(course, gateKind);
+  },
+  onOpenObbyBoard: (course) => {
+    openObbyBoardModal(course);
+  },
+  onCatchFallingStar: (starId) => {
+    catchFallingStar(starId);
+  },
+  onSummonArenaBoss: () => {
+    summonArenaBoss(false);
   }
 });
 
@@ -971,7 +1076,7 @@ setInterval(() => {
   }
 }, 50);
 
-  // Update active Swiftness / Cloud Leap potion timers & Sanctuary shield indicator at 4Hz
+// Update active Swiftness / Cloud Leap timers, Sanctuary shield, Sky phase, Obby stopwatch & Fashion Show countdown at 10Hz
 setInterval(() => {
   const serverNow = Date.now() + (world3d.serverClockOffsetMs || 0);
   if (arenaShieldPill && currentZone === ZONE_ARENA) {
@@ -985,6 +1090,34 @@ setInterval(() => {
       arenaShieldPill.hidden = true;
     }
   }
+
+  if (hudSkyPill) {
+    const sp = world3d.getSkyPhaseSummary(serverNow);
+    const nextSkyText = `${sp.icon} ${sp.label}`;
+    if (hudSkyPill.textContent !== nextSkyText) {
+      hudSkyPill.textContent = nextSkyText;
+    }
+    hudSkyPill.classList.toggle('is-meteor', sp.phase === 'meteor');
+  }
+
+  if (obbySpeedrunBanner) {
+    if (activeObbyRun && currentZone === ZONE_PLAZA) {
+      const elapsedSec = Math.max(0, (serverNow - activeObbyRun.startedAtMs) / 1000);
+      obbySpeedrunBanner.hidden = false;
+      if (obbySpeedrunCourseLabel) {
+        obbySpeedrunCourseLabel.textContent =
+          activeObbyRun.course === 'hard' ? '🔥 Pro Gauntlet' : '⏱️ Sky Obby';
+      }
+      if (obbySpeedrunTime) {
+        obbySpeedrunTime.textContent = `${elapsedSec.toFixed(2)}s`;
+      }
+    } else {
+      obbySpeedrunBanner.hidden = true;
+    }
+  }
+
+  renderFashionShowTicker(serverNow);
+
   if (!hudBuffPill) return;
   const speedRem = Math.ceil((activeSpeedBoostUntilMs - serverNow) / 1000);
   const jumpRem = Math.ceil((activeJumpBoostUntilMs - serverNow) / 1000);
@@ -997,7 +1130,7 @@ setInterval(() => {
   } else {
     hudBuffPill.hidden = true;
   }
-}, 250);
+}, 100);
 
 // 3. Modern Web Guidance: Dialog Light-Dismiss Fallback (`pointerdown` + `pointerup` outside rect)
 if (!('closedBy' in HTMLDialogElement.prototype)) {
@@ -1106,16 +1239,44 @@ function applyRunwaySummary(runway) {
       glamThemePill.hidden = false;
     }
   }
-  if (runwayLeaderPill) {
-    const top = Array.isArray(runway.leaderboard) && runway.leaderboard[0];
-    if (top && top.votes > 0) {
-      const matchedPlayer = Array.from(playersMap.values()).find(
-        (p) => String(p.user?.username || '').toLowerCase() === top.username
+  if (runway.show) {
+    runwayShowState = { ...runwayShowState, ...runway.show };
+    world3d.syncRunwayShowState(runwayShowState);
+    if (
+      runwayShowState.phase === 'catwalk' &&
+      runwayShowState.spotlightUsername &&
+      runwayModelSelect &&
+      String(selfUser?.username || '').toLowerCase() !==
+        String(runwayShowState.spotlightUsername).toLowerCase()
+    ) {
+      const optExists = Array.from(runwayModelSelect.options).some(
+        (o) => o.value.toLowerCase() === String(runwayShowState.spotlightUsername).toLowerCase()
       );
-      const disp = matchedPlayer ? matchedPlayer.user.displayName : top.username;
-      runwayLeaderPill.textContent = `🏆 ${disp} (${top.avgStars}★)`;
+      if (optExists) {
+        runwayModelSelect.value = runwayShowState.spotlightUsername;
+      }
+    }
+    renderFashionShowTicker(Date.now() + (world3d.serverClockOffsetMs || 0));
+  }
+  if (runwayLeaderPill) {
+    if (
+      runway.show?.phase === 'podium' &&
+      Array.isArray(runway.show.podiumWinners) &&
+      runway.show.podiumWinners.length > 0
+    ) {
+      const w1 = runway.show.podiumWinners[0];
+      runwayLeaderPill.textContent = `👑 1st: ${w1.displayName || w1.username} (${w1.avgStars}★)`;
     } else {
-      runwayLeaderPill.textContent = '🏆 Rate 1–5★';
+      const top = Array.isArray(runway.leaderboard) && runway.leaderboard[0];
+      if (top && top.votes > 0) {
+        const matchedPlayer = Array.from(playersMap.values()).find(
+          (p) => String(p.user?.username || '').toLowerCase() === top.username
+        );
+        const disp = matchedPlayer ? matchedPlayer.user.displayName : top.username;
+        runwayLeaderPill.textContent = `🏆 ${disp} (${top.avgStars}★)`;
+      } else {
+        runwayLeaderPill.textContent = '🏆 Rate 1–5★';
+      }
     }
   }
 }
@@ -1201,6 +1362,8 @@ async function enterGameWorld(loginData) {
   gameHud.hidden = false;
   setHudFullscreenMode(true);
   sessionEnteredWallMs = Date.now();
+  activeObbyRun = null;
+  world3d.setActiveObbyRun(null);
 
   if (typeof loginData.serverTimeMs === 'number') {
     world3d.setServerClockOffset(loginData.serverTimeMs - Date.now());
@@ -1229,19 +1392,38 @@ async function enterGameWorld(loginData) {
     zone: currentZone
   };
 
+  if (Array.isArray(loginData.petCatalog)) petCatalog = loginData.petCatalog;
+  if (Array.isArray(loginData.mountCatalog)) mountCatalog = loginData.mountCatalog;
+  if (Array.isArray(loginData.craftingRecipes)) craftingRecipes = loginData.craftingRecipes;
+
   if (Array.isArray(loginData.itemCatalog)) {
     setItemCatalog(loginData.itemCatalog);
-  } else if (itemCatalog.length === 0) {
+  } else if (itemCatalog.length === 0 || petCatalog.length === 0 || craftingRecipes.length === 0) {
     fetch('/api/ella-world/economy/catalog', { headers: { 'X-Cache-Warmup': 'true' } })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         const list = d?.itemCatalog || d?.items;
         if (Array.isArray(list)) setItemCatalog(list);
+        if (Array.isArray(d?.petCatalog)) petCatalog = d.petCatalog;
+        if (Array.isArray(d?.mountCatalog)) mountCatalog = d.mountCatalog;
+        if (Array.isArray(d?.craftingRecipes)) craftingRecipes = d.craftingRecipes;
       })
       .catch(() => {});
   }
   if (loginData.economy) {
     applyEconomySnapshot(loginData.economy);
+  }
+  if (loginData.companions) {
+    applyCompanionsSnapshot(loginData.companions);
+  }
+  if (loginData.homes) {
+    applyHomesSnapshot(loginData.homes);
+  }
+  if (loginData.obbyLeaderboards) {
+    applyObbyLeaderboards(loginData.obbyLeaderboards);
+  }
+  if (loginData.sky) {
+    applySkySnapshot(loginData.sky);
   }
   if (loginData.parentalWorld) {
     applyParentalWorldSettings(loginData.parentalWorld);
@@ -1253,11 +1435,15 @@ async function enterGameWorld(loginData) {
   }
 
   world3d.initSelfPlayer(loginData.self);
+  if (loginData.companions && selfUser) {
+    world3d.updateUserCompanions(selfUser.username, loginData.companions);
+  }
   if (loginData.dungeon) {
     world3d.syncDungeonSnapshot(loginData.dungeon);
   }
   if (loginData.arena) {
     world3d.syncArenaSnapshot(loginData.arena);
+    applyArenaBossHud(loginData.arena.boss || null);
   }
   if (loginData.arenaStatus) {
     applyArenaPlayerStatus(loginData.arenaStatus);
@@ -1461,11 +1647,29 @@ function handleIncomingUdpWorldEvent(ev) {
   if (!ev || typeof ev !== 'object') return;
   switch (ev.type) {
     case 'welcome_snapshot': {
+      if (Array.isArray(ev.petCatalog)) petCatalog = ev.petCatalog;
+      if (Array.isArray(ev.mountCatalog)) mountCatalog = ev.mountCatalog;
+      if (Array.isArray(ev.craftingRecipes)) craftingRecipes = ev.craftingRecipes;
       if (Array.isArray(ev.itemCatalog)) {
         setItemCatalog(ev.itemCatalog);
       }
       if (ev.economy) {
         applyEconomySnapshot(ev.economy);
+      }
+      if (ev.companions) {
+        applyCompanionsSnapshot(ev.companions);
+        if (selfUser) {
+          world3d.updateUserCompanions(selfUser.username, ev.companions);
+        }
+      }
+      if (ev.homes) {
+        applyHomesSnapshot(ev.homes);
+      }
+      if (ev.obbyLeaderboards) {
+        applyObbyLeaderboards(ev.obbyLeaderboards);
+      }
+      if (ev.sky) {
+        applySkySnapshot(ev.sky);
       }
       if (ev.parentalWorld) {
         applyParentalWorldSettings(ev.parentalWorld);
@@ -1478,6 +1682,7 @@ function handleIncomingUdpWorldEvent(ev) {
       }
       if (ev.arena) {
         world3d.syncArenaSnapshot(ev.arena);
+        applyArenaBossHud(ev.arena.boss || null);
       }
       if (ev.arenaStatus) {
         applyArenaPlayerStatus(ev.arenaStatus);
@@ -1522,6 +1727,12 @@ function handleIncomingUdpWorldEvent(ev) {
       if (ev.runway) {
         applyRunwaySummary(ev.runway);
       }
+      if (ev.sky) {
+        applySkySnapshot(ev.sky);
+      }
+      if (ev.homes) {
+        applyHomesSnapshot(ev.homes);
+      }
       break;
     }
     case 'voice_slot_map': {
@@ -1563,7 +1774,9 @@ function handleIncomingUdpWorldEvent(ev) {
           playersMap.get(selfId).user = selfUser;
         }
         if (world3d.selfAvatar) {
+          world3d.selfAvatar.user = selfUser;
           world3d.selfAvatar.updateAvatarAppearance(selfUser.avatar);
+          world3d.selfAvatar.syncCompanions(selfUser);
         }
         if (isSalonOpen && draftAvatar && selfUser.avatar) {
           draftAvatar.hat = selfUser.avatar.hat;
@@ -1572,14 +1785,20 @@ function handleIncomingUdpWorldEvent(ev) {
         }
       } else if (ev.selfId && ev.selfId !== selfId && ev.user) {
         const existing = playersMap.get(ev.selfId);
+        const av = world3d.remoteAvatars.get(ev.selfId);
+        if (existing) {
+          existing.user = ev.user;
+        }
+        if (av) {
+          av.user = ev.user;
+          av.syncCompanions(ev.user);
+        }
         if (existing && ev.avatarHash && existing.avatarHash === ev.avatarHash) {
           break;
         }
-        if (existing) {
-          existing.user = ev.user;
-          if (ev.avatarHash) existing.avatarHash = ev.avatarHash;
+        if (existing && ev.avatarHash) {
+          existing.avatarHash = ev.avatarHash;
         }
-        const av = world3d.remoteAvatars.get(ev.selfId);
         if (av) av.updateAvatarAppearance(ev.user.avatar);
         renderFriendsList();
       }
@@ -1621,19 +1840,24 @@ function handleIncomingUdpWorldEvent(ev) {
     }
     case 'arena_mobs': {
       if (Array.isArray(ev.mobs)) {
-        world3d.syncArenaMobs(ev.mobs);
+        world3d.syncArenaMobs(ev.mobs, ev.boss);
+      }
+      if ('boss' in ev) {
+        applyArenaBossHud(ev.boss || null);
       }
       break;
     }
     case 'arena_sync': {
       if (ev.arena) {
         world3d.syncArenaSnapshot(ev.arena);
+        applyArenaBossHud(ev.arena.boss || null);
       }
       break;
     }
     case 'arena_player_status': {
       if (ev.arena) {
         world3d.syncArenaSnapshot(ev.arena);
+        applyArenaBossHud(ev.arena.boss || null);
       }
       if (ev.arenaStatus) {
         applyArenaPlayerStatus(ev.arenaStatus, ev);
@@ -1707,7 +1931,11 @@ function handleIncomingUdpWorldEvent(ev) {
       if (ev.arenaStatus) {
         applyArenaPlayerStatus(ev.arenaStatus, { event: 'healed' });
       }
-      showToast(`🧪 Used ${ev.itemName || 'item'}${currentZone === ZONE_ARENA ? ' (+35 HP Healed!)' : ''}!`, 3600);
+      const healAmt = ev.itemId === 'starlight_potion' ? 75 : 35;
+      showToast(
+        `🧪 Used ${ev.itemName || 'item'}${currentZone === ZONE_ARENA ? ` (+${healAmt} HP Healed!)` : ''}!`,
+        3600
+      );
       break;
     }
     case 'trade_invite_received': {
@@ -1796,7 +2024,8 @@ function handleIncomingUdpWorldEvent(ev) {
         world3d.spawnRayGunBeam(
           ev.from,
           ev.to,
-          Boolean(ev.hitMobId || ev.zone === ZONE_DUNGEON || ev.zone === ZONE_ARENA)
+          Boolean(ev.hitMobId || ev.zone === ZONE_DUNGEON || ev.zone === ZONE_ARENA),
+          ev.style || 'ray_gun'
         );
       }
       break;
@@ -1804,6 +2033,35 @@ function handleIncomingUdpWorldEvent(ev) {
     case 'runway': {
       if (ev.runway) {
         applyRunwaySummary(ev.runway);
+      }
+      if (ev.event === 'show_started' && ev.runway?.show) {
+        const sh = ev.runway.show;
+        const myU = String(selfUser?.username || '').toLowerCase();
+        const alreadyIn = (sh.contestants || []).some(
+          (c) => String(c.username || '').toLowerCase() === myU
+        );
+        if (!alreadyIn && sh.showId && sh.showId !== lastInvitedShowId && currentZone !== ZONE_PRISON) {
+          lastInvitedShowId = sh.showId;
+          const msg = `${sh.startedBy || 'A friend'} started a Runway Show! Theme: "${sh.theme || ev.runway.theme}" • 45s Dress-Up!`;
+          if (fashionInviteText) fashionInviteText.textContent = msg;
+          showTopLayerToastPopover(fashionInvitePopover, 16000);
+          announceScreenReaderToast(msg);
+        }
+      } else if (ev.event === 'show_podium' && Array.isArray(ev.runway?.show?.podiumWinners)) {
+        const winners = ev.runway.show.podiumWinners;
+        if (winners.length > 0) {
+          const topStr = winners
+            .slice(0, 3)
+            .map(
+              (w, idx) =>
+                `${idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉'} ${w.displayName || w.username} (+${w.prizeCoins}🪙)`
+            )
+            .join(' • ');
+          showToast(`👑 Fashion Show Podium: ${topStr}!`, 6800);
+          if (world3d.selfAvatar) {
+            world3d.spawnCelebrationConfetti(world3d.selfAvatar.group.position);
+          }
+        }
       }
       const toastKey = `${ev.event || ''}:${ev.runway?.theme || ''}:${ev.voterId || ''}:${ev.targetUsername || ''}:${ev.stars || ''}`;
       const nowMs = performance.now();
@@ -1818,6 +2076,94 @@ function handleIncomingUdpWorldEvent(ev) {
         showToast(
           `⭐ ${ev.voterName || 'A friend'} rated ${ev.targetUsername || 'an outfit'} ${ev.stars}★!`
         );
+      }
+      break;
+    }
+    case 'companions_update': {
+      if (ev.user) {
+        selfUser = ev.user;
+        if (selfId && playersMap.has(selfId)) {
+          playersMap.get(selfId).user = selfUser;
+        }
+      }
+      if (ev.economy) {
+        applyEconomySnapshot(ev.economy);
+      }
+      if (ev.companions) {
+        applyCompanionsSnapshot(ev.companions);
+        if (selfUser) {
+          world3d.updateUserCompanions(selfUser.username, ev.companions);
+        }
+      }
+      if (ev.action === 'auto_dismount_obby') {
+        showToast('⏱️ Hoverboard auto-dismounted for fair Obby Speedrun timing!');
+      }
+      break;
+    }
+    case 'homes_sync': {
+      if (Array.isArray(ev.plots)) {
+        applyHomesSnapshot(ev.plots);
+      }
+      break;
+    }
+    case 'home_doorbell': {
+      if (ev.plotId) {
+        world3d.triggerDoorbellFx(ev.plotId);
+      }
+      const isMyHome =
+        selfUser &&
+        String(ev.ownerUsername || '').toLowerCase() === String(selfUser.username || '').toLowerCase();
+      if (isMyHome || currentZone === ZONE_PLAZA) {
+        playDoorbellChime();
+      }
+      if (isMyHome) {
+        lastDoorbellPlotId = ev.plotId || null;
+        const msg = `🔔 ${ev.ringerName || 'A friend'} rang the doorbell at ${ev.plotName || 'your home'}!`;
+        if (doorbellPopoverText) doorbellPopoverText.textContent = msg;
+        showTopLayerToastPopover(doorbellPopover, 14000);
+        announceScreenReaderToast(msg);
+      }
+      break;
+    }
+    case 'obby_leaderboard': {
+      if (ev.leaderboards) {
+        applyObbyLeaderboards(ev.leaderboards);
+      }
+      if (ev.record) {
+        const cLabel = ev.course === 'hard' ? 'Pro Obby Gauntlet' : 'Sky Obby';
+        showToast(
+          `⏱️🏆 ${ev.record.displayName || ev.record.username} set a Top-5 ${cLabel} speedrun: ${ev.record.timeFormatted}!`,
+          5200
+        );
+      }
+      break;
+    }
+    case 'sky_sync': {
+      if (ev.sky) {
+        applySkySnapshot(ev.sky);
+      }
+      if (ev.event === 'meteor_shower_started') {
+        showToast('🌠 STARLIGHT METEOR SHOWER! Catch glowing Falling Stars across Starlight Plaza!', 5600);
+        announceScreenReaderToast('Starlight Meteor Shower started in Starlight Plaza!');
+      }
+      break;
+    }
+    case 'boss_reward': {
+      if (ev.reward) {
+        const rw = ev.reward;
+        const itemDef = rw.itemId ? catalogById.get(rw.itemId) : null;
+        const parts = [`🪙 +${rw.coins || 0} Coins`];
+        if (rw.itemId && rw.qty) {
+          parts.push(`${itemDef ? itemDef.icon : '🔮'} +${rw.qty}x ${itemDef ? itemDef.name : rw.itemId}`);
+        }
+        if (rw.petEgg) {
+          parts.push('🥚 +1x Starlight Companion Egg!');
+        }
+        if (world3d.selfAvatar) {
+          world3d.spawnCelebrationConfetti(world3d.selfAvatar.group.position);
+        }
+        showToast(`🐉🏆 OBSIDIAN RIFT DRAGON DEFEATED! ${parts.join(' • ')}`, 7200);
+        announceScreenReaderToast(`Obsidian Rift Dragon defeated! Earned ${parts.join(', ')}.`);
       }
       break;
     }
@@ -1920,6 +2266,13 @@ function applyModerationAndParentalUi() {
       !playerModeration.inDebtorsPrison;
     openSubadminHudBtn.hidden = !canSubadmin;
   }
+  if (openSkyBtn) {
+    const canControlSky =
+      (String(selfUser?.role || '').toLowerCase() === 'host' &&
+        !playerModeration.inDebtorsPrison) ||
+      Boolean(adminToken);
+    openSkyBtn.hidden = !canControlSky;
+  }
   if (toggleBuildBtn) {
     toggleBuildBtn.classList.toggle('is-locked-chip', !playerModeration.canBuild);
   }
@@ -2006,6 +2359,12 @@ function renderEconomyHud() {
 
   if (backpackDialog && backpackDialog.open) {
     renderBackpackGrid();
+  }
+  if (companionsDialog && companionsDialog.open) {
+    renderCompanionsModal();
+  }
+  if (craftDialog && craftDialog.open) {
+    renderCraftModal();
   }
   if (tradeDialog && tradeDialog.open && activeTrade) {
     renderTradeModal();
@@ -2518,15 +2877,45 @@ function renderBackpackGrid() {
       const btnRow = document.createElement('div');
       btnRow.className = 'backpack-action-btns';
 
-      if (item.id === 'legendary_ray_gun') {
-        const isEquipped = selfUser?.avatar?.accessory === 'ray_gun';
+      const weaponEquipMeta = {
+        legendary_ray_gun: {
+          acc: 'ray_gun',
+          equipLabel: '🔫 Equip Ray Gun',
+          equippedLabel: '✅ Ray Gun Equipped',
+          equipToast:
+            '🔫 Starlight Plasma Ray Gun equipped! Click or press E in Crystal Cavern / Shadow Rift or zap laser shows in Plaza!',
+          unequipToast: '🎒 Holstered your Starlight Plasma Ray Gun.'
+        },
+        crystal_blade: {
+          acc: 'crystal_blade',
+          equipLabel: '⚔️ Equip Blade',
+          equippedLabel: '✅ Blade Equipped',
+          equipToast:
+            '⚔️ Starlight Crystal Blade equipped! Deals 2 DMG melee cleave in Crystal Cavern & Shadow Rift!',
+          unequipToast: '🎒 Sheathed your Starlight Crystal Blade.'
+        },
+        starlight_wand: {
+          acc: 'starlight_wand',
+          equipLabel: '🪄 Equip Wand',
+          equippedLabel: '✅ Wand Equipped',
+          equipToast:
+            '🪄 Starlight Astral Wand equipped! Fires 16m star-bolts (2 DMG) & mends +8 HP per hit in Shadow Rift!',
+          unequipToast: '🎒 Holstered your Starlight Astral Wand.'
+        }
+      }[item.id];
+
+      if (weaponEquipMeta) {
+        const isEquipped = selfUser?.avatar?.accessory === weaponEquipMeta.acc;
         const equipBtn = document.createElement('button');
         equipBtn.type = 'button';
         equipBtn.className = 'small-action-btn';
-        equipBtn.textContent = isEquipped ? '✅ Ray Gun Equipped' : '🔫 Equip Ray Gun';
+        equipBtn.textContent = isEquipped
+          ? weaponEquipMeta.equippedLabel
+          : weaponEquipMeta.equipLabel;
         equipBtn.addEventListener('click', async () => {
           if (!sessionToken || !selfUser) return;
-          const nextAccessory = selfUser.avatar?.accessory === 'ray_gun' ? 'none' : 'ray_gun';
+          const nextAccessory =
+            selfUser.avatar?.accessory === weaponEquipMeta.acc ? 'none' : weaponEquipMeta.acc;
           const nextAvatar = {
             ...SIGNATURE_GLAM_PRESETS.ella_idol,
             ...(selfUser.avatar || {}),
@@ -2551,20 +2940,50 @@ function renderBackpackGrid() {
             }
             renderBackpackGrid();
             showToast(
-              nextAccessory === 'ray_gun'
-                ? '🔫 Starlight Plasma Ray Gun equipped! Click or press E in Crystal Cavern (14.5m beam) or zap laser shows in Plaza!'
-                : '🎒 Holstered your Starlight Plasma Ray Gun.'
+              nextAccessory === weaponEquipMeta.acc
+                ? weaponEquipMeta.equipToast
+                : weaponEquipMeta.unequipToast
             );
           } catch {
-            showToast('⚠️ Could not update Ray Gun equip state right now.');
+            showToast('⚠️ Could not update weapon equip state right now.');
           }
         });
         btnRow.appendChild(equipBtn);
+      } else if (item.id === 'pet_egg') {
+        const hatchBtn = document.createElement('button');
+        hatchBtn.type = 'button';
+        hatchBtn.className = 'small-action-btn';
+        hatchBtn.textContent = '🥚 Hatch Egg!';
+        hatchBtn.addEventListener('click', () => {
+          if (backpackDialog && backpackDialog.open) backpackDialog.close();
+          openCompanionsModal('pets');
+          mutateCompanions({ action: 'hatch_egg' });
+        });
+        btnRow.appendChild(hatchBtn);
+      } else if (item.id === 'rift_beacon') {
+        const summonBtn = document.createElement('button');
+        summonBtn.type = 'button';
+        summonBtn.className = 'small-action-btn';
+        summonBtn.textContent = '🔮 Summon Boss';
+        summonBtn.addEventListener('click', () => {
+          if (currentZone !== ZONE_ARENA) {
+            showToast('⚔️ Enter Shadow Rift (K) first to unleash your Rift Beacon at the North Altar!');
+            return;
+          }
+          if (backpackDialog && backpackDialog.open) backpackDialog.close();
+          summonArenaBoss(true);
+        });
+        btnRow.appendChild(summonBtn);
       } else if (item.category === 'consumable') {
         const useBtn = document.createElement('button');
         useBtn.type = 'button';
         useBtn.className = 'small-action-btn';
-        useBtn.textContent = item.id === 'prism_block' ? '🌈 Place Block' : '🧪 Drink Potion';
+        useBtn.textContent =
+          item.id === 'prism_block'
+            ? '🌈 Place Block'
+            : item.id === 'starlight_potion'
+              ? '✨ Drink Elixir'
+              : '🧪 Drink Potion';
         useBtn.addEventListener('click', () => useInventoryItem(item.id));
         btnRow.appendChild(useBtn);
       } else if (item.category === 'cosmetic') {
@@ -3383,6 +3802,7 @@ document.getElementById('warp-runway-btn').addEventListener('click', () => {
 });
 
 document.getElementById('warp-obby-btn').addEventListener('click', () => {
+  cancelActiveObbyRun(true);
   if (currentZone !== ZONE_PLAZA) {
     pendingPostPortalWarp = 'obby';
     requestZoneTransition(ZONE_PLAZA);
@@ -3395,6 +3815,7 @@ document.getElementById('warp-obby-btn').addEventListener('click', () => {
 const warpHardObbyBtn = document.getElementById('warp-hard-obby-btn');
 if (warpHardObbyBtn) {
   warpHardObbyBtn.addEventListener('click', () => {
+    cancelActiveObbyRun(true);
     if (currentZone !== ZONE_PLAZA) {
       pendingPostPortalWarp = 'hard_obby';
       requestZoneTransition(ZONE_PLAZA);
@@ -3449,7 +3870,7 @@ if (tradeCloseCancelBtn) {
   tradeCloseCancelBtn.addEventListener('click', () => cancelActiveTrade());
 }
 
-// Dress to Impress Runway Theme Spin & 1-5 Star Voting
+// Dress to Impress Runway Theme Spin, Timed Fashion Show & 1-5 Star Voting
 document.getElementById('runway-next-theme-btn').addEventListener('click', async () => {
   const res = await fetch('/api/ella-world/runway', {
     method: 'POST',
@@ -3462,6 +3883,55 @@ document.getElementById('runway-next-theme-btn').addEventListener('click', async
     applyRunwaySummary(data.runway);
   }
 });
+
+if (runwayStartShowBtn) {
+  runwayStartShowBtn.addEventListener('click', async () => {
+    if (!sessionToken) return;
+    const myU = String(selfUser?.username || '').toLowerCase();
+    const phase = runwayShowState?.phase || 'idle';
+    const inShow = (runwayShowState?.contestants || []).some(
+      (c) => String(c.username || '').toLowerCase() === myU
+    );
+    const action = phase === 'dress_up' && !inShow ? 'join_show' : 'start_show';
+    const res = await fetch('/api/ella-world/runway', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, action })
+    }).catch(() => null);
+    if (await handleHttpAuthCheck(res)) return;
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (res && res.ok) {
+      if (data.runway) applyRunwaySummary(data.runway);
+      showToast(
+        action === 'join_show'
+          ? '👗 Joined the Fashion Show! Open Glam Studio (C) — 45s Dress-Up!'
+          : '🎬 Fashion Show Started! Friends got an invite — 45s Dress-Up!',
+        4600
+      );
+    } else if (data.error) {
+      showToast(`⚠️ ${data.error}`);
+    }
+  });
+}
+
+if (runwayReadyBtn) {
+  runwayReadyBtn.addEventListener('click', async () => {
+    if (!sessionToken) return;
+    const res = await fetch('/api/ella-world/runway', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, action: 'ready_show' })
+    }).catch(() => null);
+    if (await handleHttpAuthCheck(res)) return;
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (res && res.ok) {
+      if (data.runway) applyRunwaySummary(data.runway);
+      showToast('✅ Outfit locked & Ready for the Catwalk!');
+    } else if (data.error) {
+      showToast(`⚠️ ${data.error}`);
+    }
+  });
+}
 
 for (const starBtn of document.querySelectorAll('.star-vote-btn')) {
   starBtn.addEventListener('click', async () => {
@@ -3476,13 +3946,15 @@ for (const starBtn of document.querySelectorAll('.star-vote-btn')) {
     }).catch(() => null);
 
     if (await handleHttpAuthCheck(res)) return;
+    const data = res ? await res.json().catch(() => ({})) : {};
     if (res && res.ok) {
-      const data = await res.json();
       applyRunwaySummary(data.runway);
       if (stars === 5 && world3d.selfAvatar) {
         world3d.spawnCelebrationConfetti(world3d.selfAvatar.group.position);
       }
       showToast(`⭐ Gave ${stars} star${stars > 1 ? 's' : ''} for "${data.runway?.theme || 'Runway'}"!`);
+    } else if (data.error) {
+      showToast(`⚠️ ${data.error}`);
     }
   });
 }
@@ -4019,6 +4491,12 @@ window.addEventListener('keydown', (e) => {
     else openGlamSalon();
   } else if (!isSalonOpen && k === 'i') {
     openBackpackModal();
+  } else if (!isSalonOpen && k === 'p') {
+    openCompanionsModal();
+  } else if (!isSalonOpen && k === 'x') {
+    toggleQuickHoverboard();
+  } else if (!isSalonOpen && k === 'u') {
+    openCraftModal();
   } else if (!isSalonOpen && k === 'g') {
     pendingPostPortalWarp = null;
     if (currentZone === ZONE_PRISON) {
@@ -4052,6 +4530,7 @@ window.addEventListener('keydown', (e) => {
       showToast('💃 Teleported Backstage at the Fashion Runway!');
     }
   } else if (!isSalonOpen && k === 'r') {
+    cancelActiveObbyRun(true);
     if (currentZone !== ZONE_PLAZA) {
       pendingPostPortalWarp = 'obby';
       requestZoneTransition(ZONE_PLAZA);
@@ -4060,6 +4539,7 @@ window.addEventListener('keydown', (e) => {
       showToast('🏃‍♀️ Teleported to Sky Obby!');
     }
   } else if (!isSalonOpen && k === 't') {
+    cancelActiveObbyRun(true);
     if (currentZone !== ZONE_PLAZA) {
       pendingPostPortalWarp = 'hard_obby';
       requestZoneTransition(ZONE_PLAZA);
@@ -4067,7 +4547,7 @@ window.addEventListener('keydown', (e) => {
       world3d.warpToHardObbyCheckpoint();
       showToast('🔥 Teleported to Starlight Sky Gauntlet (Pro Obby)!');
     }
-  } else if (['1', '2', '3', '4', '5', '6', '7', '8'].includes(k)) {
+  } else if (['1', '2', '3', '4', '5', '6', '7', '8', '9'].includes(k)) {
     const emoteMap = {
       '1': 'pose',
       '2': 'peace',
@@ -4076,7 +4556,8 @@ window.addEventListener('keydown', (e) => {
       '5': 'wave',
       '6': 'cheer',
       '7': 'flip',
-      '8': 'sit'
+      '8': 'sit',
+      '9': 'sleep'
     };
     activateEmote(emoteMap[k]);
   }
@@ -4696,7 +5177,8 @@ avatarDialog.addEventListener('keydown', (e) => {
     '5': 'wave',
     '6': 'cheer',
     '7': 'flip',
-    '8': 'sit'
+    '8': 'sit',
+    '9': 'sleep'
   };
   if (modalEmoteMap[k]) {
     e.preventDefault();
@@ -4854,12 +5336,22 @@ document.getElementById('open-help-btn').addEventListener('click', () => {
 function leaveWorldToLogin() {
   if (isSalonOpen) closeGlamSalon(false);
   hideTradeInvitePopover();
+  hideTopLayerToastPopover(fashionInvitePopover);
+  hideTopLayerToastPopover(doorbellPopover);
   pendingInviteTrade = null;
   activeTrade = null;
+  activeObbyRun = null;
+  world3d.setActiveObbyRun(null);
+  if (obbySpeedrunBanner) obbySpeedrunBanner.hidden = true;
   draftTradeCoins = 0;
   draftTradeItems = {};
   if (tradeDialog && tradeDialog.open) tradeDialog.close('cancelled');
   if (backpackDialog && backpackDialog.open) backpackDialog.close();
+  if (companionsDialog && companionsDialog.open) companionsDialog.close();
+  if (homesDialog && homesDialog.open) homesDialog.close();
+  if (craftDialog && craftDialog.open) craftDialog.close();
+  if (obbyBoardDialog && obbyBoardDialog.open) obbyBoardDialog.close();
+  if (skyDialog && skyDialog.open) skyDialog.close();
   const oldTok = sessionToken;
   localStorage.removeItem('ella_world_token');
   sessionToken = '';
@@ -5300,6 +5792,7 @@ adminAuthForm.addEventListener('submit', async (e) => {
   adminToken = data.adminToken;
   adminAuthForm.hidden = true;
   adminDashboardContent.hidden = false;
+  applyModerationAndParentalUi();
   renderAdminDashboard(data.dashboard);
 });
 
@@ -5312,6 +5805,7 @@ async function refreshAdminDashboard() {
     adminToken = '';
     adminAuthForm.hidden = false;
     adminDashboardContent.hidden = true;
+    applyModerationAndParentalUi();
     return;
   }
   if (res.ok) {
@@ -6481,4 +6975,1340 @@ function showToast(message, durationMs = 3800) {
   toastTimer = setTimeout(() => {
     hudToast.hidden = true;
   }, durationMs);
+}
+
+// ============================================================================
+// 14. Full Expansion Pack Controllers (Pets/Mounts, Homes/Doorbells, Crafting,
+//     Timed Fashion Show, Obby Speedrun Boards, Sky/Meteor Shower & Dragon Boss)
+// ============================================================================
+
+const popoverDismissTimers = new WeakMap();
+const starCatchInFlightIds = new Set();
+let doorbellAudioCtx = null;
+let lastFashionAdvanceProbeAt = 0;
+let lastBossSrMilestone = '';
+
+function announceScreenReaderToast(message) {
+  if (!message) return;
+  if ('ariaNotify' in document && typeof document.ariaNotify === 'function') {
+    try {
+      document.ariaNotify(message, { interrupt: 'none' });
+      return;
+    } catch {
+      // fallback to live region below
+    }
+  }
+  if (!srLiveAnnouncements) return;
+  srLiveAnnouncements.textContent = '';
+  requestAnimationFrame(() => {
+    srLiveAnnouncements.textContent = message;
+  });
+}
+
+function showTopLayerToastPopover(popoverEl, autoHideMs = 15000) {
+  if (!popoverEl) return;
+  if (typeof popoverEl.showPopover === 'function') {
+    try {
+      popoverEl.showPopover();
+    } catch {
+      popoverEl.setAttribute('open', '');
+    }
+  } else {
+    popoverEl.setAttribute('open', '');
+  }
+
+  const prev = popoverDismissTimers.get(popoverEl);
+  if (prev) clearTimeout(prev);
+
+  const scheduleHide = (delayMs) => {
+    const tid = setTimeout(() => {
+      if (popoverEl.matches(':hover') || popoverEl.matches(':focus-within')) {
+        scheduleHide(4000);
+        return;
+      }
+      hideTopLayerToastPopover(popoverEl);
+    }, delayMs);
+    popoverDismissTimers.set(popoverEl, tid);
+  };
+  scheduleHide(autoHideMs);
+}
+
+function hideTopLayerToastPopover(popoverEl) {
+  if (!popoverEl) return;
+  const prev = popoverDismissTimers.get(popoverEl);
+  if (prev) {
+    clearTimeout(prev);
+    popoverDismissTimers.delete(popoverEl);
+  }
+  if (typeof popoverEl.hidePopover === 'function') {
+    try {
+      popoverEl.hidePopover();
+    } catch {
+      popoverEl.removeAttribute('open');
+    }
+  } else {
+    popoverEl.removeAttribute('open');
+  }
+}
+
+function playDoorbellChime() {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return;
+  try {
+    if (!doorbellAudioCtx) {
+      doorbellAudioCtx = new AudioCtx();
+    }
+    if (doorbellAudioCtx.state === 'suspended') {
+      doorbellAudioCtx.resume().catch(() => {});
+    }
+    const now = doorbellAudioCtx.currentTime;
+    const notes = [
+      { freq: 659.25, start: 0, dur: 0.28 },
+      { freq: 523.25, start: 0.24, dur: 0.44 }
+    ];
+    for (const n of notes) {
+      const osc = doorbellAudioCtx.createOscillator();
+      const gain = doorbellAudioCtx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(n.freq, now + n.start);
+      gain.gain.setValueAtTime(0.0001, now + n.start);
+      gain.gain.exponentialRampToValueAtTime(0.16, now + n.start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + n.start + n.dur);
+      osc.connect(gain);
+      gain.connect(doorbellAudioCtx.destination);
+      osc.start(now + n.start);
+      osc.stop(now + n.start + n.dur + 0.02);
+    }
+  } catch {
+    // ignore audio autoplay restriction
+  }
+}
+
+function applyCompanionsSnapshot(comp) {
+  if (!comp || typeof comp !== 'object') return;
+  playerCompanions = {
+    ownedPets: Array.isArray(comp.ownedPets) ? [...comp.ownedPets] : ['cloud_puppy'],
+    equippedPet: comp.equippedPet ?? null,
+    petNickname: String(comp.petNickname || ''),
+    ownedMounts: Array.isArray(comp.ownedMounts) ? [...comp.ownedMounts] : ['starlight_board'],
+    equippedMount: comp.equippedMount ?? null,
+    firstBossDefeated: Boolean(comp.firstBossDefeated)
+  };
+  if (toggleHoverboardBtn) {
+    const riding = Boolean(playerCompanions.equippedMount);
+    toggleHoverboardBtn.classList.toggle('active', riding);
+    toggleHoverboardBtn.setAttribute('aria-pressed', String(riding));
+    toggleHoverboardBtn.textContent = riding ? '🛹 Board ON' : '🛹 Board (X)';
+  }
+  if (companionsDialog && companionsDialog.open) {
+    renderCompanionsModal();
+  }
+}
+
+function applyHomesSnapshot(homes) {
+  const list = Array.isArray(homes)
+    ? homes
+    : Array.isArray(homes?.plots)
+      ? homes.plots
+      : null;
+  if (!list) return;
+  homesState = list;
+  world3d.syncHomesSnapshot(homesState);
+  if (homesDialog && homesDialog.open) {
+    renderHomesModal();
+  }
+}
+
+function applyObbyLeaderboards(lbs) {
+  if (!lbs || typeof lbs !== 'object') return;
+  obbyLeaderboards = {
+    easy: Array.isArray(lbs.easy) ? lbs.easy : [],
+    hard: Array.isArray(lbs.hard) ? lbs.hard : []
+  };
+  world3d.syncObbyLeaderboards(obbyLeaderboards);
+  if (obbyBoardDialog && obbyBoardDialog.open) {
+    renderObbyBoardModal();
+  }
+}
+
+function applySkySnapshot(sky) {
+  if (!sky || typeof sky !== 'object') return;
+  skyState = {
+    ...skyState,
+    ...sky
+  };
+  world3d.syncSkySnapshot(skyState);
+  if (skyDialog && skyDialog.open) {
+    syncSkyModalButtons();
+  }
+}
+
+function applyArenaBossHud(boss) {
+  arenaBossStatus = boss || null;
+  const active = Boolean(boss && boss.active && Number(boss.hp) > 0);
+  if (arenaBossRow) {
+    arenaBossRow.hidden = !active;
+  }
+  if (!active) {
+    lastBossSrMilestone = '';
+    return;
+  }
+  const maxHp = Math.max(1, Number(boss.maxHp) || 18);
+  const hp = Math.max(0, Math.min(maxHp, Number(boss.hp) || 0));
+  if (arenaBossBar) {
+    arenaBossBar.max = maxHp;
+    arenaBossBar.value = hp;
+  }
+  if (arenaBossHpText) {
+    arenaBossHpText.textContent = `${hp} / ${maxHp} HP`;
+  }
+  if (currentZone === ZONE_ARENA) {
+    let milestone = 'active';
+    if (hp <= Math.ceil(maxHp * 0.25)) milestone = 'enraged';
+    if (milestone !== lastBossSrMilestone) {
+      lastBossSrMilestone = milestone;
+      announceScreenReaderToast(
+        milestone === 'enraged'
+          ? `Obsidian Rift Dragon is below 25 percent health: ${hp} of ${maxHp} HP! Jump over purple shockwave rings!`
+          : `Obsidian Rift Dragon awakened at the North Altar with ${maxHp} health! Jump over shockwave rings!`
+      );
+    }
+  }
+}
+
+function renderFashionShowTicker(serverNow) {
+  const sh = runwayShowState;
+  const phase = sh?.phase || 'idle';
+  const myU = String(selfUser?.username || '').toLowerCase();
+  const meEntry = (sh?.contestants || []).find(
+    (c) => String(c.username || '').toLowerCase() === myU
+  );
+
+  if (runwayStartShowBtn) {
+    if (phase === 'idle' || phase === 'podium') {
+      runwayStartShowBtn.textContent = '🎬 Start Show!';
+      runwayStartShowBtn.disabled = false;
+    } else if (phase === 'dress_up' && !meEntry) {
+      runwayStartShowBtn.textContent = '👗 Join Show!';
+      runwayStartShowBtn.disabled = false;
+    } else {
+      runwayStartShowBtn.textContent =
+        phase === 'dress_up' ? `👗 In Show (${(sh.contestants || []).length})` : '🔦 Catwalk Live';
+      runwayStartShowBtn.disabled = phase === 'catwalk' || Boolean(meEntry);
+    }
+  }
+
+  if (phase === 'idle') {
+    if (runwayShowStatusEl) runwayShowStatusEl.hidden = true;
+    if (glamShowTimerPill) glamShowTimerPill.hidden = true;
+    return;
+  }
+
+  const totalMs = Math.max(1000, Number(sh.phaseEndsAt || 0) - Number(sh.phaseStartedAt || 0));
+  const remMs = Math.max(0, Number(sh.phaseEndsAt || 0) - serverNow);
+  const remSec = Math.ceil(remMs / 1000);
+
+  if (runwayShowStatusEl) runwayShowStatusEl.hidden = false;
+  if (runwayShowProgress) {
+    runwayShowProgress.max = Math.round(totalMs / 100);
+    runwayShowProgress.value = Math.min(
+      Math.round(totalMs / 100),
+      Math.max(0, Math.round(remMs / 100))
+    );
+  }
+
+  if (phase === 'dress_up') {
+    if (runwayShowPhaseText) {
+      runwayShowPhaseText.textContent = `👗 Dress-Up: ${remSec}s • ${(sh.contestants || []).length} models`;
+    }
+    if (runwayReadyBtn) {
+      runwayReadyBtn.hidden = !meEntry;
+      runwayReadyBtn.disabled = Boolean(meEntry?.ready);
+      runwayReadyBtn.textContent = meEntry?.ready ? '✅ Ready!' : '✅ Ready';
+    }
+    if (glamShowTimerPill && glamShowTimerText) {
+      glamShowTimerPill.hidden = false;
+      glamShowTimerText.textContent = `⏱️ Runway Dress-Up: ${remSec}s`;
+    }
+  } else if (phase === 'catwalk') {
+    const spotUser = sh.spotlightUsername || 'Model';
+    const matched = Array.from(playersMap.values()).find(
+      (p) => String(p.user?.username || '').toLowerCase() === String(spotUser).toLowerCase()
+    );
+    const disp =
+      String(selfUser?.username || '').toLowerCase() === String(spotUser).toLowerCase()
+        ? selfUser.displayName
+        : matched?.user?.displayName || spotUser;
+    if (runwayShowPhaseText) {
+      runwayShowPhaseText.textContent = `🔦 Spotlight: ${disp} (${remSec}s) — Vote 1–5★!`;
+    }
+    if (runwayReadyBtn) runwayReadyBtn.hidden = true;
+    if (glamShowTimerPill && glamShowTimerText) {
+      glamShowTimerPill.hidden = false;
+      glamShowTimerText.textContent = `🔦 Catwalk Live: ${disp} (${remSec}s)`;
+    }
+  } else if (phase === 'podium') {
+    const w1 = (sh.podiumWinners || [])[0];
+    if (runwayShowPhaseText) {
+      runwayShowPhaseText.textContent = w1
+        ? `👑 Winner: ${w1.displayName || w1.username} (${w1.avgStars}★ • +${w1.prizeCoins}🪙) • ${remSec}s`
+        : `👑 Podium Finale (${remSec}s)`;
+    }
+    if (runwayReadyBtn) runwayReadyBtn.hidden = true;
+    if (glamShowTimerPill) glamShowTimerPill.hidden = true;
+  }
+
+  // Backup phase-advance nudge if server timer crossed zero while idle
+  if (
+    sessionToken &&
+    remMs <= 0 &&
+    serverNow >= Number(sh.phaseEndsAt || 0) + 450 &&
+    performance.now() - lastFashionAdvanceProbeAt > 2000
+  ) {
+    lastFashionAdvanceProbeAt = performance.now();
+    fetch('/api/ella-world/runway', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, action: 'advance_phase' })
+    }).catch(() => {});
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 14A. Adoptable 3D Pets & Plaza Hoverboards (#companions-dialog)
+// ----------------------------------------------------------------------------
+
+async function mutateCompanions(payload) {
+  if (!sessionToken) return null;
+  try {
+    const res = await fetch('/api/ella-world/companions', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, ...payload })
+    });
+    if (await handleHttpAuthCheck(res)) return null;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (data.error) showToast(`⚠️ ${data.error}`);
+      return null;
+    }
+    if (data.user) {
+      selfUser = data.user;
+      if (selfId && playersMap.has(selfId)) {
+        playersMap.get(selfId).user = selfUser;
+      }
+    }
+    if (data.economy) applyEconomySnapshot(data.economy);
+    if (data.companions) {
+      applyCompanionsSnapshot(data.companions);
+      if (selfUser) {
+        world3d.updateUserCompanions(selfUser.username, data.companions);
+      }
+    }
+    if (data.action === 'hatch_egg' && data.hatchedPetId) {
+      const petDef = petCatalog.find((p) => p.id === data.hatchedPetId);
+      const pName = petDef ? `${petDef.icon} ${petDef.name}` : data.hatchedPetId;
+      if (world3d.selfAvatar) {
+        world3d.spawnCelebrationConfetti(world3d.selfAvatar.group.position);
+      }
+      showToast(
+        data.duplicateBonusCoins > 0
+          ? `🥚 Hatched ${pName}! (Already owned — +${data.duplicateBonusCoins} 🪙 bonus!)`
+          : `🥚✨ HATCHED NEW 3D PET: ${pName}!`,
+        5600
+      );
+    } else if (data.action === 'adopt_pet') {
+      showToast('🐾 Adopted & equipped your new 3D Companion Pet!');
+    } else if (data.action === 'rename_pet') {
+      showToast(
+        data.companions?.petNickname
+          ? `🏷️ Named your pet "${data.companions.petNickname}"!`
+          : '🏷️ Cleared custom pet nickname.'
+      );
+    } else if (data.action === 'buy_mount') {
+      showToast('🛹 Unlocked & mounted your new Plaza Hoverboard!');
+    } else if (data.action === 'equip_mount') {
+      const mId = data.companions?.equippedMount;
+      const mDef = mId ? mountCatalog.find((m) => m.id === mId) : null;
+      showToast(
+        mId
+          ? `🛹 Riding ${mDef ? mDef.name : mId}! (${mDef ? mDef.speedMultiplier : 1.62}x Plaza Speed)`
+          : '👟 Stepped off your Hoverboard.'
+      );
+    }
+    return data;
+  } catch {
+    showToast('⚠️ Could not update companions right now.');
+    return null;
+  }
+}
+
+function toggleQuickHoverboard() {
+  if (currentZone === ZONE_PRISON) {
+    showToast("⚖️ Hoverboards are disabled inside Debtor's Prison!");
+    return;
+  }
+  if (currentZone !== ZONE_PLAZA) {
+    showToast('🛹 Hoverboards & Neon Skates are designed for Starlight Plaza cruising!');
+    return;
+  }
+  if (activeObbyRun) {
+    cancelActiveObbyRun(false);
+  }
+  mutateCompanions({ action: 'equip_mount', mountId: 'toggle' });
+}
+
+function activateCompanionsTab(tabId, moveFocus = false) {
+  const isMounts = tabId === 'mounts' || tabId === 'comp-tab-mounts';
+  const petsTab = document.getElementById('comp-tab-pets');
+  const mountsTab = document.getElementById('comp-tab-mounts');
+  const petsPanel = document.getElementById('comp-panel-pets');
+  const mountsPanel = document.getElementById('comp-panel-mounts');
+  if (!petsTab || !mountsTab || !petsPanel || !mountsPanel) return;
+
+  petsTab.setAttribute('aria-selected', String(!isMounts));
+  mountsTab.setAttribute('aria-selected', String(isMounts));
+  petsTab.tabIndex = isMounts ? -1 : 0;
+  mountsTab.tabIndex = isMounts ? 0 : -1;
+
+  if (isMounts) {
+    mountsPanel.hidden = false;
+    petsPanel.setAttribute('hidden', 'until-found');
+    if (moveFocus) mountsTab.focus();
+  } else {
+    petsPanel.hidden = false;
+    mountsPanel.setAttribute('hidden', 'until-found');
+    if (moveFocus) petsTab.focus();
+  }
+}
+
+function openCompanionsModal(initialTab = 'pets') {
+  activateCompanionsTab(initialTab, false);
+  renderCompanionsModal();
+  if (companionsDialog && !companionsDialog.open) {
+    companionsDialog.showModal();
+  }
+}
+
+function renderCompanionsModal() {
+  const coinsEl = document.getElementById('companions-coins-value');
+  if (coinsEl) {
+    coinsEl.textContent = `🪙 ${Number(playerEconomy.coins || 0).toLocaleString()}`;
+  }
+  const eggCount = Number((playerEconomy.inventory || {}).pet_egg || 0);
+  const eggSpan = document.getElementById('companions-egg-count');
+  if (eggSpan) eggSpan.textContent = String(eggCount);
+  const hatchBtn = document.getElementById('hatch-pet-egg-btn');
+  if (hatchBtn) hatchBtn.disabled = eggCount < 1;
+
+  const nickInput = document.getElementById('pet-nickname-input');
+  if (nickInput && document.activeElement !== nickInput) {
+    nickInput.value = playerCompanions.petNickname || '';
+  }
+
+  const petsGrid = document.getElementById('companions-pets-grid');
+  if (petsGrid) {
+    petsGrid.replaceChildren();
+    for (const pet of petCatalog) {
+      const owned = (playerCompanions.ownedPets || []).includes(pet.id);
+      const equipped = playerCompanions.equippedPet === pet.id;
+      const card = document.createElement('article');
+      card.className = `backpack-card rarity-${pet.rarity || 'common'}${!owned ? ' is-unowned' : ''}`;
+
+      const top = document.createElement('div');
+      top.className = 'backpack-card-top';
+      const iconSpan = document.createElement('span');
+      iconSpan.className = 'backpack-icon';
+      iconSpan.textContent = pet.icon || '🐾';
+      const statePill = document.createElement('span');
+      statePill.className = 'backpack-qty-pill';
+      statePill.textContent = equipped ? '✨ Following You' : owned ? '✅ Adopted' : '🔒 Unadopted';
+      top.append(iconSpan, statePill);
+
+      const mid = document.createElement('div');
+      const rarityTag = document.createElement('div');
+      rarityTag.className = 'backpack-rarity-tag';
+      const perks = [];
+      if (pet.magnetBonusM > 0) perks.push(`+${pet.magnetBonusM}m Magnet`);
+      if (pet.coinBonusPct > 0) perks.push(`+${pet.coinBonusPct}% Coins`);
+      if (pet.bonusDamage > 0) perks.push(`+${pet.bonusDamage} Combat DMG`);
+      rarityTag.textContent = `${pet.rarity || 'common'} • ${perks.join(' • ') || 'Companion'}`;
+      const titleEl = document.createElement('h3');
+      titleEl.className = 'backpack-card-title';
+      titleEl.textContent = pet.name;
+      const descEl = document.createElement('p');
+      descEl.className = 'backpack-desc';
+      descEl.textContent = pet.description || '';
+      mid.append(rarityTag, titleEl, descEl);
+
+      const actions = document.createElement('div');
+      actions.className = 'backpack-card-actions';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = equipped ? 'secondary-outline-btn' : 'small-action-btn';
+      if (owned) {
+        btn.textContent = equipped ? '💤 Rest Pet' : '🐾 Equip Pet';
+        btn.addEventListener('click', () =>
+          mutateCompanions({ action: 'equip_pet', petId: equipped ? 'none' : pet.id })
+        );
+      } else if (pet.coinPrice && pet.coinPrice > 0) {
+        btn.textContent = `🪙 Adopt (${pet.coinPrice} Coins)`;
+        btn.disabled = Number(playerEconomy.coins || 0) < pet.coinPrice;
+        btn.addEventListener('click', () =>
+          mutateCompanions({ action: 'adopt_pet', petId: pet.id })
+        );
+      } else {
+        btn.textContent = '🥚 Hatch from Companion Egg';
+        btn.disabled = eggCount < 1;
+        btn.addEventListener('click', () => mutateCompanions({ action: 'hatch_egg' }));
+      }
+      actions.appendChild(btn);
+
+      card.append(top, mid, actions);
+      petsGrid.appendChild(card);
+    }
+  }
+
+  const mountsGrid = document.getElementById('companions-mounts-grid');
+  if (mountsGrid) {
+    mountsGrid.replaceChildren();
+    for (const mount of mountCatalog) {
+      const owned = (playerCompanions.ownedMounts || []).includes(mount.id);
+      const riding = playerCompanions.equippedMount === mount.id;
+      const card = document.createElement('article');
+      card.className = `backpack-card rarity-${mount.rarity || 'common'}${!owned ? ' is-unowned' : ''}`;
+
+      const top = document.createElement('div');
+      top.className = 'backpack-card-top';
+      const iconSpan = document.createElement('span');
+      iconSpan.className = 'backpack-icon';
+      iconSpan.textContent = mount.icon || '🛹';
+      const statePill = document.createElement('span');
+      statePill.className = 'backpack-qty-pill';
+      statePill.textContent = riding ? '⚡ Riding Now' : owned ? '✅ Owned' : `🪙 ${mount.coinPrice} Coins`;
+      top.append(iconSpan, statePill);
+
+      const mid = document.createElement('div');
+      const rarityTag = document.createElement('div');
+      rarityTag.className = 'backpack-rarity-tag';
+      rarityTag.textContent = `${mount.rarity || 'common'} • ${mount.speedMultiplier}x Plaza Speed`;
+      const titleEl = document.createElement('h3');
+      titleEl.className = 'backpack-card-title';
+      titleEl.textContent = mount.name;
+      const descEl = document.createElement('p');
+      descEl.className = 'backpack-desc';
+      descEl.textContent = mount.description || '';
+      mid.append(rarityTag, titleEl, descEl);
+
+      const actions = document.createElement('div');
+      actions.className = 'backpack-card-actions';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = riding ? 'secondary-outline-btn' : 'small-action-btn';
+      if (owned) {
+        btn.textContent = riding ? '👟 Dismount' : '🛹 Ride in Plaza';
+        btn.addEventListener('click', () => {
+          if (!riding && activeObbyRun) cancelActiveObbyRun(false);
+          mutateCompanions({ action: 'equip_mount', mountId: riding ? 'none' : mount.id });
+        });
+      } else {
+        btn.textContent = `🪙 Unlock (${mount.coinPrice} Coins)`;
+        btn.disabled = Number(playerEconomy.coins || 0) < (mount.coinPrice || 0);
+        btn.addEventListener('click', () =>
+          mutateCompanions({ action: 'buy_mount', mountId: mount.id })
+        );
+      }
+      actions.appendChild(btn);
+
+      card.append(top, mid, actions);
+      mountsGrid.appendChild(card);
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 14B. Claimable Homes, 3D Nameplate Mailboxes & Doorbells (#homes-dialog)
+// ----------------------------------------------------------------------------
+
+async function mutateHomes(payload) {
+  const headers = { ...JSON_HEADERS };
+  if (adminToken) {
+    headers.Authorization = `Bearer ${adminToken}`;
+  }
+  try {
+    const res = await fetch('/api/ella-world/homes', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ token: sessionToken || undefined, ...payload })
+    });
+    if (sessionToken && !adminToken && (await handleHttpAuthCheck(res))) return null;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (data.error) showToast(`⚠️ ${data.error}`);
+      return null;
+    }
+    if (Array.isArray(data.plots)) {
+      applyHomesSnapshot(data.plots);
+    }
+    return data;
+  } catch {
+    showToast('⚠️ Could not update Neighborhood Home right now.');
+    return null;
+  }
+}
+
+function handleWorldMailboxInteraction(plot) {
+  if (!plot) {
+    openHomesModal();
+    return;
+  }
+  const myU = String(selfUser?.username || '').toLowerCase();
+  const ownerU = String(plot.ownerUsername || '').toLowerCase();
+  const isCoBuilder = (plot.coBuilders || []).some(
+    (u) => String(u || '').toLowerCase() === myU
+  );
+  const isMod = String(selfUser?.role || '').toLowerCase() === 'host' || Boolean(adminToken);
+
+  if (!ownerU || ownerU === myU || isCoBuilder || isMod) {
+    openHomesModal();
+    return;
+  }
+
+  playDoorbellChime();
+  world3d.triggerDoorbellFx(plot.plotId);
+  mutateHomes({ action: 'ring_doorbell', plotId: plot.plotId }).then((res) => {
+    if (res) {
+      showToast(
+        `🔔 Ding-Dong! Rang the doorbell at ${plot.customTitle || plot.defaultName} (@${plot.ownerUsername})!`
+      );
+    }
+  });
+}
+
+function openHomesModal() {
+  renderHomesModal();
+  if (homesDialog && !homesDialog.open) {
+    homesDialog.showModal();
+  }
+}
+
+function renderHomesModal() {
+  const myU = String(selfUser?.username || '').toLowerCase();
+  const isHostOrAdmin =
+    String(selfUser?.role || '').toLowerCase() === 'host' || Boolean(adminToken);
+  const myPlot = homesState.find(
+    (p) => String(p.ownerUsername || '').toLowerCase() === myU
+  );
+
+  const ownerForm = document.getElementById('home-owner-settings-form');
+  if (ownerForm) {
+    ownerForm.hidden = !myPlot;
+    if (myPlot) {
+      const heading = document.getElementById('home-owner-settings-heading');
+      if (heading) {
+        heading.textContent = `🏷️ My Claimed Home: ${myPlot.customTitle || myPlot.defaultName}`;
+      }
+      const titleIn = document.getElementById('home-custom-title-input');
+      if (titleIn && document.activeElement !== titleIn) {
+        titleIn.value = myPlot.customTitle || '';
+      }
+      const coIn = document.getElementById('home-cobuilders-input');
+      if (coIn && document.activeElement !== coIn) {
+        coIn.value = (myPlot.coBuilders || []).join(', ');
+      }
+      const lockChk = document.getElementById('home-door-locked-checkbox');
+      if (lockChk) {
+        lockChk.checked = Boolean(myPlot.doorLocked);
+      }
+    }
+  }
+
+  const grid = document.getElementById('homes-plots-grid');
+  if (!grid) return;
+  grid.replaceChildren();
+
+  for (const plot of homesState) {
+    const ownerU = String(plot.ownerUsername || '').toLowerCase();
+    const isMine = Boolean(myU && ownerU === myU);
+    const isUnclaimed = !ownerU;
+    const card = document.createElement('article');
+    card.className = `backpack-card ${isMine ? 'rarity-legendary' : isUnclaimed ? 'rarity-rare' : 'rarity-epic'}`;
+
+    const top = document.createElement('div');
+    top.className = 'backpack-card-top';
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'backpack-icon';
+    iconSpan.textContent = plot.prebuilt ? '🏡' : '🏗️';
+    const statusPill = document.createElement('span');
+    statusPill.className = 'backpack-qty-pill';
+    statusPill.textContent = isMine
+      ? '👑 Your Home'
+      : isUnclaimed
+        ? '✨ Available Free!'
+        : plot.doorLocked
+          ? `🔒 Locked (@${plot.ownerUsername})`
+          : `🔓 Open (@${plot.ownerUsername})`;
+    top.append(iconSpan, statusPill);
+
+    const mid = document.createElement('div');
+    const tag = document.createElement('div');
+    tag.className = 'backpack-rarity-tag';
+    tag.textContent = plot.prebuilt ? 'Furnished Starter Villa' : 'Open Custom Architect Lot';
+    const titleEl = document.createElement('h3');
+    titleEl.className = 'backpack-card-title';
+    titleEl.textContent = plot.customTitle || plot.defaultName;
+    const descEl = document.createElement('p');
+    descEl.className = 'backpack-desc';
+    descEl.textContent = isUnclaimed
+      ? 'Unclaimed neighborhood plot — claim for free to personalize its 3D Mailbox & build!'
+      : `Owner: ${plot.ownerDisplayName || plot.ownerUsername}${plot.coBuilders?.length ? ` • Co-Builders: ${plot.coBuilders.join(', ')}` : ''}`;
+    mid.append(tag, titleEl, descEl);
+
+    const actions = document.createElement('div');
+    actions.className = 'backpack-card-actions';
+    const btnRow = document.createElement('div');
+    btnRow.className = 'backpack-action-btns';
+
+    if (isUnclaimed && sessionToken) {
+      const claimBtn = document.createElement('button');
+      claimBtn.type = 'button';
+      claimBtn.className = 'small-action-btn';
+      claimBtn.textContent = myPlot ? '🔄 Move Home Here' : '🏡 Claim Free Plot!';
+      claimBtn.addEventListener('click', async () => {
+        const out = await mutateHomes({ action: 'claim', plotId: plot.plotId });
+        if (out) {
+          showToast(`🏡 Claimed ${plot.defaultName}! Customize your 3D Mailbox & Co-Builders above!`);
+        }
+      });
+      btnRow.appendChild(claimBtn);
+    }
+
+    if (!isUnclaimed && !isMine && sessionToken) {
+      const bellBtn = document.createElement('button');
+      bellBtn.type = 'button';
+      bellBtn.className = 'small-action-btn';
+      bellBtn.textContent = '🔔 Ring Doorbell';
+      bellBtn.addEventListener('click', async () => {
+        playDoorbellChime();
+        world3d.triggerDoorbellFx(plot.plotId);
+        const out = await mutateHomes({ action: 'ring_doorbell', plotId: plot.plotId });
+        if (out) {
+          showToast(`🔔 Rang the doorbell at ${plot.customTitle || plot.defaultName}!`);
+        }
+      });
+      btnRow.appendChild(bellBtn);
+    }
+
+    const visitBtn = document.createElement('button');
+    visitBtn.type = 'button';
+    visitBtn.className = 'secondary-outline-btn';
+    visitBtn.textContent = '🚀 Visit Mailbox';
+    visitBtn.addEventListener('click', () => {
+      if (homesDialog && homesDialog.open) homesDialog.close();
+      if (currentZone !== ZONE_PLAZA) {
+        requestZoneTransition(ZONE_PLAZA);
+      } else if (world3d.selfAvatar && Array.isArray(plot.mailboxPos)) {
+        world3d.selfAvatar.group.position.set(
+          plot.mailboxPos[0],
+          0.15,
+          plot.mailboxPos[2] + (plot.mailboxPos[2] >= 0 ? -1.6 : 1.6)
+        );
+        world3d.velocity.set(0, 0, 0);
+        world3d._emitMoveNow();
+        showToast(`🏡 Warped to ${plot.customTitle || plot.defaultName}!`);
+      }
+    });
+    btnRow.appendChild(visitBtn);
+
+    if (!isUnclaimed && (isMine || isHostOrAdmin)) {
+      const relBtn = document.createElement('button');
+      relBtn.type = 'button';
+      relBtn.className = 'secondary-outline-btn danger-action';
+      relBtn.textContent = isMine ? '🔓 Release' : '🛡️ Mod Release';
+      relBtn.addEventListener('click', async () => {
+        const out = await mutateHomes({ action: 'release', plotId: plot.plotId });
+        if (out) {
+          showToast(`🔓 Released ${plot.defaultName}.`);
+        }
+      });
+      btnRow.appendChild(relBtn);
+    }
+
+    actions.appendChild(btnRow);
+    card.append(top, mid, actions);
+    grid.appendChild(card);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 14C. Starlight Workshop Crafting Bench (#craft-dialog)
+// ----------------------------------------------------------------------------
+
+function openCraftModal() {
+  renderCraftModal();
+  if (craftDialog && !craftDialog.open) {
+    craftDialog.showModal();
+  }
+}
+
+function renderCraftModal() {
+  const matBar = document.getElementById('craft-materials-bar');
+  const inv = playerEconomy.inventory || {};
+  const coins = Number(playerEconomy.coins || 0);
+  if (matBar) {
+    matBar.replaceChildren();
+    const coinChip = document.createElement('span');
+    coinChip.className = 'craft-mat-chip';
+    coinChip.textContent = `🪙 ${coins.toLocaleString()} Coins`;
+    matBar.appendChild(coinChip);
+
+    const keyMatIds = [
+      'star_shard',
+      'cavern_relic',
+      'void_crystal',
+      'dragon_scale',
+      'ancient_key',
+      'solar_citrine'
+    ];
+    for (const mid of keyMatIds) {
+      const def = catalogById.get(mid);
+      const qty = Number(inv[mid] || 0);
+      const chip = document.createElement('span');
+      chip.className = 'craft-mat-chip';
+      chip.textContent = `${def ? def.icon : '✨'} ${def ? def.name : mid}: ${qty}x`;
+      matBar.appendChild(chip);
+    }
+  }
+
+  const grid = document.getElementById('craft-recipes-grid');
+  if (!grid) return;
+  grid.replaceChildren();
+
+  for (const rec of craftingRecipes) {
+    const outDef = catalogById.get(rec.outputItemId) || {
+      id: rec.outputItemId,
+      name: rec.outputItemId,
+      icon: '⚒️',
+      rarity: 'epic'
+    };
+    const canAffordCoins = coins >= Number(rec.coinCost || 0);
+    let hasAllMats = true;
+    const ingParts = [`${canAffordCoins ? '✅' : '❌'} 🪙 ${rec.coinCost} Coins`];
+    for (const ing of rec.ingredients || []) {
+      const have = Number(inv[ing.itemId] || 0);
+      const ok = have >= ing.qty;
+      if (!ok) hasAllMats = false;
+      const iDef = catalogById.get(ing.itemId);
+      ingParts.push(
+        `${ok ? '✅' : '❌'} ${iDef ? iDef.icon : '✨'} ${have}/${ing.qty} ${iDef ? iDef.name : ing.itemId}`
+      );
+    }
+    const craftable = canAffordCoins && hasAllMats;
+
+    const card = document.createElement('article');
+    card.className = `backpack-card rarity-${outDef.rarity || 'epic'}${!craftable ? ' is-unowned' : ''}`;
+
+    const top = document.createElement('div');
+    top.className = 'backpack-card-top';
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'backpack-icon';
+    iconSpan.textContent = outDef.icon || '⚒️';
+    const ownedPill = document.createElement('span');
+    ownedPill.className = 'backpack-qty-pill';
+    const ownedQty = Number(inv[rec.outputItemId] || 0);
+    ownedPill.textContent = ownedQty > 0 ? `${ownedQty}x in Backpack` : 'New Recipe';
+    top.append(iconSpan, ownedPill);
+
+    const mid = document.createElement('div');
+    const tag = document.createElement('div');
+    tag.className = 'backpack-rarity-tag';
+    tag.textContent = `${outDef.rarity || 'epic'} • Forges +${rec.outputQty || 1}x`;
+    const titleEl = document.createElement('h3');
+    titleEl.className = 'backpack-card-title';
+    titleEl.textContent = outDef.name;
+    const descEl = document.createElement('p');
+    descEl.className = 'backpack-desc';
+    descEl.textContent = rec.summary || outDef.description || '';
+    const reqList = document.createElement('p');
+    reqList.className = 'craft-ing-list';
+    reqList.textContent = ingParts.join('  •  ');
+    mid.append(tag, titleEl, descEl, reqList);
+
+    const actions = document.createElement('div');
+    actions.className = 'backpack-card-actions';
+    const craftBtn = document.createElement('button');
+    craftBtn.type = 'button';
+    craftBtn.className = 'primary-cta-btn';
+    craftBtn.disabled = !craftable;
+    craftBtn.textContent = craftable ? '⚒️ Forge Item!' : '🔒 Gather Materials';
+    craftBtn.addEventListener('click', () => craftWorkshopRecipe(rec.id));
+    actions.appendChild(craftBtn);
+
+    card.append(top, mid, actions);
+    grid.appendChild(card);
+  }
+}
+
+async function craftWorkshopRecipe(recipeId) {
+  if (!sessionToken || !recipeId) return;
+  try {
+    const res = await fetch('/api/ella-world/craft', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, recipeId })
+    });
+    if (await handleHttpAuthCheck(res)) return;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (data.error) showToast(`⚠️ ${data.error}`);
+      return;
+    }
+    if (data.economy) applyEconomySnapshot(data.economy);
+    if (data.arenaStatus) applyArenaPlayerStatus(data.arenaStatus);
+    if (world3d.selfAvatar) {
+      world3d.spawnCelebrationConfetti(world3d.selfAvatar.group.position);
+    }
+    showToast(
+      `⚒️✨ Forged +${data.qty || 1}x ${data.itemIcon || '✨'} ${data.itemName || recipeId}! Check Backpack (I)!`,
+      4800
+    );
+  } catch {
+    showToast('⚠️ Could not forge item right now.');
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 14D. Obby Speedrun Gates & Persistent Top-5 Leaderboards (#obby-board-dialog)
+// ----------------------------------------------------------------------------
+
+async function handleObbyGateCrossed(course, gateKind) {
+  if (!sessionToken || currentZone !== ZONE_PLAZA) return;
+  const serverNow = Date.now() + (world3d.serverClockOffsetMs || 0);
+
+  if (gateKind === 'start') {
+    activeObbyRun = { course, startedAtMs: serverNow };
+    world3d.setActiveObbyRun(course);
+    const res = await fetch('/api/ella-world/obby', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, action: 'start', course })
+    }).catch(() => null);
+    if (await handleHttpAuthCheck(res)) return;
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (res && res.ok) {
+      if (typeof data.startedAtMs === 'number') {
+        activeObbyRun = { course, startedAtMs: data.startedAtMs };
+      }
+      showToast(
+        course === 'hard'
+          ? '⏱️🔥 Pro Obby Gauntlet Speedrun STARTED! Sprint to the Summit Finish Gate!'
+          : '⏱️🏃‍♀️ Sky Obby Speedrun STARTED! Sprint to the Summit Finish Gate!',
+        3200
+      );
+    } else {
+      activeObbyRun = null;
+      world3d.setActiveObbyRun(null);
+      if (data.error) showToast(`⚠️ ${data.error}`);
+    }
+    return;
+  }
+
+  if (gateKind === 'finish' && activeObbyRun && activeObbyRun.course === course) {
+    activeObbyRun = null;
+    world3d.setActiveObbyRun(null);
+    const res = await fetch('/api/ella-world/obby', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, action: 'finish', course })
+    }).catch(() => null);
+    if (await handleHttpAuthCheck(res)) return;
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (res && res.ok) {
+      if (data.leaderboards) applyObbyLeaderboards(data.leaderboards);
+      if (data.economy) applyEconomySnapshot(data.economy);
+      if (world3d.selfAvatar) {
+        world3d.spawnCelebrationConfetti(world3d.selfAvatar.group.position);
+      }
+      const rankBadge = data.rank ? ` • #${data.rank} All-Time!` : '';
+      const coinBadge = data.awardedCoins ? ` • +${data.awardedCoins} 🪙` : '';
+      showToast(
+        `⏱️🏆 FINISHED in ${data.timeFormatted || 'record time'}${rankBadge}${coinBadge}!`,
+        6200
+      );
+      announceScreenReaderToast(
+        `Finished ${course === 'hard' ? 'Pro Obby Gauntlet' : 'Sky Obby'} in ${data.timeFormatted || 'record time'}.`
+      );
+    } else if (data.error) {
+      showToast(`⚠️ ${data.error}`);
+    }
+  }
+}
+
+function cancelActiveObbyRun(silent = false) {
+  if (!activeObbyRun) return;
+  activeObbyRun = null;
+  world3d.setActiveObbyRun(null);
+  if (obbySpeedrunBanner) obbySpeedrunBanner.hidden = true;
+  if (sessionToken) {
+    fetch('/api/ella-world/obby', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, action: 'cancel' })
+    }).catch(() => {});
+  }
+  if (!silent) {
+    showToast('⏱️ Obby Speedrun cancelled.');
+  }
+}
+
+function openObbyBoardModal() {
+  renderObbyBoardModal();
+  if (obbyBoardDialog && !obbyBoardDialog.open) {
+    obbyBoardDialog.showModal();
+  }
+}
+
+function renderObbyBoardModal() {
+  const renderCourseList = (listEl, records) => {
+    if (!listEl) return;
+    listEl.replaceChildren();
+    if (!Array.isArray(records) || records.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'obby-leaderboard-empty';
+      li.textContent = 'No timed speedruns recorded yet — cross the green Start Gate to set #1!';
+      listEl.appendChild(li);
+      return;
+    }
+    records.slice(0, 5).forEach((rec, idx) => {
+      const li = document.createElement('li');
+      li.className = 'obby-leaderboard-row';
+      const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
+      const left = document.createElement('span');
+      left.textContent = `${medal} ${rec.displayName || rec.username}`;
+      const right = document.createElement('strong');
+      right.textContent = rec.timeFormatted || `${(Number(rec.elapsedMs || 0) / 1000).toFixed(2)}s`;
+      li.append(left, right);
+      listEl.appendChild(li);
+    });
+  };
+  renderCourseList(document.getElementById('obby-board-easy-list'), obbyLeaderboards.easy);
+  renderCourseList(document.getElementById('obby-board-hard-list'), obbyLeaderboards.hard);
+}
+
+// ----------------------------------------------------------------------------
+// 14E. Dynamic Sky Cycle, Meteor Shower & Catchable Falling Stars (#sky-dialog)
+// ----------------------------------------------------------------------------
+
+async function catchFallingStar(starId) {
+  if (!sessionToken || !starId || starCatchInFlightIds.has(starId)) return;
+  starCatchInFlightIds.add(starId);
+  try {
+    const res = await fetch('/api/ella-world/sky', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, action: 'catch_star', starId })
+    });
+    if (await handleHttpAuthCheck(res)) return;
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      if (data.sky) applySkySnapshot(data.sky);
+      if (data.economy) applyEconomySnapshot(data.economy);
+      if (world3d.selfAvatar) {
+        world3d.spawnSparkleBurst(world3d.selfAvatar.group.position, '#fde047');
+      }
+      showToast(
+        `🌠 Caught a Falling Star! +${data.coins || 12} 🪙${data.bonusShard ? ' • +1x ⭐ Starlight Shard!' : '!'}`,
+        4200
+      );
+    }
+  } catch {
+    // ignore transient race if another friend caught it first
+  } finally {
+    setTimeout(() => starCatchInFlightIds.delete(starId), 1200);
+  }
+}
+
+function syncSkyModalButtons() {
+  if (!skyDialog) return;
+  const activeMode = skyState.mode || 'auto';
+  for (const btn of skyDialog.querySelectorAll('[data-sky-mode]')) {
+    const m = btn.getAttribute('data-sky-mode');
+    btn.classList.toggle('selected', m === activeMode);
+    btn.setAttribute('aria-pressed', String(m === activeMode));
+  }
+}
+
+function openSkyModal() {
+  syncSkyModalButtons();
+  if (skyDialog && !skyDialog.open) {
+    skyDialog.showModal();
+  }
+}
+
+async function mutateSky(payload) {
+  const headers = { ...JSON_HEADERS };
+  if (adminToken) {
+    headers.Authorization = `Bearer ${adminToken}`;
+  }
+  try {
+    const res = await fetch('/api/ella-world/sky', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ token: sessionToken || undefined, ...payload })
+    });
+    if (sessionToken && !adminToken && (await handleHttpAuthCheck(res))) return;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (data.error) showToast(`⚠️ ${data.error}`);
+      return;
+    }
+    if (data.sky) applySkySnapshot(data.sky);
+    if (payload.action === 'set_sky') {
+      showToast(`🌅 Plaza Sky switched to ${payload.mode}!`);
+    } else if (payload.action === 'start_meteor_shower') {
+      showToast('🌠 Meteor Shower launched across Starlight Plaza!');
+      if (skyDialog && skyDialog.open) skyDialog.close();
+    }
+  } catch {
+    showToast('⚠️ Could not update Plaza Sky right now.');
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 14F. Shadow Rift Co-Op Obsidian Dragon Boss Summon
+// ----------------------------------------------------------------------------
+
+async function summonArenaBoss(useBeacon = false) {
+  if (!sessionToken) return;
+  try {
+    const res = await fetch('/api/ella-world/arena/boss', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, useBeacon: Boolean(useBeacon) })
+    });
+    if (await handleHttpAuthCheck(res)) return;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (data.error) showToast(`🐉 ${data.error}`);
+      return;
+    }
+    if (data.arena) world3d.syncArenaSnapshot(data.arena);
+    if (data.boss) applyArenaBossHud(data.boss);
+    if (data.economy) applyEconomySnapshot(data.economy);
+    showToast(
+      '🐉🔥 THE OBSIDIAN RIFT DRAGON HAS AWAKENED! Jump (Space) over purple Shockwave Rings!',
+      6000
+    );
+  } catch {
+    showToast('⚠️ Could not summon the Obsidian Rift Dragon right now.');
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 14G. Wire Expansion Pack HUD Buttons, Modals, Tabs & Popover Listeners
+// ----------------------------------------------------------------------------
+
+if (openCompanionsBtn) {
+  openCompanionsBtn.addEventListener('click', () => openCompanionsModal('pets'));
+}
+if (toggleHoverboardBtn) {
+  toggleHoverboardBtn.addEventListener('click', () => toggleQuickHoverboard());
+}
+if (openHomesBtn) {
+  openHomesBtn.addEventListener('click', () => openHomesModal());
+}
+if (openCraftBtn) {
+  openCraftBtn.addEventListener('click', () => openCraftModal());
+}
+if (openObbyBoardBtn) {
+  openObbyBoardBtn.addEventListener('click', () => openObbyBoardModal());
+}
+if (hudSkyPill) {
+  hudSkyPill.addEventListener('click', () => {
+    const canControlSky =
+      (String(selfUser?.role || '').toLowerCase() === 'host' &&
+        !playerModeration.inDebtorsPrison) ||
+      Boolean(adminToken);
+    if (canControlSky) {
+      openSkyModal();
+    } else {
+      const sp = world3d.getSkyPhaseSummary(Date.now() + (world3d.serverClockOffsetMs || 0));
+      showToast(`${sp.icon} Starlight Plaza Sky: ${sp.label} (12-minute live cycle)`);
+    }
+  });
+}
+if (openSkyBtn) {
+  openSkyBtn.addEventListener('click', () => openSkyModal());
+}
+if (obbySpeedrunCancelBtn) {
+  obbySpeedrunCancelBtn.addEventListener('click', () => cancelActiveObbyRun(false));
+}
+
+// Companions Dialog Tabs (modern-web-guidance: tabs — focusgroup roving fallback + beforematch)
+const companionsTablist = document.getElementById('companions-tablist');
+if (companionsTablist) {
+  companionsTablist.addEventListener('click', (e) => {
+    const tabBtn = e.target instanceof Element ? e.target.closest('[role="tab"]') : null;
+    if (tabBtn) {
+      activateCompanionsTab(tabBtn.id, false);
+    }
+  });
+  if (!('focusgroup' in HTMLElement.prototype)) {
+    companionsTablist.addEventListener('keydown', (e) => {
+      const tabs = Array.from(companionsTablist.querySelectorAll('[role="tab"]'));
+      const curIdx = tabs.indexOf(document.activeElement);
+      if (curIdx === -1) return;
+      let nextIdx = -1;
+      if (e.key === 'ArrowRight') nextIdx = (curIdx + 1) % tabs.length;
+      else if (e.key === 'ArrowLeft') nextIdx = (curIdx - 1 + tabs.length) % tabs.length;
+      else if (e.key === 'Home') nextIdx = 0;
+      else if (e.key === 'End') nextIdx = tabs.length - 1;
+      if (nextIdx !== -1) {
+        e.preventDefault();
+        activateCompanionsTab(tabs[nextIdx].id, true);
+      }
+    });
+  }
+}
+document.getElementById('comp-panel-pets')?.addEventListener('beforematch', () => {
+  activateCompanionsTab('comp-tab-pets', false);
+});
+document.getElementById('comp-panel-mounts')?.addEventListener('beforematch', () => {
+  activateCompanionsTab('comp-tab-mounts', false);
+});
+
+document.getElementById('pet-nickname-form')?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const val = document.getElementById('pet-nickname-input')?.value.trim() || '';
+  mutateCompanions({ action: 'rename_pet', nickname: val });
+});
+
+document.getElementById('hatch-pet-egg-btn')?.addEventListener('click', () => {
+  mutateCompanions({ action: 'hatch_egg' });
+});
+
+// Homes Owner Settings Form
+document.getElementById('home-owner-settings-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const myU = String(selfUser?.username || '').toLowerCase();
+  const myPlot = homesState.find((p) => String(p.ownerUsername || '').toLowerCase() === myU);
+  if (!myPlot) return;
+  const customTitle = document.getElementById('home-custom-title-input')?.value.trim() || '';
+  const rawCo = document.getElementById('home-cobuilders-input')?.value || '';
+  const coBuilders = rawCo
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const doorLocked = Boolean(document.getElementById('home-door-locked-checkbox')?.checked);
+  const out = await mutateHomes({
+    action: 'update_settings',
+    plotId: myPlot.plotId,
+    customTitle,
+    coBuilders,
+    doorLocked
+  });
+  if (out) {
+    showToast('✅ Saved 3D Mailbox Nameplate, Co-Builders & Door Lock settings!');
+  }
+});
+
+document.getElementById('home-release-mine-btn')?.addEventListener('click', async () => {
+  const myU = String(selfUser?.username || '').toLowerCase();
+  const myPlot = homesState.find((p) => String(p.ownerUsername || '').toLowerCase() === myU);
+  if (!myPlot) return;
+  const out = await mutateHomes({ action: 'release', plotId: myPlot.plotId });
+  if (out) {
+    showToast(`🔓 Released ${myPlot.defaultName}. You can claim any open plot anytime!`);
+  }
+});
+
+// Obby Leaderboard Warp-to-Start Buttons
+document.getElementById('obby-board-warp-easy-btn')?.addEventListener('click', () => {
+  if (obbyBoardDialog && obbyBoardDialog.open) obbyBoardDialog.close();
+  cancelActiveObbyRun(true);
+  if (currentZone !== ZONE_PLAZA) {
+    requestZoneTransition(ZONE_PLAZA);
+  } else if (world3d.selfAvatar) {
+    world3d.selfAvatar.group.position.set(17.5, 0.15, 7.2);
+    world3d.velocity.set(0, 0, 0);
+    world3d._emitMoveNow();
+    showToast('⏱️ Ready at the Sky Obby Start Gate — cross the glowing green laser on foot!');
+  }
+});
+
+document.getElementById('obby-board-warp-hard-btn')?.addEventListener('click', () => {
+  if (obbyBoardDialog && obbyBoardDialog.open) obbyBoardDialog.close();
+  cancelActiveObbyRun(true);
+  if (currentZone !== ZONE_PLAZA) {
+    requestZoneTransition(ZONE_PLAZA);
+  } else if (world3d.selfAvatar) {
+    world3d.selfAvatar.group.position.set(-22.5, 0.15, 19.8);
+    world3d.velocity.set(0, 0, 0);
+    world3d._emitMoveNow();
+    showToast('⏱️🔥 Ready at the Pro Obby Gauntlet Start Gate — cross the laser on foot!');
+  }
+});
+
+// Sky Dialog Controls
+if (skyDialog) {
+  skyDialog.addEventListener('click', (e) => {
+    const modeBtn = e.target instanceof Element ? e.target.closest('[data-sky-mode]') : null;
+    if (modeBtn) {
+      const mode = modeBtn.getAttribute('data-sky-mode');
+      if (mode) mutateSky({ action: 'set_sky', mode });
+    }
+  });
+}
+document.getElementById('launch-meteor-shower-btn')?.addEventListener('click', () => {
+  mutateSky({ action: 'start_meteor_shower' });
+});
+
+// Fashion Show Invite Popover Join CTA (Opt-in — warps to Runway & opens Glam Studio!)
+if (fashionInviteJoinBtn) {
+  fashionInviteJoinBtn.addEventListener('click', async () => {
+    hideTopLayerToastPopover(fashionInvitePopover);
+    if (!sessionToken) return;
+    const res = await fetch('/api/ella-world/runway', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, action: 'join_show' })
+    }).catch(() => null);
+    if (await handleHttpAuthCheck(res)) return;
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (res && res.ok) {
+      if (data.runway) applyRunwaySummary(data.runway);
+      if (currentZone !== ZONE_PLAZA) {
+        pendingPostPortalWarp = 'runway';
+        await requestZoneTransition(ZONE_PLAZA);
+      } else {
+        world3d.warpToRunway();
+      }
+      if (!isSalonOpen) openGlamSalon();
+      showToast('👗 Joined the Fashion Show! Style your look before the Dress-Up timer hits 0s!', 4600);
+    } else if (data.error) {
+      showToast(`⚠️ ${data.error}`);
+    }
+  });
+}
+
+// Doorbell Popover Quick-Unlock CTA
+if (doorbellUnlockBtn) {
+  doorbellUnlockBtn.addEventListener('click', async () => {
+    hideTopLayerToastPopover(doorbellPopover);
+    const myU = String(selfUser?.username || '').toLowerCase();
+    const myPlot =
+      homesState.find((p) => p.plotId === lastDoorbellPlotId) ||
+      homesState.find((p) => String(p.ownerUsername || '').toLowerCase() === myU);
+    if (!myPlot) return;
+    const out = await mutateHomes({
+      action: 'update_settings',
+      plotId: myPlot.plotId,
+      customTitle: myPlot.customTitle || '',
+      coBuilders: myPlot.coBuilders || [],
+      doorLocked: false
+    });
+    if (out) {
+      showToast(`🔓 Unlocked ${myPlot.customTitle || myPlot.defaultName} for your visitors!`);
+    }
+  });
 }

@@ -9,23 +9,29 @@ use crate::device_sig::{
     DeviceSealClaims,
 };
 use crate::economy::{
-    add_inventory_item, calculate_escalating_fine, execute_atomic_trade_swap, find_item_def,
-    player_owns_item, reconcile_equipped_cosmetics, remove_inventory_item, roll_crystal_loot,
-    roll_golden_chest_loot, roll_mob_loot, roll_wooden_chest_loot, sanitize_and_validate_offer,
-    ArenaPlayerStatus, ArenaSnapshot, ArenaState, DungeonMob, DungeonSnapshot, DungeonState,
-    PrisonSnapshot, PrisonState, TradeSession, TradeSideOffer, ARENA_RETURN_PORTAL_POS,
-    ARENA_SPAWN_POS, DUNGEON_RETURN_PORTAL_POS, DUNGEON_SPAWN_POS, ITEM_CATALOG,
+    add_inventory_item, calculate_escalating_fine, execute_atomic_trade_swap, find_crafting_recipe,
+    find_item_def, find_mount_def, find_pet_def, max_hp_for_inventory, player_owns_item,
+    reconcile_equipped_cosmetics, remove_inventory_item, roll_boss_personal_loot,
+    roll_crystal_loot, roll_golden_chest_loot, roll_hatched_pet, roll_mob_loot,
+    roll_wooden_chest_loot, sanitize_and_validate_offer, ArenaBossSnapshot, ArenaPlayerStatus,
+    ArenaSnapshot, ArenaState, DungeonMob, DungeonSnapshot, DungeonState, PrisonSnapshot,
+    PrisonState, TradeSession, TradeSideOffer, ARENA_AEGIS_MAX_HP, ARENA_BOSS_ALTAR_POS,
+    ARENA_RETURN_PORTAL_POS, ARENA_SPAWN_POS, CRAFTING_RECIPES, DUNGEON_RETURN_PORTAL_POS,
+    DUNGEON_SPAWN_POS, ITEM_CATALOG, MAX_ITEM_STACK, MOUNT_CATALOG, PET_CATALOG,
     PLAZA_ARENA_PORTAL_POS, PLAZA_ARENA_RETURN_SPAWN_POS, PLAZA_PORTAL_POS, PLAZA_RETURN_SPAWN_POS,
     PRISON_RELEASE_PORTAL_POS, PRISON_SPAWN_POS, PRISON_WORK_REWARD_COINS,
     TRADE_ACTIVE_IDLE_TTL_MS, TRADE_INVITE_TTL_MS,
 };
 use crate::models::{
-    block_occupied_cells, default_block_kind, default_starter_blocks, is_toggleable_block_kind,
+    block_occupied_cells, default_block_kind, default_starter_blocks, find_home_plot_def,
+    find_home_plot_for_cell, find_obby_course, format_obby_time_ms, is_toggleable_block_kind,
     is_two_tall_block_kind, is_valid_block_kind, is_valid_hex_color, normalize_chat_mode, now_ms,
     prebuilt_village_blocks, BlockedChatEntry, BlocksDataFile, ChatMessage, DeviceEvasionEntry,
-    MachineDeviceRecord, PlayerEconomySnapshot, PlayerModerationSnapshot, PlayerRuntimeState,
-    RunwayPublicSummary, RunwayState, SanitizedUser, SavedPosition, UserAccount, UsersConfigFile,
-    VoxelBlock, RUNWAY_THEMES, SAFE_QUICK_CHAT_PHRASES,
+    FallingStarNode, FashionPodiumEntry, FashionShowContestant, HomePlotClaim, HomePlotPublicView,
+    HomePlotsFile, MachineDeviceRecord, ObbyLeaderboardsFile, ObbyRecord, PlayerEconomySnapshot,
+    PlayerModerationSnapshot, PlayerRuntimeState, RunwayPublicSummary, RunwayState, SanitizedUser,
+    SavedPosition, SkyWeatherPublicState, SkyWeatherState, UserAccount, UsersConfigFile,
+    VoxelBlock, RUNWAY_THEMES, SAFE_QUICK_CHAT_PHRASES, SKY_CYCLE_DURATION_MS,
 };
 use crate::persistence::PersistenceStore;
 use crate::udp_wire::{
@@ -41,6 +47,12 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch, RwLock};
 
 pub const DEFAULT_DISCONNECT_GRACE_MS: u64 = 12_000;
+
+#[derive(Clone, Debug)]
+pub struct ActiveObbyRun {
+    pub course_id: String,
+    pub started_at_ms: u64,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -62,6 +74,8 @@ pub enum UdpWorldEvent {
         #[serde(rename = "blocksVersion")]
         blocks_version: u64,
         runway: RunwayPublicSummary,
+        sky: SkyWeatherPublicState,
+        homes: Vec<HomePlotPublicView>,
         players: Vec<PlayerRuntimeState>,
     },
     PlayerJoin {
@@ -112,6 +126,40 @@ pub enum UdpWorldEvent {
         stars: Option<u8>,
         runway: RunwayPublicSummary,
     },
+    HomesSync {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event: Option<String>,
+        plots: Vec<HomePlotPublicView>,
+    },
+    HomeDoorbell {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
+        #[serde(rename = "plotId")]
+        plot_id: String,
+        #[serde(rename = "plotName")]
+        plot_name: String,
+        #[serde(rename = "ringerName")]
+        ringer_name: String,
+        #[serde(rename = "ownerUsername", skip_serializing_if = "Option::is_none")]
+        owner_username: Option<String>,
+    },
+    ObbyLeaderboard {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
+        course: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        record: Option<ObbyRecord>,
+        leaderboards: ObbyLeaderboardsFile,
+    },
+    SkySync {
+        #[serde(rename = "stateSeq")]
+        state_seq: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event: Option<String>,
+        sky: SkyWeatherPublicState,
+    },
     VoiceSlotMap {
         #[serde(rename = "targetSelfId")]
         target_self_id: String,
@@ -153,6 +201,8 @@ pub enum UdpWorldEvent {
         #[serde(rename = "serverTimeMs")]
         server_time_ms: u64,
         mobs: Vec<DungeonMob>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        boss: Option<ArenaBossSnapshot>,
     },
     ArenaSync {
         #[serde(rename = "stateSeq")]
@@ -173,6 +223,8 @@ pub enum UdpWorldEvent {
         to: [f32; 3],
         #[serde(rename = "hitMobId", skip_serializing_if = "Option::is_none")]
         hit_mob_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        style: Option<String>,
     },
 }
 
@@ -314,6 +366,12 @@ pub struct WorldEngine {
     pub store: Arc<PersistenceStore>,
     pub users_cfg: RwLock<UsersConfigFile>,
     pub blocks_data: RwLock<BlocksDataFile>,
+    pub homes_data: RwLock<HomePlotsFile>,
+    pub obby_leaderboards: RwLock<ObbyLeaderboardsFile>,
+    pub active_obby_runs: RwLock<HashMap<String, ActiveObbyRun>>,
+    pub obby_reward_cooldowns: RwLock<HashMap<String, u64>>,
+    pub sky_state: RwLock<SkyWeatherState>,
+    pub doorbell_cooldowns: RwLock<HashMap<String, u64>>,
     pub players: RwLock<HashMap<String, PlayerRuntimeState>>,
     pub chats: RwLock<VecDeque<ChatMessage>>,
     pub chat_cooldowns: RwLock<HashMap<String, VecDeque<u64>>>,
@@ -372,6 +430,8 @@ impl WorldEngine {
             blocks_data.version = blocks_data.version.saturating_add(1).max(1);
             store.save_blocks(&blocks_data)?;
         }
+        let homes_data = store.load_or_init_homes()?;
+        let obby_leaderboards = store.load_or_init_leaderboards()?;
         let initial_chat_count = store.count_chats();
         let initial_blocked_count = store.count_blocked_chats();
         let initial_evasion_count = store.count_device_evasions();
@@ -392,6 +452,12 @@ impl WorldEngine {
             store,
             users_cfg: RwLock::new(users_cfg),
             blocks_data: RwLock::new(blocks_data),
+            homes_data: RwLock::new(homes_data),
+            obby_leaderboards: RwLock::new(obby_leaderboards),
+            active_obby_runs: RwLock::new(HashMap::new()),
+            obby_reward_cooldowns: RwLock::new(HashMap::new()),
+            sky_state: RwLock::new(SkyWeatherState::default()),
+            doorbell_cooldowns: RwLock::new(HashMap::new()),
             players: RwLock::new(HashMap::new()),
             chats: RwLock::new(chat_deque),
             chat_cooldowns: RwLock::new(HashMap::new()),
@@ -432,6 +498,10 @@ impl WorldEngine {
                 if tick_counter.is_multiple_of(10) {
                     bg.prune_stale_players().await;
                     bg.prune_expired_trades().await;
+                    bg.tick_fashion_show().await;
+                }
+                if tick_counter.is_multiple_of(20) {
+                    bg.tick_sky_and_meteors().await;
                 }
                 if tick_counter.is_multiple_of(5) {
                     bg.tick_dungeon_if_occupied().await;
@@ -1317,7 +1387,7 @@ impl WorldEngine {
                 .cloned()?
         };
         let sanitized = found_user.sanitized();
-        let avatar_hash = sanitized.avatar.short_hash();
+        let avatar_hash = sanitized.visual_hash();
         let now = now_ms();
 
         let mut map = self.players.write().await;
@@ -1464,7 +1534,7 @@ impl WorldEngine {
         let token = self.mint_player_token(&self_id, found_user, session_epoch, dev_id_opt);
 
         let sanitized = found_user.sanitized();
-        let avatar_hash = sanitized.avatar.short_hash();
+        let avatar_hash = sanitized.visual_hash();
         let now = now_ms();
 
         let (player_doc, is_brand_new) = {
@@ -1549,6 +1619,9 @@ impl WorldEngine {
             .collect();
 
         let blocks_snapshot = self.blocks_data.read().await.clone();
+        let homes_views = self.homes_data.read().await.public_views();
+        let obby_boards = self.obby_leaderboards.read().await.clone();
+        let sky_snapshot = self.sky_state.read().await.snapshot(now);
         let chat_history: Vec<ChatMessage> = self
             .chats
             .read()
@@ -1567,6 +1640,7 @@ impl WorldEngine {
         };
         let prison_snapshot = self.prison.read().await.snapshot();
         let economy_snapshot = found_user.economy_snapshot();
+        let companions_snapshot = found_user.companions_snapshot();
         let moderation_snapshot = found_user.moderation_snapshot();
         let cfg = self.users_cfg.read().await;
 
@@ -1576,8 +1650,15 @@ impl WorldEngine {
             "self": player_doc,
             "user": sanitized,
             "economy": economy_snapshot,
+            "companions": companions_snapshot,
             "moderation": moderation_snapshot,
             "itemCatalog": ITEM_CATALOG,
+            "petCatalog": PET_CATALOG,
+            "mountCatalog": MOUNT_CATALOG,
+            "craftingRecipes": CRAFTING_RECIPES,
+            "homes": homes_views,
+            "obbyLeaderboards": obby_boards,
+            "sky": sky_snapshot,
             "dungeon": dungeon_snapshot,
             "arena": arena_snapshot,
             "arenaStatus": arena_status,
@@ -1624,6 +1705,7 @@ impl WorldEngine {
         username: &str,
     ) -> Option<serde_json::Value> {
         let me = self.ensure_player_online(self_id, username).await?;
+        let now = now_ms();
         let others: Vec<PlayerRuntimeState> = self
             .players
             .read()
@@ -1633,6 +1715,9 @@ impl WorldEngine {
             .cloned()
             .collect();
         let blocks_snapshot = self.blocks_data.read().await.clone();
+        let homes_views = self.homes_data.read().await.public_views();
+        let obby_boards = self.obby_leaderboards.read().await.clone();
+        let sky_snapshot = self.sky_state.read().await.snapshot(now);
         let chat_history: Vec<ChatMessage> = self
             .chats
             .read()
@@ -1650,13 +1735,19 @@ impl WorldEngine {
             (ar.snapshot(), ar.status_for(self_id))
         };
         let prison_snapshot = self.prison.read().await.snapshot();
-        let (economy_snapshot, moderation_snapshot, parental_world) = {
+        let (economy_snapshot, companions_snapshot, moderation_snapshot, parental_world) = {
             let cfg = self.users_cfg.read().await;
-            let (econ, mod_snap) = cfg
+            let (econ, comp, mod_snap) = cfg
                 .users
                 .iter()
                 .find(|u| u.username.eq_ignore_ascii_case(username))
-                .map(|u| (u.economy_snapshot(), u.moderation_snapshot()))
+                .map(|u| {
+                    (
+                        u.economy_snapshot(),
+                        Some(u.companions_snapshot()),
+                        u.moderation_snapshot(),
+                    )
+                })
                 .unwrap_or_default();
             let pw = serde_json::json!({
                 "globalVoiceEnabled": cfg.global_voice_enabled,
@@ -1666,19 +1757,26 @@ impl WorldEngine {
                 "debtPrisonThreshold": cfg.debt_prison_threshold,
                 "prisonStrikeThreshold": cfg.prison_strike_threshold,
             });
-            (econ, mod_snap, pw)
+            (econ, comp, mod_snap, pw)
         };
 
         Some(serde_json::json!({
             "type": "welcome_snapshot",
             "stateSeq": self.current_state_seq(),
-            "serverTimeMs": now_ms(),
+            "serverTimeMs": now,
             "selfId": self_id,
             "self": me,
             "economy": economy_snapshot,
+            "companions": companions_snapshot,
             "moderation": moderation_snapshot,
             "parentalWorld": parental_world,
             "itemCatalog": ITEM_CATALOG,
+            "petCatalog": PET_CATALOG,
+            "mountCatalog": MOUNT_CATALOG,
+            "craftingRecipes": CRAFTING_RECIPES,
+            "homes": homes_views,
+            "obbyLeaderboards": obby_boards,
+            "sky": sky_snapshot,
             "dungeon": dungeon_snapshot,
             "arena": arena_snapshot,
             "arenaStatus": arena_status,
@@ -1692,14 +1790,19 @@ impl WorldEngine {
     }
 
     pub async fn build_sync_digest(&self) -> UdpWorldEvent {
+        let now = now_ms();
         let players = self.active_players_list().await;
         let blocks_version = self.blocks_data.read().await.version;
         let runway = self.runway.read().await.summary();
+        let sky = self.sky_state.read().await.snapshot(now);
+        let homes = self.homes_data.read().await.public_views();
         UdpWorldEvent::WorldSyncDigest {
             state_seq: self.current_state_seq(),
-            server_time_ms: now_ms(),
+            server_time_ms: now,
             blocks_version,
             runway,
+            sky,
+            homes,
             players,
         }
     }
@@ -1757,6 +1860,22 @@ impl WorldEngine {
         let store = Arc::clone(&self.store);
         let _ = tokio::task::spawn_blocking(move || {
             let _ = store.save_blocks(&snapshot);
+        })
+        .await;
+    }
+
+    pub async fn persist_homes_async(&self, snapshot: HomePlotsFile) {
+        let store = Arc::clone(&self.store);
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = store.save_homes(&snapshot);
+        })
+        .await;
+    }
+
+    pub async fn persist_leaderboards_async(&self, snapshot: ObbyLeaderboardsFile) {
+        let store = Arc::clone(&self.store);
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = store.save_leaderboards(&snapshot);
         })
         .await;
     }
@@ -2093,21 +2212,32 @@ impl WorldEngine {
         }
 
         let action = input.action.trim();
-        let (in_prison, can_build) = {
+        let (in_prison, can_build, actor_role) = {
             let cfg = self.users_cfg.read().await;
             cfg.users
                 .iter()
                 .find(|u| u.username.eq_ignore_ascii_case(username))
-                .map(|u| (u.in_debtors_prison, u.can_build))
-                .unwrap_or((false, true))
+                .map(|u| (u.in_debtors_prison, u.can_build, u.role.clone()))
+                .unwrap_or((false, true, "friend".into()))
         };
 
         if in_prison {
             return Err("Block building and doors are disabled while in Debtor's Prison!".into());
         }
 
-        // 1. Interactive Door / Double Door / Window hinge toggle (`action == "toggle"`)
+        // 1. Interactive Door / Double Door / Window / Lamp Switch toggle (`action == "toggle"`)
         if action == "toggle" {
+            let plot_claim_opt = if let Some(def) = find_home_plot_for_cell(x, z) {
+                let hd = self.homes_data.read().await;
+                hd.plots
+                    .iter()
+                    .find(|p| p.plot_id == def.id)
+                    .cloned()
+                    .map(|c| (def, c))
+            } else {
+                None
+            };
+
             let (next_version, snapshot, blocks_file) = {
                 let mut bd = self.blocks_data.write().await;
                 let target_idx = bd.blocks.iter().position(|b| {
@@ -2115,8 +2245,28 @@ impl WorldEngine {
                         && block_occupied_cells(b.x, b.y, b.z, &b.kind, b.rot).contains(&(x, y, z))
                 });
                 let Some(idx) = target_idx else {
-                    return Err("No door or window at that spot to open or close.".into());
+                    return Err("No door, window, or lamp switch at that spot to toggle.".into());
                 };
+                if let Some((_def, ref claim)) = plot_claim_opt {
+                    if claim.owner_username.is_some()
+                        && !claim.is_authorized_builder(username, &actor_role)
+                    {
+                        let is_door =
+                            matches!(bd.blocks[idx].kind.as_str(), "door" | "double_door");
+                        if is_door && claim.door_locked {
+                            return Err(
+                                "🔒 This home's doors are Locked! Ring the Doorbell 🔔 at the mailbox to visit."
+                                    .into(),
+                            );
+                        }
+                        if !is_door {
+                            return Err(
+                                "🏡 Only the home owner or invited Co-Builders can toggle windows and lamp switches here!"
+                                    .into(),
+                            );
+                        }
+                    }
+                }
                 bd.blocks[idx].open = !bd.blocks[idx].open;
                 bd.version += 1;
                 (bd.version, bd.blocks.clone(), bd.clone())
@@ -2136,8 +2286,38 @@ impl WorldEngine {
             return Err("Block building is currently locked for your account by a parent.".into());
         }
 
+        // Helper to enforce Claimed Home Plot build/remove protection
+        let check_cells_plot_permission = |cells: &[(i32, i32, i32)],
+                                           homes: &HomePlotsFile|
+         -> Result<(), String> {
+            for &(cx, _cy, cz) in cells {
+                if let Some(def) = find_home_plot_for_cell(cx, cz) {
+                    if let Some(claim) = homes.plots.iter().find(|p| p.plot_id == def.id) {
+                        if let Some(ref owner_uname) = claim.owner_username {
+                            if !claim.is_authorized_builder(username, &actor_role) {
+                                let owner_disp = claim
+                                    .owner_display_name
+                                    .as_deref()
+                                    .unwrap_or(owner_uname.as_str());
+                                let title =
+                                    claim.custom_title.as_deref().unwrap_or(def.default_name);
+                                return Err(format!(
+                                    "🏡 '{title}' is claimed by {owner_disp}! Ask them to add you as a Co-Builder."
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        };
+
         // 2. Remove block / furniture / displayed loot trophy (`action == "remove"`)
         if action == "remove" {
+            {
+                let hd = self.homes_data.read().await;
+                check_cells_plot_permission(&[(x, y, z)], &hd)?;
+            }
             let (next_version, snapshot, blocks_file, refunded_loot) = {
                 let mut bd = self.blocks_data.write().await;
                 let hit_idx = bd.blocks.iter().position(|b| {
@@ -2146,7 +2326,9 @@ impl WorldEngine {
                 let mut refund: Option<(String, String)> = None;
                 if let Some(idx) = hit_idx {
                     if let Some(ref item_id) = bd.blocks[idx].loot_item_id {
-                        if !bd.blocks[idx].author.eq_ignore_ascii_case(username) {
+                        if !bd.blocks[idx].author.eq_ignore_ascii_case(username)
+                            && !actor_role.eq_ignore_ascii_case("host")
+                        {
                             return Err(format!(
                                 "Only {} can pick up their displayed trophy!",
                                 bd.blocks[idx].author
@@ -2211,6 +2393,10 @@ impl WorldEngine {
             !(-100..=100).contains(&cx) || !(1..=80).contains(&cy) || !(-100..=100).contains(&cz)
         }) {
             return Err("That double door extends past the edge of the buildable map!".into());
+        }
+        {
+            let hd = self.homes_data.read().await;
+            check_cells_plot_permission(&new_cells, &hd)?;
         }
         let valid_color = input
             .color
@@ -2324,7 +2510,7 @@ impl WorldEngine {
         if let Some(lid) = deducted_loot_id {
             self.persist_users_async().await;
             if let Some(sanitized) = updated_sanitized_after_deduct {
-                let avatar_hash = sanitized.avatar.short_hash();
+                let avatar_hash = sanitized.visual_hash();
                 {
                     let mut map = self.players.write().await;
                     for p in map.values_mut() {
@@ -2374,7 +2560,7 @@ impl WorldEngine {
             user.sanitized()
         };
         self.persist_users_async().await;
-        let avatar_hash = sanitized.avatar.short_hash();
+        let avatar_hash = sanitized.visual_hash();
 
         {
             let mut map = self.players.write().await;
@@ -2805,19 +2991,304 @@ impl WorldEngine {
         theme: Option<&str>,
         target_username: Option<&str>,
         stars: Option<u8>,
-    ) -> RunwayPublicSummary {
-        let imprisoned = {
+    ) -> Result<RunwayPublicSummary, String> {
+        let (imprisoned, disp_name, actor_role) = {
             let cfg = self.users_cfg.read().await;
             cfg.users
                 .iter()
                 .find(|u| u.username.eq_ignore_ascii_case(username))
-                .map(|u| u.in_debtors_prison)
-                .unwrap_or(false)
+                .map(|u| {
+                    let dn = if u.display_name.is_empty() {
+                        u.username.clone()
+                    } else {
+                        u.display_name.clone()
+                    };
+                    (u.in_debtors_prison, dn, u.role.clone())
+                })
+                .unwrap_or((false, username.to_string(), "friend".into()))
         };
         if imprisoned {
-            return self.runway.read().await.summary();
+            return Err("Fashion Runway actions are paused while in Debtor's Prison!".into());
         }
+
+        let now = now_ms();
         let mut rw = self.runway.write().await;
+
+        if action == "start_show" {
+            if rw.show.phase == "dress_up" || rw.show.phase == "catwalk" {
+                // If show is already running, treat start_show from another player as opting in!
+                if rw.show.contestants.len() < 16
+                    && !rw
+                        .show
+                        .contestants
+                        .iter()
+                        .any(|c| c.username.eq_ignore_ascii_case(username))
+                {
+                    rw.show.contestants.push(FashionShowContestant {
+                        username: username.to_lowercase(),
+                        display_name: disp_name.clone(),
+                        ready: false,
+                    });
+                    rw.updated_at = now;
+                    let summary = rw.summary();
+                    drop(rw);
+                    let seq = self.next_state_seq();
+                    let _ = self.udp_event_tx.send(UdpWorldEvent::Runway {
+                        state_seq: seq,
+                        event: "show_joined".into(),
+                        actor_name: Some(disp_name),
+                        voter_id: None,
+                        voter_name: None,
+                        target_username: None,
+                        stars: None,
+                        runway: summary.clone(),
+                    });
+                    return Ok(summary);
+                }
+                return Ok(rw.summary());
+            }
+
+            let next_theme = theme
+                .filter(|t| RUNWAY_THEMES.contains(t))
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    let idx = RUNWAY_THEMES
+                        .iter()
+                        .position(|t| *t == rw.theme)
+                        .unwrap_or(0);
+                    RUNWAY_THEMES[(idx + 1) % RUNWAY_THEMES.len()].to_string()
+                });
+            rw.theme = next_theme.clone();
+            rw.updated_at = now;
+            rw.votes_by_target.clear();
+            rw.show.show_id = rw.show.show_id.saturating_add(1).max(1);
+            rw.show.phase = "dress_up".to_string();
+            rw.show.started_by = Some(disp_name.clone());
+            rw.show.phase_started_at = now;
+            rw.show.phase_ends_at = now + 45_000;
+            rw.show.contestants = vec![FashionShowContestant {
+                username: username.to_lowercase(),
+                display_name: disp_name.clone(),
+                ready: false,
+            }];
+            rw.show.spotlight_index = 0;
+            rw.show.podium_winners.clear();
+            let summary = rw.summary();
+            drop(rw);
+
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::Runway {
+                state_seq: seq,
+                event: "show_started".into(),
+                actor_name: Some(disp_name.clone()),
+                voter_id: None,
+                voter_name: None,
+                target_username: None,
+                stars: None,
+                runway: summary.clone(),
+            });
+            let _ = self
+                .broadcast_system_chat_notice(format!(
+                    "👗✨ {disp_name} started a Timed Fashion Show! Theme: {next_theme} — Click 'Join Show' in the invite banner (45s Dress-Up)!"
+                ))
+                .await;
+            return Ok(summary);
+        }
+
+        if action == "join_show" {
+            if (rw.show.phase == "dress_up" || rw.show.phase == "catwalk")
+                && rw.show.contestants.len() < 16
+                && !rw
+                    .show
+                    .contestants
+                    .iter()
+                    .any(|c| c.username.eq_ignore_ascii_case(username))
+            {
+                rw.show.contestants.push(FashionShowContestant {
+                    username: username.to_lowercase(),
+                    display_name: disp_name.clone(),
+                    ready: false,
+                });
+                rw.updated_at = now;
+                let summary = rw.summary();
+                drop(rw);
+                let seq = self.next_state_seq();
+                let _ = self.udp_event_tx.send(UdpWorldEvent::Runway {
+                    state_seq: seq,
+                    event: "show_joined".into(),
+                    actor_name: Some(disp_name),
+                    voter_id: None,
+                    voter_name: None,
+                    target_username: None,
+                    stars: None,
+                    runway: summary.clone(),
+                });
+                return Ok(summary);
+            }
+            return Ok(rw.summary());
+        }
+
+        if action == "leave_show" {
+            let before = rw.show.contestants.len();
+            rw.show
+                .contestants
+                .retain(|c| !c.username.eq_ignore_ascii_case(username));
+            if rw.show.contestants.len() != before {
+                if rw.show.contestants.is_empty() && rw.show.phase != "podium" {
+                    rw.show.phase = "idle".to_string();
+                    rw.show.phase_ends_at = 0;
+                } else if rw.show.spotlight_index >= rw.show.contestants.len() {
+                    rw.show.spotlight_index = rw.show.contestants.len().saturating_sub(1);
+                }
+                rw.updated_at = now;
+                let summary = rw.summary();
+                drop(rw);
+                let seq = self.next_state_seq();
+                let _ = self.udp_event_tx.send(UdpWorldEvent::Runway {
+                    state_seq: seq,
+                    event: "show_left".into(),
+                    actor_name: Some(disp_name),
+                    voter_id: None,
+                    voter_name: None,
+                    target_username: None,
+                    stars: None,
+                    runway: summary.clone(),
+                });
+                return Ok(summary);
+            }
+            return Ok(rw.summary());
+        }
+
+        if action == "ready_show" {
+            if rw.show.phase == "dress_up" {
+                let mut changed = false;
+                for c in &mut rw.show.contestants {
+                    if c.username.eq_ignore_ascii_case(username) && !c.ready {
+                        c.ready = true;
+                        changed = true;
+                    }
+                }
+                if changed {
+                    let all_ready = !rw.show.contestants.is_empty()
+                        && rw.show.contestants.iter().all(|c| c.ready);
+                    if all_ready {
+                        rw.show.phase = "catwalk".to_string();
+                        rw.show.spotlight_index = 0;
+                        rw.show.phase_started_at = now;
+                        rw.show.phase_ends_at = now + 12_000;
+                    }
+                    rw.updated_at = now;
+                    let ev = if all_ready {
+                        "show_catwalk"
+                    } else {
+                        "show_ready"
+                    };
+                    let summary = rw.summary();
+                    drop(rw);
+                    let seq = self.next_state_seq();
+                    let _ = self.udp_event_tx.send(UdpWorldEvent::Runway {
+                        state_seq: seq,
+                        event: ev.into(),
+                        actor_name: Some(disp_name),
+                        voter_id: None,
+                        voter_name: None,
+                        target_username: None,
+                        stars: None,
+                        runway: summary.clone(),
+                    });
+                    return Ok(summary);
+                }
+            }
+            return Ok(rw.summary());
+        }
+
+        if action == "advance_phase" {
+            let is_privileged = actor_role.eq_ignore_ascii_case("host")
+                || actor_role.eq_ignore_ascii_case("admin")
+                || self_id == "admin";
+            let is_starter = rw
+                .show
+                .contestants
+                .first()
+                .map(|c| c.username.eq_ignore_ascii_case(username))
+                .unwrap_or(false);
+            if is_privileged || is_starter {
+                match rw.show.phase.as_str() {
+                    "dress_up" => {
+                        if rw.show.contestants.is_empty() {
+                            rw.show.phase = "idle".into();
+                        } else {
+                            rw.show.phase = "catwalk".into();
+                            rw.show.spotlight_index = 0;
+                            rw.show.phase_started_at = now;
+                            rw.show.phase_ends_at = now + 12_000;
+                        }
+                        rw.updated_at = now;
+                        let summary = rw.summary();
+                        drop(rw);
+                        let seq = self.next_state_seq();
+                        let _ = self.udp_event_tx.send(UdpWorldEvent::Runway {
+                            state_seq: seq,
+                            event: "show_catwalk".into(),
+                            actor_name: Some(disp_name),
+                            voter_id: None,
+                            voter_name: None,
+                            target_username: None,
+                            stars: None,
+                            runway: summary.clone(),
+                        });
+                        return Ok(summary);
+                    }
+                    "catwalk" => {
+                        if rw.show.spotlight_index + 1 < rw.show.contestants.len() {
+                            rw.show.spotlight_index += 1;
+                            rw.show.phase_started_at = now;
+                            rw.show.phase_ends_at = now + 12_000;
+                            rw.updated_at = now;
+                            let summary = rw.summary();
+                            drop(rw);
+                            let seq = self.next_state_seq();
+                            let _ = self.udp_event_tx.send(UdpWorldEvent::Runway {
+                                state_seq: seq,
+                                event: "show_spotlight".into(),
+                                actor_name: None,
+                                voter_id: None,
+                                voter_name: None,
+                                target_username: None,
+                                stars: None,
+                                runway: summary.clone(),
+                            });
+                            return Ok(summary);
+                        } else {
+                            drop(rw);
+                            return Ok(self.finalize_fashion_show_podium(now).await);
+                        }
+                    }
+                    "podium" => {
+                        rw.show.phase = "idle".into();
+                        rw.show.phase_ends_at = 0;
+                        rw.updated_at = now;
+                        let summary = rw.summary();
+                        drop(rw);
+                        let seq = self.next_state_seq();
+                        let _ = self.udp_event_tx.send(UdpWorldEvent::Runway {
+                            state_seq: seq,
+                            event: "show_ended".into(),
+                            actor_name: None,
+                            voter_id: None,
+                            voter_name: None,
+                            target_username: None,
+                            stars: None,
+                            runway: summary.clone(),
+                        });
+                        return Ok(summary);
+                    }
+                    _ => {}
+                }
+            }
+            return Ok(rw.summary());
+        }
+
         if action == "theme" {
             let next_theme = theme
                 .filter(|t| RUNWAY_THEMES.contains(t))
@@ -2830,7 +3301,7 @@ impl WorldEngine {
                     RUNWAY_THEMES[(idx + 1) % RUNWAY_THEMES.len()].to_string()
                 });
             rw.theme = next_theme;
-            rw.updated_at = now_ms();
+            rw.updated_at = now;
             rw.votes_by_target.clear();
             let summary = rw.summary();
             drop(rw);
@@ -2845,7 +3316,7 @@ impl WorldEngine {
                 stars: None,
                 runway: summary.clone(),
             });
-            return summary;
+            return Ok(summary);
         }
 
         if action == "vote" {
@@ -2858,11 +3329,18 @@ impl WorldEngine {
                 .take(64)
                 .collect::<String>();
             let voter_key = username.trim().to_lowercase();
+            // Prevent self-voting during an active Timed Fashion Show (friendly AI Judges score solo contestants!)
+            if rw.show.phase != "idle" && clean_target == voter_key {
+                return Err(
+                    "No self-voting during an active Fashion Show — friendly AI Judges score your own look!"
+                        .into(),
+                );
+            }
             rw.votes_by_target
                 .entry(clean_target.clone())
                 .or_default()
                 .insert(voter_key, clean_stars);
-            rw.updated_at = now_ms();
+            rw.updated_at = now;
             let summary = rw.summary();
             drop(rw);
             let seq = self.next_state_seq();
@@ -2876,10 +3354,212 @@ impl WorldEngine {
                 stars: Some(clean_stars),
                 runway: summary.clone(),
             });
-            return summary;
+            return Ok(summary);
         }
 
-        rw.summary()
+        Ok(rw.summary())
+    }
+
+    /// Computes AI Judge bonus ratings when `< 3` human voters participated, ranks Podium winners,
+    /// awards Starlight Coin prizes (`+60 / +40 / +25 / +15 🪙`), and transitions Runway to `"podium"`.
+    pub async fn finalize_fashion_show_podium(&self, now: u64) -> RunwayPublicSummary {
+        const AI_JUDGES: &[&str] = &[
+            "__ai_judge_starlight",
+            "__ai_stylist_coco",
+            "__ai_maven_aria",
+        ];
+        let (summary, payouts, winner_headline) = {
+            let mut rw = self.runway.write().await;
+            if rw.show.contestants.is_empty() {
+                rw.show.phase = "idle".to_string();
+                rw.show.phase_ends_at = 0;
+                return rw.summary();
+            }
+
+            let show_id = rw.show.show_id as usize;
+            let contestants_snap = rw.show.contestants.clone();
+            let mut ranked: Vec<(String, String, f64, u32, usize, bool)> = Vec::new();
+            for (idx, c) in contestants_snap.iter().enumerate() {
+                let target_key = c.username.to_lowercase();
+                let voter_map = rw.votes_by_target.entry(target_key.clone()).or_default();
+                let human_voters = voter_map
+                    .keys()
+                    .filter(|k| !k.starts_with("__ai_") && **k != target_key)
+                    .count();
+                let mut ai_judged = false;
+                if human_voters < 3 {
+                    ai_judged = true;
+                    let needed = 3 - human_voters;
+                    for (j_idx, judge_id) in AI_JUDGES.iter().take(needed).enumerate() {
+                        // Friendly 4★-5★ AI Judge scores so solo/duo shows always feel celebratory!
+                        let score: u8 = if (show_id + idx + j_idx).is_multiple_of(3) {
+                            4
+                        } else {
+                            5
+                        };
+                        voter_map.insert((*judge_id).to_string(), score);
+                    }
+                }
+                let total: u32 = voter_map.values().map(|&s| u32::from(s)).sum();
+                let count = voter_map.len().max(1);
+                let avg = ((f64::from(total) / count as f64) * 100.0).round() / 100.0;
+                ranked.push((
+                    c.username.clone(),
+                    c.display_name.clone(),
+                    avg,
+                    total,
+                    count,
+                    ai_judged,
+                ));
+            }
+
+            ranked.sort_by(|a, b| {
+                b.2.partial_cmp(&a.2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.3.cmp(&a.3))
+            });
+
+            let mut podium = Vec::with_capacity(ranked.len());
+            let mut coin_payouts: Vec<(String, u64)> = Vec::with_capacity(ranked.len());
+            for (i, (uname, dname, avg, _tot, votes, ai_judged)) in ranked.into_iter().enumerate() {
+                let place = (i + 1) as u8;
+                let prize: u64 = match place {
+                    1 => 60,
+                    2 => 40,
+                    3 => 25,
+                    _ => 15,
+                };
+                coin_payouts.push((uname.clone(), prize));
+                if place <= 3 {
+                    podium.push(FashionPodiumEntry {
+                        place,
+                        username: uname,
+                        display_name: dname,
+                        avg_stars: avg,
+                        votes,
+                        prize_coins: prize,
+                        ai_judged,
+                    });
+                }
+            }
+
+            let headline = podium.first().map(|w| {
+                format!(
+                    "👑👗 Fashion Show Winner: {} took 1st Place ({:.2}★) for '{}' and won +{} 🪙!",
+                    w.display_name, w.avg_stars, rw.theme, w.prize_coins
+                )
+            });
+
+            rw.show.phase = "podium".to_string();
+            rw.show.phase_started_at = now;
+            rw.show.phase_ends_at = now + 18_000;
+            rw.show.podium_winners = podium;
+            rw.updated_at = now;
+            (rw.summary(), coin_payouts, headline)
+        };
+
+        if !payouts.is_empty() {
+            {
+                let mut cfg = self.users_cfg.write().await;
+                for (uname, prize) in &payouts {
+                    if let Some(u) = cfg
+                        .users
+                        .iter_mut()
+                        .find(|u| u.username.eq_ignore_ascii_case(uname))
+                    {
+                        u.coins = u.coins.saturating_add(*prize as i64);
+                    }
+                }
+            }
+            self.persist_users_async().await;
+            for (uname, _) in &payouts {
+                self.send_economy_update("runway", uname, "fashion_show_prize")
+                    .await;
+            }
+        }
+
+        let seq = self.next_state_seq();
+        let _ = self.udp_event_tx.send(UdpWorldEvent::Runway {
+            state_seq: seq,
+            event: "show_podium".into(),
+            actor_name: None,
+            voter_id: None,
+            voter_name: None,
+            target_username: None,
+            stars: None,
+            runway: summary.clone(),
+        });
+
+        if let Some(msg) = winner_headline {
+            let _ = self.broadcast_system_chat_notice(msg).await;
+        }
+        summary
+    }
+
+    pub async fn tick_fashion_show(&self) {
+        let now = now_ms();
+        enum NextAction {
+            None,
+            Broadcast(String, Box<RunwayPublicSummary>),
+            FinalizePodium,
+        }
+        let action = {
+            let mut rw = self.runway.write().await;
+            if rw.show.phase == "idle" || now < rw.show.phase_ends_at {
+                NextAction::None
+            } else if rw.show.phase == "dress_up" {
+                if rw.show.contestants.is_empty() {
+                    rw.show.phase = "idle".to_string();
+                    rw.show.phase_ends_at = 0;
+                    rw.updated_at = now;
+                    NextAction::Broadcast("show_ended".into(), Box::new(rw.summary()))
+                } else {
+                    rw.show.phase = "catwalk".to_string();
+                    rw.show.spotlight_index = 0;
+                    rw.show.phase_started_at = now;
+                    rw.show.phase_ends_at = now + 12_000;
+                    rw.updated_at = now;
+                    NextAction::Broadcast("show_catwalk".into(), Box::new(rw.summary()))
+                }
+            } else if rw.show.phase == "catwalk" {
+                if rw.show.spotlight_index + 1 < rw.show.contestants.len() {
+                    rw.show.spotlight_index += 1;
+                    rw.show.phase_started_at = now;
+                    rw.show.phase_ends_at = now + 12_000;
+                    rw.updated_at = now;
+                    NextAction::Broadcast("show_spotlight".into(), Box::new(rw.summary()))
+                } else {
+                    NextAction::FinalizePodium
+                }
+            } else if rw.show.phase == "podium" {
+                rw.show.phase = "idle".to_string();
+                rw.show.phase_ends_at = 0;
+                rw.updated_at = now;
+                NextAction::Broadcast("show_ended".into(), Box::new(rw.summary()))
+            } else {
+                NextAction::None
+            }
+        };
+
+        match action {
+            NextAction::None => {}
+            NextAction::Broadcast(ev, summary) => {
+                let seq = self.next_state_seq();
+                let _ = self.udp_event_tx.send(UdpWorldEvent::Runway {
+                    state_seq: seq,
+                    event: ev,
+                    actor_name: None,
+                    voter_id: None,
+                    voter_name: None,
+                    target_username: None,
+                    stars: None,
+                    runway: *summary,
+                });
+            }
+            NextAction::FinalizePodium => {
+                let _ = self.finalize_fashion_show_podium(now).await;
+            }
+        }
     }
 
     pub async fn reset_world_blocks(&self, clear_all: bool) -> Vec<VoxelBlock> {
@@ -2996,7 +3676,7 @@ impl WorldEngine {
     }
 
     pub async fn sync_runtime_user_state(&self, username: &str, sanitized: &SanitizedUser) {
-        let avatar_hash = sanitized.avatar.short_hash();
+        let avatar_hash = sanitized.visual_hash();
         let voice_muted = sanitized.moderation.voice_muted_by_parent;
         let global_voice_ok = self.global_voice_enabled.load(Ordering::Relaxed);
         let mut map = self.players.write().await;
@@ -3225,15 +3905,17 @@ impl WorldEngine {
             return;
         }
         let now = now_ms();
-        let (world_changed, mobs, damage_notices, maybe_snapshot) = {
+        let (world_changed, mobs, boss_snap, damage_notices, maybe_snapshot) = {
             let mut ar = self.arena.write().await;
             let (changed, mobs, notices) = ar.tick(now, &arena_players);
+            let b_snap = ar.boss.snapshot();
             let snap = if changed { Some(ar.snapshot()) } else { None };
-            (changed, mobs, notices, snap)
+            (changed, mobs, b_snap, notices, snap)
         };
         let _ = self.udp_event_tx.send(UdpWorldEvent::ArenaMobs {
             server_time_ms: now,
             mobs,
+            boss: Some(boss_snap),
         });
         if world_changed {
             if let Some(arena) = maybe_snapshot {
@@ -3291,7 +3973,7 @@ impl WorldEngine {
         // Enforce Debtor's Prison containment & release eligibility
         let mut released_disp_name: Option<String> = None;
         let mut released_sanitized: Option<SanitizedUser> = None;
-        let mod_snapshot = {
+        let (mod_snapshot, desired_arena_max_hp) = {
             let mut cfg = self.users_cfg.write().await;
             if let Some(user) = cfg
                 .users
@@ -3320,9 +4002,12 @@ impl WorldEngine {
                         released_sanitized = Some(user.sanitized());
                     }
                 }
-                user.moderation_snapshot()
+                (
+                    user.moderation_snapshot(),
+                    max_hp_for_inventory(&user.inventory),
+                )
             } else {
-                PlayerModerationSnapshot::default()
+                (PlayerModerationSnapshot::default(), 100)
             }
         };
 
@@ -3340,6 +4025,9 @@ impl WorldEngine {
             }
         }
 
+        // Cancel any active Obby timer whenwarping across zones
+        self.active_obby_runs.write().await.remove(self_id);
+
         let (nx, ny, nz) = match target_zone {
             ZONE_DUNGEON => DUNGEON_SPAWN_POS,
             ZONE_ARENA => ARENA_SPAWN_POS,
@@ -3356,10 +4044,10 @@ impl WorldEngine {
         let arena_status: ArenaPlayerStatus = {
             let mut ar = self.arena.write().await;
             if target_zone == ZONE_ARENA {
-                ar.enter_or_reset_player(self_id, now)
+                ar.enter_or_reset_player_with_max_hp(self_id, desired_arena_max_hp, now)
             } else {
                 ar.remove_player(self_id);
-                ArenaPlayerStatus::fresh(0)
+                ArenaPlayerStatus::fresh_with_max_hp(0, desired_arena_max_hp)
             }
         };
 
@@ -3445,10 +4133,19 @@ impl WorldEngine {
             return Err("You are not currently inside the Shadow Rift Arena.".into());
         }
 
+        let desired_max_hp = {
+            let cfg = self.users_cfg.read().await;
+            cfg.users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+                .map(|u| max_hp_for_inventory(&u.inventory))
+                .unwrap_or(100)
+        };
+
         let now = now_ms();
         let (arena_status, arena_snapshot) = {
             let mut ar = self.arena.write().await;
-            let st = ar.enter_or_reset_player(self_id, now);
+            let st = ar.enter_or_reset_player_with_max_hp(self_id, desired_max_hp, now);
             (st, ar.snapshot())
         };
 
@@ -3808,26 +4505,163 @@ impl WorldEngine {
             return Err("💀 You were defeated! Click Respawn at Sanctuary first!".into());
         }
 
-        let is_raygun = mode == "raygun";
-        if is_raygun {
-            let owns_raygun = {
-                let cfg = self.users_cfg.read().await;
-                cfg.users
-                    .iter()
-                    .find(|u| u.username.eq_ignore_ascii_case(&username))
-                    .map(|u| player_owns_item(&u.inventory, "legendary_ray_gun"))
-                    .unwrap_or(false)
-            };
-            if !owns_raygun {
-                return Err(
-                    "You need the Legendary Starlight Plasma Ray Gun 🔫 to fire plasma beams!"
-                        .into(),
-                );
-            }
+        let (owns_raygun, owns_wand, owns_blade, equipped_acc, pet_bonus_dmg) = {
+            let cfg = self.users_cfg.read().await;
+            cfg.users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(&username))
+                .map(|u| {
+                    let p_dmg = u
+                        .equipped_pet
+                        .as_deref()
+                        .and_then(find_pet_def)
+                        .map(|p| p.bonus_combat_dmg)
+                        .unwrap_or(0);
+                    (
+                        player_owns_item(&u.inventory, "legendary_ray_gun"),
+                        player_owns_item(&u.inventory, "starlight_wand"),
+                        player_owns_item(&u.inventory, "crystal_blade"),
+                        u.avatar.accessory.clone(),
+                        p_dmg,
+                    )
+                })
+                .unwrap_or((false, false, false, String::new(), 0))
+        };
+
+        let is_raygun =
+            mode == "raygun" || (mode == "blast" && equipped_acc == "ray_gun" && owns_raygun);
+        let is_wand = mode == "starlight_wand"
+            || (mode == "blast" && equipped_acc == "starlight_wand" && owns_wand);
+        let is_blade = mode == "crystal_blade"
+            || (mode == "blast" && equipped_acc == "crystal_blade" && owns_blade);
+
+        if mode == "raygun" && !owns_raygun {
+            return Err(
+                "You need the Legendary Starlight Plasma Ray Gun 🔫 to fire plasma beams!".into(),
+            );
         }
+        if mode == "starlight_wand" && !owns_wand {
+            return Err(
+                "Craft the Astral Starlight Wand 🪄 at the Starlight Workshop first!".into(),
+            );
+        }
+        if mode == "crystal_blade" && !owns_blade {
+            return Err(
+                "Craft the Starlight Crystal Blade ⚔️ at the Starlight Workshop first!".into(),
+            );
+        }
+
+        let base_dmg: u8 = if is_raygun {
+            3
+        } else if is_wand || is_blade || mode == "stomp" {
+            2
+        } else {
+            1
+        };
+        let total_dmg: u8 = base_dmg.saturating_add(pet_bonus_dmg);
+        let max_reach: f32 = if is_wand {
+            16.0
+        } else if is_raygun {
+            15.0
+        } else if is_blade {
+            7.5
+        } else {
+            6.5
+        };
+        let beam_style: Option<&'static str> = if is_raygun {
+            Some("plasma")
+        } else if is_wand {
+            Some("star_bolt")
+        } else if is_blade {
+            Some("crystal_slash")
+        } else {
+            None
+        };
 
         let now = now_ms();
         if p_zone == ZONE_ARENA {
+            // Co-Op Obsidian Dragon Boss target (`mob_id == "obsidian_dragon"` or `"boss"`)
+            if mob_id == "obsidian_dragon" || mob_id == "boss" {
+                let (boss_snap, defeated_info, boss_center) = {
+                    let mut ar = self.arena.write().await;
+                    if !ar.boss.active {
+                        return Err(
+                            "Summon the Obsidian Rift Dragon at the North Island Altar first!"
+                                .into(),
+                        );
+                    }
+                    let bx = ar.boss.x;
+                    let by = ar.boss.y;
+                    let bz = ar.boss.z;
+                    let dist = ((px - bx).powi(2) + (py - by).powi(2) + (pz - bz).powi(2)).sqrt();
+                    if dist > max_reach + 3.8 {
+                        return Err(
+                            "Cross onto the North Island closer to the Obsidian Dragon to strike!"
+                                .into(),
+                        );
+                    }
+                    let (snap, def_info) = ar.attack_boss(&username, u16::from(total_dmg), now)?;
+                    (snap, def_info, [bx, by + 1.4, bz])
+                };
+
+                if is_wand {
+                    if let Some(ar_st) = self.arena.write().await.heal_player(self_id, 8) {
+                        let heal_msg = serde_json::json!({
+                            "type": "arena_player_status",
+                            "event": "healed",
+                            "arenaStatus": ar_st,
+                        })
+                        .to_string();
+                        let _ = self.send_peer_targeted_json(self_id, heal_msg).await;
+                    }
+                }
+
+                if let Some(style) = beam_style {
+                    let beam_seq = self.next_state_seq();
+                    let _ = self.udp_event_tx.send(UdpWorldEvent::RayGunBeam {
+                        state_seq: beam_seq,
+                        actor_id: self_id.to_string(),
+                        zone: ZONE_ARENA,
+                        from: [px, py + 1.05, pz],
+                        to: boss_center,
+                        hit_mob_id: Some("obsidian_dragon".into()),
+                        style: Some(style.to_string()),
+                    });
+                }
+
+                let personal_rewards = if let Some((contributors, beacon_boosted)) = defeated_info {
+                    Some(
+                        self.distribute_boss_rewards(&contributors, beacon_boosted)
+                            .await,
+                    )
+                } else {
+                    None
+                };
+
+                let arena_snap = self.arena.read().await.snapshot();
+                let seq = self.next_state_seq();
+                let _ = self.udp_event_tx.send(UdpWorldEvent::ArenaSync {
+                    state_seq: seq,
+                    event: Some(if personal_rewards.is_some() {
+                        "boss_defeated".into()
+                    } else {
+                        "boss_hit".into()
+                    }),
+                    actor_id: Some(self_id.to_string()),
+                    arena: arena_snap.clone(),
+                });
+
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "mode": mode,
+                    "damage": total_dmg,
+                    "defeated": personal_rewards.is_some(),
+                    "boss": boss_snap,
+                    "bossRewards": personal_rewards,
+                    "arena": arena_snap,
+                }));
+            }
+
             let (dmg, defeated, spawned_drop, arena_snap, mob_center) = {
                 let mut ar = self.arena.write().await;
                 let Some(idx) = ar.mobs.iter().position(|m| m.id == mob_id) else {
@@ -3843,24 +4677,16 @@ impl WorldEngine {
                 let my = ar.mobs[idx].y;
                 let mz = ar.mobs[idx].z;
                 let dist = ((px - mx).powi(2) + (py - my).powi(2) + (pz - mz).powi(2)).sqrt();
-                let max_reach = if is_raygun { 14.5 } else { 6.5 };
                 if dist > max_reach {
-                    return Err(if is_raygun {
-                        "Step within 14m so your Plasma Ray Gun can lock onto that monster!".into()
+                    return Err(if is_raygun || is_wand {
+                        "Step within range so your ranged beam can lock onto that monster!".into()
                     } else {
-                        "Move closer to stomp or Sparkle-Blast that monster!".into()
+                        "Move closer to strike or stomp that monster!".into()
                     });
                 }
 
-                let dmg: u8 = if is_raygun {
-                    3
-                } else if mode == "stomp" {
-                    2
-                } else {
-                    1
-                };
                 ar.mobs[idx].last_hit_at_ms = now;
-                ar.mobs[idx].hp = ar.mobs[idx].hp.saturating_sub(dmg);
+                ar.mobs[idx].hp = ar.mobs[idx].hp.saturating_sub(total_dmg);
 
                 let mut maybe_drop = None;
                 let defeated = ar.mobs[idx].hp == 0;
@@ -3873,10 +4699,22 @@ impl WorldEngine {
                         Some(ar.spawn_drop(mx, my.max(0.25), mz, coins, item_opt, qty, now));
                 }
                 let snap = ar.snapshot();
-                (dmg, defeated, maybe_drop, snap, [mx, my + 0.75, mz])
+                (total_dmg, defeated, maybe_drop, snap, [mx, my + 0.75, mz])
             };
 
-            if is_raygun {
+            if is_wand {
+                if let Some(ar_st) = self.arena.write().await.heal_player(self_id, 8) {
+                    let heal_msg = serde_json::json!({
+                        "type": "arena_player_status",
+                        "event": "healed",
+                        "arenaStatus": ar_st,
+                    })
+                    .to_string();
+                    let _ = self.send_peer_targeted_json(self_id, heal_msg).await;
+                }
+            }
+
+            if let Some(style) = beam_style {
                 let beam_seq = self.next_state_seq();
                 let _ = self.udp_event_tx.send(UdpWorldEvent::RayGunBeam {
                     state_seq: beam_seq,
@@ -3885,6 +4723,7 @@ impl WorldEngine {
                     from: [px, py + 1.05, pz],
                     to: mob_center,
                     hit_mob_id: Some(mob_id.to_string()),
+                    style: Some(style.to_string()),
                 });
             }
 
@@ -3926,24 +4765,16 @@ impl WorldEngine {
             let my = dg.mobs[idx].y;
             let mz = dg.mobs[idx].z;
             let dist = ((px - mx).powi(2) + (py - my).powi(2) + (pz - mz).powi(2)).sqrt();
-            let max_reach = if is_raygun { 14.5 } else { 6.2 };
             if dist > max_reach {
-                return Err(if is_raygun {
-                    "Step within 14m so your Plasma Ray Gun can lock onto that creature!".into()
+                return Err(if is_raygun || is_wand {
+                    "Step within range so your ranged beam can lock onto that creature!".into()
                 } else {
-                    "Move closer to stomp or Sparkle-Blast that creature!".into()
+                    "Move closer to strike or stomp that creature!".into()
                 });
             }
 
-            let dmg: u8 = if is_raygun {
-                3
-            } else if mode == "stomp" {
-                2
-            } else {
-                1
-            };
             dg.mobs[idx].last_hit_at_ms = now;
-            dg.mobs[idx].hp = dg.mobs[idx].hp.saturating_sub(dmg);
+            dg.mobs[idx].hp = dg.mobs[idx].hp.saturating_sub(total_dmg);
 
             let mut maybe_drop = None;
             let defeated = dg.mobs[idx].hp == 0;
@@ -3955,10 +4786,10 @@ impl WorldEngine {
                 maybe_drop = Some(dg.spawn_drop(mx, my.max(0.25), mz, coins, item_opt, qty, now));
             }
             let snap = dg.snapshot();
-            (dmg, defeated, maybe_drop, snap, [mx, my + 0.55, mz])
+            (total_dmg, defeated, maybe_drop, snap, [mx, my + 0.55, mz])
         };
 
-        if is_raygun {
+        if let Some(style) = beam_style {
             let beam_seq = self.next_state_seq();
             let _ = self.udp_event_tx.send(UdpWorldEvent::RayGunBeam {
                 state_seq: beam_seq,
@@ -3967,6 +4798,7 @@ impl WorldEngine {
                 from: [px, py + 1.05, pz],
                 to: mob_center,
                 hit_mob_id: Some(mob_id.to_string()),
+                style: Some(style.to_string()),
             });
         }
 
@@ -3993,6 +4825,101 @@ impl WorldEngine {
         }))
     }
 
+    async fn distribute_boss_rewards(
+        &self,
+        contributors: &[String],
+        beacon_boosted: bool,
+    ) -> Vec<serde_json::Value> {
+        use rand::Rng;
+        let mut results = Vec::with_capacity(contributors.len());
+        let mut names = Vec::with_capacity(contributors.len());
+        {
+            let mut cfg = self.users_cfg.write().await;
+            for uname in contributors {
+                let Some(user) = cfg
+                    .users
+                    .iter_mut()
+                    .find(|u| u.username.eq_ignore_ascii_case(uname))
+                else {
+                    continue;
+                };
+                let (base_coins, loot_item_id, loot_qty) = roll_boss_personal_loot();
+                let pct = user
+                    .equipped_pet
+                    .as_deref()
+                    .and_then(find_pet_def)
+                    .map(|p| p.coin_bonus_pct)
+                    .unwrap_or(0);
+                let final_coins = base_coins + (base_coins * u64::from(pct)) / 100;
+                user.coins = user.coins.saturating_add(final_coins as i64);
+                add_inventory_item(&mut user.inventory, loot_item_id, loot_qty);
+
+                // Guaranteed Pet Egg on first-ever Boss victory, and 55% (80% with Rift Beacon!) thereafter!
+                let egg_chance: u32 = if !user.first_boss_defeated {
+                    100
+                } else if beacon_boosted {
+                    80
+                } else {
+                    55
+                };
+                user.first_boss_defeated = true;
+                let won_pet_egg = rand::thread_rng().gen_range(0..100) < egg_chance;
+                if won_pet_egg {
+                    add_inventory_item(&mut user.inventory, "pet_egg", 1);
+                }
+
+                let disp = if user.display_name.is_empty() {
+                    user.username.clone()
+                } else {
+                    user.display_name.clone()
+                };
+                names.push(disp.clone());
+                results.push(serde_json::json!({
+                    "username": user.username,
+                    "displayName": disp,
+                    "coins": final_coins,
+                    "itemId": loot_item_id,
+                    "qty": loot_qty,
+                    "petEgg": won_pet_egg,
+                }));
+            }
+        }
+        self.persist_users_async().await;
+
+        let peer_by_user: Vec<(String, String)> = {
+            let map = self.players.read().await;
+            map.values()
+                .map(|p| (p.id.clone(), p.user.username.clone()))
+                .collect()
+        };
+        for r in &results {
+            if let Some(uname) = r.get("username").and_then(|v| v.as_str()) {
+                self.send_economy_update("boss_altar", uname, "obsidian_dragon_victory")
+                    .await;
+                let msg = serde_json::json!({
+                    "type": "boss_reward",
+                    "reward": r,
+                })
+                .to_string();
+                for (pid, p_uname) in &peer_by_user {
+                    if p_uname.eq_ignore_ascii_case(uname) {
+                        let _ = self.send_peer_targeted_json(pid, msg.clone()).await;
+                    }
+                }
+            }
+        }
+
+        if !names.is_empty() {
+            let joined = names.join(", ");
+            let _ = self
+                .broadcast_system_chat_notice(format!(
+                    "🐉👑 VICTORY! {joined} vanquished the Obsidian Rift Dragon and received personal Treasure & Companion Egg rolls!"
+                ))
+                .await;
+        }
+        results
+    }
+
     pub async fn fire_plaza_raygun(
         &self,
         self_id: &str,
@@ -4012,7 +4939,7 @@ impl WorldEngine {
             );
         }
 
-        {
+        let beam_style = {
             let cfg = self.users_cfg.read().await;
             let Some(u) = cfg
                 .users
@@ -4024,13 +4951,22 @@ impl WorldEngine {
             if u.in_debtors_prison {
                 return Err("Ray Gun beams are disabled while in Debtor's Prison!".into());
             }
-            if !player_owns_item(&u.inventory, "legendary_ray_gun") {
+            let has_ray = player_owns_item(&u.inventory, "legendary_ray_gun");
+            let has_wand = player_owns_item(&u.inventory, "starlight_wand");
+            if !has_ray && !has_wand {
                 return Err(
-                    "Unlock the Legendary Starlight Plasma Ray Gun 🔫 in Crystal Cavern first!"
+                    "Unlock the Plasma Ray Gun 🔫 or craft the Astral Starlight Wand 🪄 first!"
                         .into(),
                 );
             }
-        }
+            if u.avatar.accessory == "starlight_wand" && has_wand {
+                "star_bolt"
+            } else if has_ray {
+                "plasma"
+            } else {
+                "star_bolt"
+            }
+        };
 
         let now = now_ms();
         {
@@ -4083,6 +5019,7 @@ impl WorldEngine {
             from,
             to,
             hit_mob_id: None,
+            style: Some(beam_style.to_string()),
         });
 
         Ok(serde_json::json!({
@@ -4090,6 +5027,7 @@ impl WorldEngine {
             "stateSeq": seq,
             "from": from,
             "to": to,
+            "style": beam_style,
         }))
     }
 
@@ -4099,12 +5037,12 @@ impl WorldEngine {
         username: &str,
         drop_id: &str,
     ) -> Result<serde_json::Value, String> {
-        let (p_zone, px, py, pz) = {
+        let (p_zone, px, py, pz, equipped_pet) = {
             let map = self.players.read().await;
             let Some(p) = map.get(self_id) else {
                 return Err("Player session not found.".into());
             };
-            (p.zone, p.x, p.y, p.z)
+            (p.zone, p.x, p.y, p.z, p.user.equipped_pet.clone())
         };
         if p_zone != ZONE_DUNGEON && p_zone != ZONE_ARENA {
             return Err(
@@ -4116,14 +5054,21 @@ impl WorldEngine {
             return Err("💀 You were defeated! Click Respawn at Sanctuary first!".into());
         }
 
-        let (picked, dungeon_snap, arena_snap) = if p_zone == ZONE_ARENA {
+        let (magnet_bonus, coin_bonus_pct) = equipped_pet
+            .as_deref()
+            .and_then(find_pet_def)
+            .map(|p| (p.magnet_bonus_m, p.coin_bonus_pct))
+            .unwrap_or((0.0, 0));
+        let pickup_reach = 6.0 + magnet_bonus;
+
+        let (mut picked, dungeon_snap, arena_snap) = if p_zone == ZONE_ARENA {
             let mut ar = self.arena.write().await;
             let Some(idx) = ar.drops.iter().position(|d| d.id == drop_id) else {
                 return Err("Loot orb already collected!".into());
             };
             let d = &ar.drops[idx];
             let dist = ((px - d.x).powi(2) + (py - d.y).powi(2) + (pz - d.z).powi(2)).sqrt();
-            if dist > 6.0 {
+            if dist > pickup_reach {
                 return Err("Walk closer to scoop up that loot!".into());
             }
             let removed = ar.drops.remove(idx);
@@ -4135,12 +5080,17 @@ impl WorldEngine {
             };
             let d = &dg.drops[idx];
             let dist = ((px - d.x).powi(2) + (py - d.y).powi(2) + (pz - d.z).powi(2)).sqrt();
-            if dist > 6.0 {
+            if dist > pickup_reach {
                 return Err("Walk closer to scoop up that loot!".into());
             }
             let removed = dg.drops.remove(idx);
             (removed, Some(dg.snapshot()), None)
         };
+
+        if picked.coins > 0 && coin_bonus_pct > 0 {
+            let bonus = ((picked.coins * u64::from(coin_bonus_pct)) / 100).max(1);
+            picked.coins = picked.coins.saturating_add(bonus);
+        }
 
         let econ = {
             let mut cfg = self.users_cfg.write().await;
@@ -4210,12 +5160,26 @@ impl WorldEngine {
         let Some(def) = find_item_def(item_id) else {
             return Err("Unknown item.".into());
         };
-        if def.category == "cosmetic" {
-            return Err("Open Glam Closet (👗) to wear your unlocked dungeon cosmetics!".into());
+        if def.id == "pet_egg" {
+            return self
+                .mutate_companions(self_id, username, "hatch_egg", None, None, None)
+                .await;
+        }
+        if def.id == "rift_beacon" {
+            return self.summon_arena_boss(self_id, username, true).await;
+        }
+        if def.category == "cosmetic" || def.category == "weapon" {
+            return Err("Open Glam Closet (👗) to equip your unlocked gear & cosmetics!".into());
+        }
+        if def.category == "charm" {
+            return Err(
+                "💖 Your Aegis Heart Charm works passively in your Backpack (150 Max HP in Shadow Rift)!"
+                    .into(),
+            );
         }
         if def.category != "consumable" {
             return Err(format!(
-                "{} is a {} — use Vault Keys on Golden Chests or trade materials with friends!",
+                "{} is a {} — use Vault Keys on Golden Chests, craft at the Workshop, or trade with friends!",
                 def.name, def.category
             ));
         }
@@ -4285,6 +5249,18 @@ impl WorldEngine {
                 }
                 if p_zone == ZONE_ARENA {
                     healed_arena_status = self.arena.write().await.heal_player(self_id, 35);
+                }
+            }
+            "starlight_potion" => {
+                let mut map = self.players.write().await;
+                if let Some(p) = map.get_mut(self_id) {
+                    p.speed_boost_until_ms = now + 30_000;
+                    p.jump_boost_until_ms = now + 30_000;
+                    speed_until = p.speed_boost_until_ms;
+                    jump_until = p.jump_boost_until_ms;
+                }
+                if p_zone == ZONE_ARENA {
+                    healed_arena_status = self.arena.write().await.heal_player(self_id, 75);
                 }
             }
             "prism_block" => {
@@ -4824,7 +5800,7 @@ impl WorldEngine {
 
         // Broadcast immediate avatar updates if either player traded away an equipped dungeon item
         if av_a_changed {
-            let hash_a = san_a.avatar.short_hash();
+            let hash_a = san_a.visual_hash();
             {
                 let mut map = self.players.write().await;
                 for p in map.values_mut() {
@@ -4843,7 +5819,7 @@ impl WorldEngine {
             });
         }
         if av_b_changed {
-            let hash_b = san_b.avatar.short_hash();
+            let hash_b = san_b.visual_hash();
             {
                 let mut map = self.players.write().await;
                 for p in map.values_mut() {
@@ -5142,7 +6118,7 @@ impl WorldEngine {
                 let _ = self.udp_event_tx.send(UdpWorldEvent::AvatarUpdated {
                     state_seq: seq,
                     self_id: online_peer.clone(),
-                    avatar_hash: sanitized.avatar.short_hash(),
+                    avatar_hash: sanitized.visual_hash(),
                     user: sanitized.clone(),
                 });
             }
@@ -5430,7 +6406,7 @@ impl WorldEngine {
                 let _ = self.udp_event_tx.send(UdpWorldEvent::AvatarUpdated {
                     state_seq: seq,
                     self_id: online_peer.clone(),
-                    avatar_hash: sanitized.avatar.short_hash(),
+                    avatar_hash: sanitized.visual_hash(),
                     user: sanitized.clone(),
                 });
             }
@@ -5542,7 +6518,7 @@ impl WorldEngine {
                 let _ = self.udp_event_tx.send(UdpWorldEvent::AvatarUpdated {
                     state_seq: seq,
                     self_id: online_peer.clone(),
-                    avatar_hash: sanitized.avatar.short_hash(),
+                    avatar_hash: sanitized.visual_hash(),
                     user: sanitized,
                 });
             }
@@ -5625,6 +6601,1299 @@ impl WorldEngine {
             "itemName": def.name,
             "itemIcon": def.icon,
             "newQty": new_qty,
+            "economy": econ,
+        }))
+    }
+
+    // ========================================================================
+    // Expansion Pack: Pets & Mounts, Claimable Homes, Crafting, Obby & Sky/Boss
+    // ========================================================================
+
+    pub async fn mutate_companions(
+        &self,
+        self_id: &str,
+        username: &str,
+        action: &str,
+        pet_id: Option<&str>,
+        mount_id: Option<&str>,
+        nickname: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let act = action.trim().to_ascii_lowercase();
+        let mut system_celebration: Option<String> = None;
+        let mut hatched_pet_id: Option<String> = None;
+        let mut duplicate_bonus_coins: u64 = 0;
+        let mut economy_changed = false;
+        let mut mounted_now = false;
+
+        let (sanitized, companions, econ) = {
+            let mut cfg = self.users_cfg.write().await;
+            let filter_on = cfg.chat_filter_enabled;
+            let blocked_words = cfg.blocked_words.clone();
+            let Some(user) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            else {
+                return Err("Account not found.".into());
+            };
+            if user.in_debtors_prison {
+                return Err(
+                    "Companions and hoverboards are locked while in Debtor's Prison!".into(),
+                );
+            }
+            user.ensure_starter_companions();
+
+            match act.as_str() {
+                "adopt_pet" => {
+                    let pid = pet_id.unwrap_or("").trim();
+                    let Some(pdef) = find_pet_def(pid) else {
+                        return Err("Unknown 3D pet!".into());
+                    };
+                    if user.owned_pets.contains(pdef.id) {
+                        user.equipped_pet = Some(pdef.id.to_string());
+                    } else {
+                        let cost_i64 = pdef.coin_price as i64;
+                        if user.coins < cost_i64 {
+                            return Err(format!(
+                                "Need {} 🪙 to adopt {} {} (you have {} 🪙)!",
+                                pdef.coin_price, pdef.icon, pdef.name, user.coins
+                            ));
+                        }
+                        user.coins -= cost_i64;
+                        user.owned_pets.insert(pdef.id.to_string());
+                        user.equipped_pet = Some(pdef.id.to_string());
+                        economy_changed = true;
+                    }
+                }
+                "equip_pet" => {
+                    let raw = pet_id.unwrap_or("").trim();
+                    if raw.is_empty() || raw.eq_ignore_ascii_case("none") {
+                        user.equipped_pet = None;
+                    } else {
+                        let Some(pdef) = find_pet_def(raw) else {
+                            return Err("Unknown 3D pet!".into());
+                        };
+                        if pdef.id != "cloud_puppy" && !user.owned_pets.contains(pdef.id) {
+                            return Err(format!(
+                                "Adopt or hatch {} {} first!",
+                                pdef.icon, pdef.name
+                            ));
+                        }
+                        user.owned_pets.insert(pdef.id.to_string());
+                        user.equipped_pet = Some(pdef.id.to_string());
+                    }
+                }
+                "rename_pet" => {
+                    let clean_nick: String = nickname
+                        .unwrap_or("")
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .collect::<String>()
+                        .trim()
+                        .chars()
+                        .take(22)
+                        .collect();
+                    if clean_nick.is_empty() {
+                        user.pet_nickname = None;
+                    } else {
+                        if filter_on && find_blocked_word(&clean_nick, &blocked_words).is_some() {
+                            return Err(
+                                "Please pick a kind, friendly nickname for your pet!".into()
+                            );
+                        }
+                        user.pet_nickname = Some(clean_nick);
+                    }
+                }
+                "hatch_egg" => {
+                    if !remove_inventory_item(&mut user.inventory, "pet_egg", 1) {
+                        return Err(
+                            "You need a Starlight Companion Egg 🥚 to hatch! Earn one from Dungeons, Bosses, or Crafting."
+                                .into(),
+                        );
+                    }
+                    let hatched = roll_hatched_pet(&user.owned_pets);
+                    let was_owned = !user.owned_pets.insert(hatched.id.to_string());
+                    user.equipped_pet = Some(hatched.id.to_string());
+                    hatched_pet_id = Some(hatched.id.to_string());
+                    economy_changed = true;
+                    if was_owned {
+                        duplicate_bonus_coins = 75;
+                        user.coins = user.coins.saturating_add(75);
+                    }
+                    if hatched.rarity == "legendary" {
+                        let disp = if user.display_name.is_empty() {
+                            user.username.clone()
+                        } else {
+                            user.display_name.clone()
+                        };
+                        system_celebration = Some(format!(
+                            "🥚🐉 LEGENDARY HATCH! {disp} hatched a {} {}!",
+                            hatched.icon, hatched.name
+                        ));
+                    }
+                }
+                "buy_mount" => {
+                    let mid = mount_id.unwrap_or("").trim();
+                    let Some(mdef) = find_mount_def(mid) else {
+                        return Err("Unknown Hoverboard or Skates!".into());
+                    };
+                    if !user.owned_mounts.contains(mdef.id) {
+                        let cost_i64 = mdef.coin_price as i64;
+                        if user.coins < cost_i64 {
+                            return Err(format!(
+                                "Need {} 🪙 to unlock {} {} (you have {} 🪙)!",
+                                mdef.coin_price, mdef.icon, mdef.name, user.coins
+                            ));
+                        }
+                        user.coins -= cost_i64;
+                        user.owned_mounts.insert(mdef.id.to_string());
+                        economy_changed = true;
+                    }
+                    user.equipped_mount = Some(mdef.id.to_string());
+                    mounted_now = true;
+                }
+                "equip_mount" => {
+                    let raw = mount_id.unwrap_or("").trim();
+                    if raw.is_empty() || raw.eq_ignore_ascii_case("none") {
+                        user.equipped_mount = None;
+                    } else if raw.eq_ignore_ascii_case("toggle") {
+                        if user.equipped_mount.is_some() {
+                            user.equipped_mount = None;
+                        } else {
+                            user.equipped_mount = Some("starlight_board".to_string());
+                            mounted_now = true;
+                        }
+                    } else {
+                        let Some(mdef) = find_mount_def(raw) else {
+                            return Err("Unknown Hoverboard or Skates!".into());
+                        };
+                        if mdef.id != "starlight_board" && !user.owned_mounts.contains(mdef.id) {
+                            return Err(format!("Unlock {} {} first!", mdef.icon, mdef.name));
+                        }
+                        user.owned_mounts.insert(mdef.id.to_string());
+                        user.equipped_mount = Some(mdef.id.to_string());
+                        mounted_now = true;
+                    }
+                }
+                _ => return Err("Unknown companion action.".into()),
+            }
+
+            (
+                user.sanitized(),
+                user.companions_snapshot(),
+                user.economy_snapshot(),
+            )
+        };
+
+        if mounted_now {
+            // Mounting a hoverboard invalidates any active Obby foot-race timer!
+            self.active_obby_runs.write().await.remove(self_id);
+        }
+
+        self.persist_users_async().await;
+        self.sync_runtime_user_state(username, &sanitized).await;
+
+        let av_hash = sanitized.visual_hash();
+        let seq = self.next_state_seq();
+        let _ = self.udp_event_tx.send(UdpWorldEvent::AvatarUpdated {
+            state_seq: seq,
+            self_id: self_id.to_string(),
+            avatar_hash: av_hash,
+            user: sanitized.clone(),
+        });
+
+        if economy_changed {
+            self.send_economy_update(self_id, username, &format!("companions:{act}"))
+                .await;
+        }
+        if let Some(msg) = system_celebration {
+            let _ = self.broadcast_system_chat_notice(msg).await;
+        }
+
+        let res = serde_json::json!({
+            "ok": true,
+            "type": "companions_update",
+            "action": act,
+            "hatchedPetId": hatched_pet_id,
+            "duplicateBonusCoins": duplicate_bonus_coins,
+            "companions": companions,
+            "economy": econ,
+            "user": sanitized,
+        });
+        let _ = self.send_peer_targeted_json(self_id, res.to_string()).await;
+        Ok(res)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn mutate_home(
+        &self,
+        self_id: &str,
+        username: &str,
+        is_admin: bool,
+        action: &str,
+        plot_id: Option<&str>,
+        custom_title: Option<&str>,
+        door_locked: Option<bool>,
+        co_builders: Option<Vec<String>>,
+    ) -> Result<serde_json::Value, String> {
+        let act = action.trim().to_ascii_lowercase();
+        let now = now_ms();
+
+        let (disp_name, actor_role, in_prison, filter_on, blocked_words) = if is_admin {
+            (
+                "Parent Admin".to_string(),
+                "admin".to_string(),
+                false,
+                false,
+                Vec::new(),
+            )
+        } else {
+            let cfg = self.users_cfg.read().await;
+            let Some(u) = cfg
+                .users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            else {
+                return Err("Account not found.".into());
+            };
+            let dn = if u.display_name.is_empty() {
+                u.username.clone()
+            } else {
+                u.display_name.clone()
+            };
+            (
+                dn,
+                u.role.clone(),
+                u.in_debtors_prison,
+                cfg.chat_filter_enabled,
+                cfg.blocked_words.clone(),
+            )
+        };
+
+        if in_prison && !is_admin {
+            return Err("Neighborhood homes cannot be managed while in Debtor's Prison!".into());
+        }
+        let is_privileged = is_admin || actor_role.eq_ignore_ascii_case("host");
+
+        if act == "ring_doorbell" {
+            let pid = plot_id.unwrap_or("").trim();
+            let Some(def) = find_home_plot_def(pid) else {
+                return Err("Unknown neighborhood plot.".into());
+            };
+            {
+                let mut cds = self.doorbell_cooldowns.write().await;
+                let key = format!("{}:{pid}", username.to_lowercase());
+                if let Some(&last) = cds.get(&key) {
+                    if now.saturating_sub(last) < 2_500 {
+                        return Err("Doorbell chiming — wait a moment before ringing again!".into());
+                    }
+                }
+                cds.insert(key, now);
+            }
+            let (plot_label, owner_uname) = {
+                let hd = self.homes_data.read().await;
+                let claim = hd
+                    .plots
+                    .iter()
+                    .find(|p| p.plot_id == def.id)
+                    .cloned()
+                    .unwrap_or_else(|| HomePlotClaim::empty(def.id));
+                let title = claim
+                    .custom_title
+                    .clone()
+                    .unwrap_or_else(|| def.default_name.to_string());
+                (title, claim.owner_username)
+            };
+
+            let seq = self.next_state_seq();
+            let evt = UdpWorldEvent::HomeDoorbell {
+                state_seq: seq,
+                plot_id: def.id.to_string(),
+                plot_name: plot_label.clone(),
+                ringer_name: disp_name.clone(),
+                owner_username: owner_uname.clone(),
+            };
+            let _ = self.udp_event_tx.send(evt.clone());
+
+            if let Some(ref owner) = owner_uname {
+                let owner_peers: Vec<String> = {
+                    let map = self.players.read().await;
+                    map.values()
+                        .filter(|p| p.user.username.eq_ignore_ascii_case(owner))
+                        .map(|p| p.id.clone())
+                        .collect()
+                };
+                if let Ok(json_str) = serde_json::to_string(&evt) {
+                    for opid in owner_peers {
+                        let _ = self.send_peer_targeted_json(&opid, json_str.clone()).await;
+                    }
+                }
+            }
+
+            return Ok(serde_json::json!({
+                "ok": true,
+                "action": "ring_doorbell",
+                "plotId": def.id,
+                "plotName": plot_label,
+                "ringerName": disp_name,
+            }));
+        }
+
+        let mut close_doors_on_plot: Option<&'static str> = None;
+        let (views, snapshot_to_save) = {
+            let mut hd = self.homes_data.write().await;
+            hd.normalize();
+            match act.as_str() {
+                "claim" => {
+                    let pid = plot_id.unwrap_or("").trim();
+                    let Some(def) = find_home_plot_def(pid) else {
+                        return Err("Unknown neighborhood home plot.".into());
+                    };
+                    if let Some(existing_target) = hd.plots.iter().find(|p| p.plot_id == def.id) {
+                        if let Some(ref cur_owner) = existing_target.owner_username {
+                            if !cur_owner.eq_ignore_ascii_case(username) && !is_admin {
+                                let owner_disp = existing_target
+                                    .owner_display_name
+                                    .as_deref()
+                                    .unwrap_or(cur_owner.as_str());
+                                return Err(format!(
+                                    "🏡 {} is currently claimed by {}! Pick an unclaimed plot.",
+                                    def.default_name, owner_disp
+                                ));
+                            }
+                        }
+                    }
+                    // Release any other plot currently owned by `username` (1-plot-per-player rule)
+                    for p in &mut hd.plots {
+                        if p.plot_id != def.id
+                            && p.owner_username
+                                .as_deref()
+                                .map(|o| o.eq_ignore_ascii_case(username))
+                                .unwrap_or(false)
+                        {
+                            *p = HomePlotClaim::empty(&p.plot_id);
+                        }
+                    }
+                    if let Some(target) = hd.plots.iter_mut().find(|p| p.plot_id == def.id) {
+                        target.owner_username = Some(username.to_lowercase());
+                        target.owner_display_name = Some(disp_name.clone());
+                        if target.custom_title.is_none() {
+                            target.custom_title = Some(format!("{disp_name}'s Home"));
+                        }
+                        target.claimed_at_ms = Some(now);
+                    }
+                    hd.version = hd.version.saturating_add(1);
+                }
+                "release" => {
+                    let pid = plot_id.unwrap_or("").trim();
+                    let mut released_any = false;
+                    for p in &mut hd.plots {
+                        let matches_plot = if pid.is_empty() {
+                            p.owner_username
+                                .as_deref()
+                                .map(|o| o.eq_ignore_ascii_case(username))
+                                .unwrap_or(false)
+                        } else {
+                            p.plot_id == pid
+                        };
+                        if matches_plot {
+                            let is_owner = p
+                                .owner_username
+                                .as_deref()
+                                .map(|o| o.eq_ignore_ascii_case(username))
+                                .unwrap_or(false);
+                            if !is_owner && !is_privileged {
+                                return Err("Only the plot owner, Host, or Parent Admin can release this home.".into());
+                            }
+                            *p = HomePlotClaim::empty(&p.plot_id);
+                            released_any = true;
+                        }
+                    }
+                    if !released_any {
+                        return Err(
+                            "You don't currently have a claimed home plot to release.".into()
+                        );
+                    }
+                    hd.version = hd.version.saturating_add(1);
+                }
+                "update_settings" => {
+                    let target_pid =
+                        if let Some(pid) = plot_id.map(str::trim).filter(|s| !s.is_empty()) {
+                            pid.to_string()
+                        } else if let Some(mine) = hd.plots.iter().find(|p| {
+                            p.owner_username
+                                .as_deref()
+                                .map(|o| o.eq_ignore_ascii_case(username))
+                                .unwrap_or(false)
+                        }) {
+                            mine.plot_id.clone()
+                        } else {
+                            return Err("Claim a neighborhood home plot first!".into());
+                        };
+                    let Some(def) = find_home_plot_def(&target_pid) else {
+                        return Err("Unknown neighborhood home plot.".into());
+                    };
+                    let Some(claim) = hd.plots.iter_mut().find(|p| p.plot_id == def.id) else {
+                        return Err("Plot record missing.".into());
+                    };
+                    let is_owner = claim
+                        .owner_username
+                        .as_deref()
+                        .map(|o| o.eq_ignore_ascii_case(username))
+                        .unwrap_or(false);
+                    if !is_owner && !is_privileged {
+                        return Err(
+                            "Only the plot owner, Host Ella, or Parent Admin can update mailbox & door settings!"
+                                .into(),
+                        );
+                    }
+                    if claim.owner_username.is_none() {
+                        return Err(
+                            "Claim this plot before customizing its mailbox or lock!".into()
+                        );
+                    }
+
+                    if let Some(raw_title) = custom_title {
+                        let clean: String = raw_title
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .collect::<String>()
+                            .trim()
+                            .chars()
+                            .take(30)
+                            .collect();
+                        if clean.is_empty() {
+                            claim.custom_title = None;
+                        } else {
+                            if filter_on && find_blocked_word(&clean, &blocked_words).is_some() {
+                                return Err(
+                                    "Please choose a friendly, kind title for your Mailbox Nameplate!"
+                                        .into(),
+                                );
+                            }
+                            claim.custom_title = Some(clean);
+                        }
+                    }
+                    if let Some(locked) = door_locked {
+                        claim.door_locked = locked;
+                        if locked {
+                            close_doors_on_plot = Some(def.id);
+                        }
+                    }
+                    if let Some(raw_list) = co_builders {
+                        let mut cleaned: Vec<String> = Vec::new();
+                        for raw_u in raw_list.into_iter().take(12) {
+                            let u_clean = raw_u
+                                .trim()
+                                .trim_start_matches('@')
+                                .to_ascii_lowercase()
+                                .chars()
+                                .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                                .take(24)
+                                .collect::<String>();
+                            if !u_clean.is_empty()
+                                && !cleaned.iter().any(|x| x == &u_clean)
+                                && claim.owner_username.as_deref() != Some(u_clean.as_str())
+                            {
+                                cleaned.push(u_clean);
+                            }
+                        }
+                        claim.co_builders = cleaned;
+                    }
+                    hd.version = hd.version.saturating_add(1);
+                }
+                _ => return Err("Unknown home plot action.".into()),
+            }
+            (hd.public_views(), hd.clone())
+        };
+
+        self.persist_homes_async(snapshot_to_save).await;
+
+        // When locking a home's doors, automatically close any open doors on that plot!
+        if let Some(locked_pid) = close_doors_on_plot {
+            if let Some(def) = find_home_plot_def(locked_pid) {
+                let maybe_closed = {
+                    let mut bd = self.blocks_data.write().await;
+                    let mut changed = false;
+                    for b in &mut bd.blocks {
+                        if matches!(b.kind.as_str(), "door" | "double_door")
+                            && b.open
+                            && b.x >= def.center_x - def.half_extent
+                            && b.x <= def.center_x + def.half_extent
+                            && b.z >= def.center_z - def.half_extent
+                            && b.z <= def.center_z + def.half_extent
+                        {
+                            b.open = false;
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        bd.version += 1;
+                        Some((bd.version, bd.blocks.clone(), bd.clone()))
+                    } else {
+                        None
+                    }
+                };
+                if let Some((ver, blocks_snap, file_snap)) = maybe_closed {
+                    self.persist_blocks_async(file_snap).await;
+                    let b_seq = self.next_state_seq();
+                    let _ = self.udp_event_tx.send(UdpWorldEvent::Block {
+                        state_seq: b_seq,
+                        self_id: self_id.to_string(),
+                        blocks_version: ver,
+                        blocks: blocks_snap,
+                    });
+                }
+            }
+        }
+
+        let seq = self.next_state_seq();
+        let _ = self.udp_event_tx.send(UdpWorldEvent::HomesSync {
+            state_seq: seq,
+            event: Some(act.clone()),
+            plots: views.clone(),
+        });
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "action": act,
+            "homes": views,
+        }))
+    }
+
+    pub async fn craft_recipe(
+        &self,
+        self_id: &str,
+        username: &str,
+        recipe_id: &str,
+    ) -> Result<serde_json::Value, String> {
+        let Some(recipe) = find_crafting_recipe(recipe_id.trim()) else {
+            return Err("Unknown Starlight Workshop recipe.".into());
+        };
+        let Some(out_def) = find_item_def(recipe.output_item_id) else {
+            return Err("Recipe output item missing.".into());
+        };
+
+        let econ = {
+            let mut cfg = self.users_cfg.write().await;
+            let Some(user) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            else {
+                return Err("Account not found.".into());
+            };
+            if user.in_debtors_prison {
+                return Err("Crafting is locked while inside Debtor's Prison!".into());
+            }
+            let cost_i64 = recipe.coin_cost as i64;
+            if user.coins < cost_i64 {
+                return Err(format!(
+                    "Need {} 🪙 to craft {} {} (you have {} 🪙).",
+                    recipe.coin_cost, out_def.icon, out_def.name, user.coins
+                ));
+            }
+            for ing in recipe.ingredients {
+                let have = user.inventory.get(ing.item_id).copied().unwrap_or(0);
+                if have < ing.qty {
+                    let ing_name = find_item_def(ing.item_id)
+                        .map(|d| d.name)
+                        .unwrap_or(ing.item_id);
+                    return Err(format!(
+                        "Need {}x {} (you have {}x) to craft {}!",
+                        ing.qty, ing_name, have, out_def.name
+                    ));
+                }
+            }
+            let cur_out = user
+                .inventory
+                .get(recipe.output_item_id)
+                .copied()
+                .unwrap_or(0);
+            if cur_out.saturating_add(recipe.output_qty) > MAX_ITEM_STACK {
+                return Err(format!("Your stack for {} is already full!", out_def.name));
+            }
+
+            user.coins -= cost_i64;
+            for ing in recipe.ingredients {
+                remove_inventory_item(&mut user.inventory, ing.item_id, ing.qty);
+            }
+            add_inventory_item(
+                &mut user.inventory,
+                recipe.output_item_id,
+                recipe.output_qty,
+            );
+            user.economy_snapshot()
+        };
+
+        self.persist_users_async().await;
+
+        let mut updated_arena_status: Option<ArenaPlayerStatus> = None;
+        if recipe.output_item_id == "aegis_heart_charm"
+            && self.get_peer_zone(self_id).await == ZONE_ARENA
+        {
+            updated_arena_status = self
+                .arena
+                .write()
+                .await
+                .sync_player_max_hp(self_id, ARENA_AEGIS_MAX_HP);
+            if let Some(ref st) = updated_arena_status {
+                let msg = serde_json::json!({
+                    "type": "arena_player_status",
+                    "event": "aegis_boost",
+                    "arenaStatus": st,
+                })
+                .to_string();
+                let _ = self.send_peer_targeted_json(self_id, msg).await;
+            }
+        }
+
+        self.send_economy_update(
+            self_id,
+            username,
+            &format!("crafted:{}", recipe.output_item_id),
+        )
+        .await;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "recipeId": recipe.id,
+            "itemId": out_def.id,
+            "itemName": out_def.name,
+            "itemIcon": out_def.icon,
+            "qty": recipe.output_qty,
+            "economy": econ,
+            "arenaStatus": updated_arena_status,
+        }))
+    }
+
+    pub async fn obby_speedrun_action(
+        &self,
+        self_id: &str,
+        username: &str,
+        action: &str,
+        course_id: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let act = action.trim().to_ascii_lowercase();
+        let now = now_ms();
+
+        if act == "cancel" {
+            let removed = self
+                .active_obby_runs
+                .write()
+                .await
+                .remove(self_id)
+                .is_some();
+            return Ok(serde_json::json!({
+                "ok": true,
+                "cancelled": removed,
+            }));
+        }
+
+        let Some(course) = find_obby_course(course_id.unwrap_or("easy")) else {
+            return Err("Unknown Obby course (expected 'easy' or 'hard').".into());
+        };
+
+        let (p_zone, px, py, pz) = {
+            let map = self.players.read().await;
+            let Some(p) = map.get(self_id) else {
+                return Err("Player session not found.".into());
+            };
+            (p.zone, p.x, p.y, p.z)
+        };
+        if p_zone != ZONE_PLAZA {
+            return Err("Obby Speedrun Gates are located in Starlight Plaza!".into());
+        }
+
+        if act == "start" {
+            let dx = px - course.start_pos[0];
+            let dz = pz - course.start_pos[2];
+            let horiz_dist = (dx * dx + dz * dz).sqrt();
+            if horiz_dist > course.start_radius {
+                return Err(format!(
+                    "Stand at the {} Start Gate to begin a timed run!",
+                    course.name
+                ));
+            }
+
+            // Auto-dismount hoverboard so every Obby speedrun is a fair foot-race!
+            let mut dismounted_sanitized: Option<(
+                SanitizedUser,
+                crate::models::PlayerCompanionsSnapshot,
+            )> = None;
+            {
+                let mut cfg = self.users_cfg.write().await;
+                if let Some(user) = cfg
+                    .users
+                    .iter_mut()
+                    .find(|u| u.username.eq_ignore_ascii_case(username))
+                {
+                    if user.in_debtors_prison {
+                        return Err("Obby speedruns are disabled while in Debtor's Prison.".into());
+                    }
+                    if user.equipped_mount.is_some() {
+                        user.equipped_mount = None;
+                        dismounted_sanitized = Some((user.sanitized(), user.companions_snapshot()));
+                    }
+                }
+            }
+
+            if let Some((san, comp)) = dismounted_sanitized {
+                self.persist_users_async().await;
+                self.sync_runtime_user_state(username, &san).await;
+                let seq = self.next_state_seq();
+                let _ = self.udp_event_tx.send(UdpWorldEvent::AvatarUpdated {
+                    state_seq: seq,
+                    self_id: self_id.to_string(),
+                    avatar_hash: san.visual_hash(),
+                    user: san.clone(),
+                });
+                let msg = serde_json::json!({
+                    "type": "companions_update",
+                    "action": "auto_dismount_obby",
+                    "companions": comp,
+                    "user": san,
+                })
+                .to_string();
+                let _ = self.send_peer_targeted_json(self_id, msg).await;
+            }
+
+            self.active_obby_runs.write().await.insert(
+                self_id.to_string(),
+                ActiveObbyRun {
+                    course_id: course.id.to_string(),
+                    started_at_ms: now,
+                },
+            );
+
+            return Ok(serde_json::json!({
+                "ok": true,
+                "action": "start",
+                "course": course.id,
+                "startedAtMs": now,
+            }));
+        }
+
+        if act == "finish" {
+            let Some(run) = self.active_obby_runs.write().await.remove(self_id) else {
+                return Err(
+                    "Cross the glowing Start Gate at Checkpoint 1 first (using checkpoint warp cancels timed runs)!"
+                        .into(),
+                );
+            };
+            if run.course_id != course.id {
+                return Err("Active timer was for a different Obby course!".into());
+            }
+
+            let dist = ((px - course.finish_pos[0]).powi(2)
+                + (py - course.finish_pos[1]).powi(2)
+                + (pz - course.finish_pos[2]).powi(2))
+            .sqrt();
+            if dist > course.finish_radius {
+                return Err(format!(
+                    "Reach the {} Finish Gate at the summit to lock in your time!",
+                    course.name
+                ));
+            }
+
+            let elapsed_ms = now.saturating_sub(run.started_at_ms);
+            if elapsed_ms < course.min_elapsed_ms {
+                return Err("Speedrun invalidated: impossible warp speed detected!".into());
+            }
+
+            let (disp_name, has_mount) = {
+                let cfg = self.users_cfg.read().await;
+                cfg.users
+                    .iter()
+                    .find(|u| u.username.eq_ignore_ascii_case(username))
+                    .map(|u| {
+                        let dn = if u.display_name.is_empty() {
+                            u.username.clone()
+                        } else {
+                            u.display_name.clone()
+                        };
+                        (dn, u.equipped_mount.is_some())
+                    })
+                    .unwrap_or((username.to_string(), false))
+            };
+            if has_mount {
+                return Err("Hoverboards are not allowed on timed Obby foot-races!".into());
+            }
+
+            let formatted = format_obby_time_ms(elapsed_ms);
+            let record = ObbyRecord {
+                username: username.to_lowercase(),
+                display_name: disp_name.clone(),
+                elapsed_ms,
+                time_formatted: formatted.clone(),
+                recorded_at_ms: now,
+            };
+
+            let (rank, improved, boards_snapshot) = {
+                let mut lb = self.obby_leaderboards.write().await;
+                let (rk, imp) = lb.record_finish(course.id, record.clone());
+                (rk, imp, lb.clone())
+            };
+            if improved {
+                self.persist_leaderboards_async(boards_snapshot.clone())
+                    .await;
+            }
+
+            // Award completion coins (rate-limited every 15s) + instant #1 World Record bonus!
+            let can_claim_base = {
+                let mut cds = self.obby_reward_cooldowns.write().await;
+                let key = format!("{}:{}", username.to_lowercase(), course.id);
+                let last = cds.get(&key).copied().unwrap_or(0);
+                if now.saturating_sub(last) >= 15_000 {
+                    cds.insert(key, now);
+                    true
+                } else {
+                    false
+                }
+            };
+            let mut awarded_coins: u64 = if can_claim_base {
+                course.completion_coins
+            } else {
+                0
+            };
+            if improved && rank == 1 {
+                awarded_coins = awarded_coins.saturating_add(course.record_bonus_coins);
+            }
+
+            let econ = {
+                let mut cfg = self.users_cfg.write().await;
+                let Some(u) = cfg
+                    .users
+                    .iter_mut()
+                    .find(|u| u.username.eq_ignore_ascii_case(username))
+                else {
+                    return Err("Account not found.".into());
+                };
+                if awarded_coins > 0 {
+                    u.coins = u.coins.saturating_add(awarded_coins as i64);
+                }
+                u.economy_snapshot()
+            };
+            if awarded_coins > 0 {
+                self.persist_users_async().await;
+                self.send_economy_update(self_id, username, "obby_speedrun_finish")
+                    .await;
+            }
+
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::ObbyLeaderboard {
+                state_seq: seq,
+                course: course.id.to_string(),
+                record: Some(record.clone()),
+                leaderboards: boards_snapshot.clone(),
+            });
+
+            if improved && rank == 1 {
+                let _ = self
+                    .broadcast_system_chat_notice(format!(
+                        "⏱️🏆 NEW #1 RECORD! {disp_name} blazed through {} in {formatted} (+{awarded_coins} 🪙)!",
+                        course.name
+                    ))
+                    .await;
+            }
+
+            return Ok(serde_json::json!({
+                "ok": true,
+                "action": "finish",
+                "course": course.id,
+                "elapsedMs": elapsed_ms,
+                "timeFormatted": formatted,
+                "rank": rank,
+                "improved": improved,
+                "awardedCoins": awarded_coins,
+                "leaderboards": boards_snapshot,
+                "economy": econ,
+            }));
+        }
+
+        Err("Unknown Obby speedrun action.".into())
+    }
+
+    pub async fn mutate_sky(
+        &self,
+        self_id: &str,
+        username: Option<&str>,
+        is_admin: bool,
+        action: &str,
+        mode: Option<&str>,
+        star_id: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let act = action.trim().to_ascii_lowercase();
+        let now = now_ms();
+
+        if act == "catch_star" {
+            let Some(uname) = username else {
+                return Err("Player login required to catch Falling Stars.".into());
+            };
+            let sid = star_id.unwrap_or("").trim();
+            let (p_zone, px, pz, equipped_pet) = {
+                let map = self.players.read().await;
+                let Some(p) = map.get(self_id) else {
+                    return Err("Player session not found.".into());
+                };
+                (p.zone, p.x, p.z, p.user.equipped_pet.clone())
+            };
+            if p_zone != ZONE_PLAZA {
+                return Err("Falling Stars land in Starlight Plaza!".into());
+            }
+            let (magnet_bonus, coin_bonus_pct) = equipped_pet
+                .as_deref()
+                .and_then(find_pet_def)
+                .map(|p| (p.magnet_bonus_m, p.coin_bonus_pct))
+                .unwrap_or((0.0, 0));
+            let reach = 6.2 + magnet_bonus;
+
+            let (caught_star, sky_snap) = {
+                let mut sky = self.sky_state.write().await;
+                let Some(idx) = sky.falling_stars.iter().position(|s| s.id == sid) else {
+                    return Err("Another player already caught that Falling Star!".into());
+                };
+                let s = &sky.falling_stars[idx];
+                let dist = ((px - s.x).powi(2) + (pz - s.z).powi(2)).sqrt();
+                if dist > reach {
+                    return Err("Run closer to catch that glowing Falling Star!".into());
+                }
+                let removed = sky.falling_stars.remove(idx);
+                (removed, sky.snapshot(now))
+            };
+
+            let bonus_coins = if coin_bonus_pct > 0 {
+                ((caught_star.coins * u64::from(coin_bonus_pct)) / 100).max(1)
+            } else {
+                0
+            };
+            let total_coins = caught_star.coins.saturating_add(bonus_coins);
+
+            let econ = {
+                let mut cfg = self.users_cfg.write().await;
+                let Some(u) = cfg
+                    .users
+                    .iter_mut()
+                    .find(|u| u.username.eq_ignore_ascii_case(uname))
+                else {
+                    return Err("Account not found.".into());
+                };
+                u.coins = u.coins.saturating_add(total_coins as i64);
+                if caught_star.bonus_shard {
+                    add_inventory_item(&mut u.inventory, "star_shard", 1);
+                }
+                u.economy_snapshot()
+            };
+            if caught_star.bonus_shard {
+                self.persist_users_async().await;
+            } else {
+                self.users_dirty.store(true, Ordering::Release);
+            }
+            self.send_economy_update(self_id, uname, "caught_falling_star")
+                .await;
+
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::SkySync {
+                state_seq: seq,
+                event: Some(format!("star_caught:{sid}")),
+                sky: sky_snap.clone(),
+            });
+
+            return Ok(serde_json::json!({
+                "ok": true,
+                "action": "catch_star",
+                "coinsAwarded": total_coins,
+                "bonusShard": caught_star.bonus_shard,
+                "economy": econ,
+                "sky": sky_snap,
+            }));
+        }
+
+        // Host (Ella, `role == "host"`) & Parent Admin sky/weather & Meteor Shower controls
+        let is_authorized = if is_admin {
+            true
+        } else if let Some(uname) = username {
+            let cfg = self.users_cfg.read().await;
+            cfg.users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(uname))
+                .map(|u| u.is_host() && !u.in_debtors_prison)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        if !is_authorized {
+            return Err("Only Host Ella or Parent Admin can change the Sky Cycle or launch a Meteor Shower!".into());
+        }
+
+        if act == "set_sky" {
+            let target_mode = match mode.unwrap_or("auto").trim().to_ascii_lowercase().as_str() {
+                "day" => "day",
+                "sunset" => "sunset",
+                "aurora_night" | "night" | "aurora" => "aurora_night",
+                _ => "auto",
+            };
+            let sky_snap = {
+                let mut sky = self.sky_state.write().await;
+                sky.mode = target_mode.to_string();
+                if target_mode == "auto" {
+                    sky.cycle_anchor_ms = now;
+                }
+                sky.snapshot(now)
+            };
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::SkySync {
+                state_seq: seq,
+                event: Some(format!("sky_mode:{target_mode}")),
+                sky: sky_snap.clone(),
+            });
+            return Ok(serde_json::json!({
+                "ok": true,
+                "action": "set_sky",
+                "sky": sky_snap,
+            }));
+        }
+
+        if act == "start_meteor_shower" {
+            let sky_snap = {
+                let mut sky = self.sky_state.write().await;
+                sky.meteor_shower_until_ms = now + 75_000;
+                Self::spawn_falling_stars_into(&mut sky, 4, now);
+                sky.snapshot(now)
+            };
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::SkySync {
+                state_seq: seq,
+                event: Some("meteor_shower_started".into()),
+                sky: sky_snap.clone(),
+            });
+            let _ = self
+                .broadcast_system_chat_notice(
+                    "🌠✨ A dazzling Meteor Shower has begun over Starlight Plaza! Catch glowing Falling Stars for bonus Coins & Star Shards!"
+                        .into(),
+                )
+                .await;
+            return Ok(serde_json::json!({
+                "ok": true,
+                "action": "start_meteor_shower",
+                "sky": sky_snap,
+            }));
+        }
+
+        Err("Unknown sky/weather action.".into())
+    }
+
+    fn spawn_falling_stars_into(sky: &mut SkyWeatherState, count: usize, now: u64) {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        for _ in 0..count {
+            if sky.falling_stars.len() >= 8 {
+                break;
+            }
+            let seq = sky.next_star_seq;
+            sky.next_star_seq = sky.next_star_seq.wrapping_add(1).max(1);
+            // Pick open Plaza coordinates outside central fountain (r < 9)
+            let angle = rng.gen_range(0.0f32..std::f32::consts::TAU);
+            let radius = rng.gen_range(12.0f32..68.0f32);
+            let x = ((angle.cos() * radius) * 100.0).round() / 100.0;
+            let z = ((angle.sin() * radius) * 100.0).round() / 100.0;
+            let coins = rng.gen_range(16u64..=32u64);
+            let bonus_shard = rng.gen_range(0..100) < 35;
+            sky.falling_stars.push(FallingStarNode {
+                id: format!("star_{seq}"),
+                x,
+                y: 0.35,
+                z,
+                coins,
+                bonus_shard,
+                spawned_at_ms: now,
+                expires_at_ms: now + 55_000,
+            });
+        }
+    }
+
+    pub async fn tick_sky_and_meteors(&self) {
+        let now = now_ms();
+        let mut announce_auto = false;
+        let maybe_snap = {
+            let mut sky = self.sky_state.write().await;
+            let mut changed = false;
+
+            let before = sky.falling_stars.len();
+            sky.falling_stars.retain(|s| now < s.expires_at_ms);
+            if sky.falling_stars.len() != before {
+                changed = true;
+            }
+
+            if sky.mode == "auto" {
+                let elapsed = now.saturating_sub(sky.cycle_anchor_ms);
+                let cycle_idx = elapsed / SKY_CYCLE_DURATION_MS;
+                let (_phase, prog) = sky.compute_phase_and_progress(now);
+                if prog >= 0.70
+                    && sky.last_auto_meteor_cycle != Some(cycle_idx)
+                    && now >= sky.meteor_shower_until_ms
+                {
+                    sky.last_auto_meteor_cycle = Some(cycle_idx);
+                    sky.meteor_shower_until_ms = now + 60_000;
+                    Self::spawn_falling_stars_into(&mut sky, 3, now);
+                    changed = true;
+                    announce_auto = true;
+                }
+            }
+
+            if now < sky.meteor_shower_until_ms && sky.falling_stars.len() < 5 {
+                Self::spawn_falling_stars_into(&mut sky, 1, now);
+                changed = true;
+            }
+
+            if changed {
+                Some(sky.snapshot(now))
+            } else {
+                None
+            }
+        };
+
+        if let Some(snap) = maybe_snap {
+            let seq = self.next_state_seq();
+            let _ = self.udp_event_tx.send(UdpWorldEvent::SkySync {
+                state_seq: seq,
+                event: Some("tick".into()),
+                sky: snap,
+            });
+        }
+        if announce_auto {
+            let _ = self
+                .broadcast_system_chat_notice(
+                    "🌌🌠 Aurora Night Meteor Shower! Glowing Falling Stars are landing across Starlight Plaza!"
+                        .into(),
+                )
+                .await;
+        }
+    }
+
+    pub async fn summon_arena_boss(
+        &self,
+        self_id: &str,
+        username: &str,
+        use_beacon: bool,
+    ) -> Result<serde_json::Value, String> {
+        let (p_zone, px, pz, active_arena_count) = {
+            let map = self.players.read().await;
+            let Some(p) = map.get(self_id) else {
+                return Err("Player session not found.".into());
+            };
+            let count = map
+                .values()
+                .filter(|other| other.zone == ZONE_ARENA)
+                .count();
+            (p.zone, p.x, p.z, count.max(1))
+        };
+        if p_zone != ZONE_ARENA {
+            return Err(
+                "Enter the Shadow Rift Portal first to summon the Obsidian Dragon Boss!".into(),
+            );
+        }
+        if !self.arena.read().await.status_for(self_id).alive {
+            return Err(
+                "💀 Respawn at the Sanctuary before awakening the North Island Altar!".into(),
+            );
+        }
+
+        if !use_beacon {
+            let dist = ((px - ARENA_BOSS_ALTAR_POS.0).powi(2)
+                + (pz - ARENA_BOSS_ALTAR_POS.2).powi(2))
+            .sqrt();
+            if dist > 9.5 {
+                return Err("Cross onto the North Island and approach the Obsidian Altar to summon the Boss!".into());
+            }
+        }
+
+        let disp_name = if use_beacon {
+            let mut cfg = self.users_cfg.write().await;
+            let Some(u) = cfg
+                .users
+                .iter_mut()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+            else {
+                return Err("Account not found.".into());
+            };
+            if !remove_inventory_item(&mut u.inventory, "rift_beacon", 1) {
+                return Err(
+                    "Craft an Obsidian Rift Beacon 🔮 at the Starlight Workshop first!".into(),
+                );
+            }
+            if u.display_name.is_empty() {
+                u.username.clone()
+            } else {
+                u.display_name.clone()
+            }
+        } else {
+            let cfg = self.users_cfg.read().await;
+            cfg.users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(username))
+                .map(|u| {
+                    if u.display_name.is_empty() {
+                        u.username.clone()
+                    } else {
+                        u.display_name.clone()
+                    }
+                })
+                .unwrap_or_else(|| username.to_string())
+        };
+
+        let now = now_ms();
+        let summon_res = {
+            let mut ar = self.arena.write().await;
+            ar.summon_boss(username, active_arena_count, use_beacon, now)
+                .map(|b| (b, ar.snapshot()))
+        };
+
+        let (boss_snap, arena_snap) = match summon_res {
+            Ok(pair) => pair,
+            Err(err_msg) => {
+                if use_beacon {
+                    let mut cfg = self.users_cfg.write().await;
+                    if let Some(u) = cfg
+                        .users
+                        .iter_mut()
+                        .find(|u| u.username.eq_ignore_ascii_case(username))
+                    {
+                        add_inventory_item(&mut u.inventory, "rift_beacon", 1);
+                    }
+                }
+                return Err(err_msg);
+            }
+        };
+
+        if use_beacon {
+            self.persist_users_async().await;
+            self.send_economy_update(self_id, username, "used:rift_beacon")
+                .await;
+        }
+
+        let seq = self.next_state_seq();
+        let _ = self.udp_event_tx.send(UdpWorldEvent::ArenaSync {
+            state_seq: seq,
+            event: Some("boss_summoned".into()),
+            actor_id: Some(self_id.to_string()),
+            arena: arena_snap.clone(),
+        });
+
+        let econ = self.get_player_economy(username).await;
+        let _ = self
+            .broadcast_system_chat_notice(format!(
+                "🐉🔥 {disp_name} awakened the Obsidian Rift Dragon at the North Altar ({} HP)! Jump over its Shockwave Rings to defeat it together!",
+                boss_snap.max_hp
+            ))
+            .await;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "type": "boss_summoned",
+            "usedBeacon": use_beacon,
+            "boss": boss_snap,
+            "arena": arena_snap,
             "economy": econ,
         }))
     }

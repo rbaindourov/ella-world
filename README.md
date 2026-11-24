@@ -19,12 +19,14 @@
 
 ## ✨ Features
 
-- **Crystal Cavern Dungeon Portal (`G`) & Legendary Loot Farming**: Step through the glowing East Plaza portal into a dark-amethyst subterranean cavern to mine 6 Crystal Veins, unlock Wooden & Golden Vault Chests with Dungeon Keys, and Jump-Stomp, Sparkle-Blast (`E`), or zap with the **🔫 Starlight Plasma Ray Gun** (`14.5m` ranged beam, `3 HP` instant defeat) against 8 patrolling Shadow Slimes & Crystal Bats for Starlight Coins, Potions, 3D Home Relics, and Exclusive Glam Cosmetics.
-- **Persistent Backpack Economy (`I`), House Trophy Decorating & Scam-Proof Live P2P Trading**: 18-item catalog persisted in `data/world_users.json` (Gems, Vault Keys, Swiftness & Cloud Leap Potions, Prism Blocks, 5 3D Home Trophy Relics: *Amethyst Geode Lamp*, *Neon Slime Lava Lamp*, *Plushie Crystal Bat*, *Golden Starlight Chalice*, *Starlight Dragon Egg*, 4 Dungeon-Exclusive Glam Relics, and the first **Legendary** weapon `legendary_ray_gun`). Owned items can be displayed on 3D house pedestals (`🏆 My Loot`, atomic `-1`/`+1` anti-duplication conservation) or traded live via a two-sided Lock + Confirm window.
-- **Stylized 3D Girl & Boy Characters + Dress to Impress Glam Salon**: Rigged 25-bone skeletal characters (`ella_dti_wardrobe.glb`, 47 modular meshes across `Body_Stylized` & `Body_Male`), featuring both the Ella Forensics glam cast and **Jack Tech-49 / Maverick Recon** boy builds (*Oblivion*-inspired Tech-49 Flight Jacket, Tactical Flight Pants, Armored Flight Boots, Recon Cap, Aviator Shades, and Hero Henley Tee), mix-and-match hairstyles, satin/glitter/matte gowns & tops, crowns, fairy wings, 3D star bags, right-hand **Starlight Plasma Ray Gun**, and dungeon-exclusive relics with live mirror preview.
-- **Illuminated Fashion Runway**: Live rotating runway themes, 8 runway poses & dances (`1`–`8`), and 1–5 ⭐ live star voting with celebration confetti.
-- **Solid 2-Story House Builder, Interactive Doors/Windows & 3D Home Interiors**: Solid cylinder-vs-AABB wall collision, `0.55m` stair auto-stepping, indoor ceiling bonk & camera pullback, interactive swinging **Doors & Windows** (`E` or click), 90° prop rotation (`Q`), and 25-mesh Blender 5.2 **Kitchen, Bathroom, Bedroom & Trophy Pedestal** interiors (`ella_world_props_loot.glb`) persisted atomically to `data/world_blocks.json`.
-- **Synchronized Sky Obby Course**: Multi-stage floating parkour course with server-phase-locked moving platforms, checkpoints (`R`), and a Golden Trophy summit celebration.
+- **🐾 Adoptable 3D Pets & Plaza Hoverboards / Mounts (`P`, `X`)**: Every player receives **Cloud Puppy** + **Starlight Hoverboard** free out of the box! Unlock or hatch **Starlight Kitsune**, **Shadow Kitty**, and **Baby Crystal Dragon** (from **🥚 Starlight Companion Eggs**), or cruise on **Sunset Skates** and **Comet Surfer** (`1.62x–1.78x` Plaza speed; auto-dismounts on Obby speedrun Start Gates). Companion pets follow across all zones with passive loot-magnet, bonus coin %, and `+1` combat damage perks.
+- **🏡 Claimable Neighborhood Homes, 3D Nameplate Mailboxes, Co-Builders & Doorbells**: Claim 1 of 6 neighborhood plots (`plot_1`..`plot_6` — 3 furnished starter villas + 3 open architect lots) persisted in `data/world_homes.json` (switchable/releasable anytime, with Host Ella & Parent Admin moderation override), customize your 3D Mailbox Nameplate & Co-Builders, toggle **🔓 Open** vs **🔒 Locked + 🔔 Doorbell** (with WebAudio Ding-Dong chime + quick-unlock popover), sit on chairs/sofas, sleep (`9`) on beds, and click lamps to switch room lights on/off.
+- **⚒️ Starlight Workshop Crafting Bench (`U`) & Gear Progression**: Visit the 3D Workshop at `(12.5, 0, 6.5)` in Starlight Plaza to forge **⚔️ Starlight Crystal Blade** (`2 DMG` melee cleave), **🪄 Starlight Astral Wand** (`16m` `2 DMG` star-bolt + `+8 HP` Arena self-mend), **🛡️ Aegis Heart Charm** (passive `100 -> 150 Max HP` in Shadow Rift), **✨ Starlight Elixir** (`+75 HP` + 30s speed & jump boost), **🔮 Obsidian Rift Beacon**, **💎 Aurora Crystal Lamp**, and **🥚 Companion Eggs**.
+- **👗 Timed "Start Fashion Show!" Mode on the DTI Runway**: Opt-in non-modal `popover="manual"` invite banner (never teleports busy builders/fighters), `45s` Dress-Up countdown visible inside Glam Studio & Runway HUD, automatic `12s`-per-model spotlight catwalk, `1★–5★` voting (no self-voting during active show), friendly **AI Runway Judges** (`4★–5★` when `< 3` human voters rate), and 1st/2nd/3rd Podium + Starlight Coin prizes (`+60 / +40 / +25 / +15 🪙`).
+- **⏱️ Obby Speedrun Laser Gates & Persistent Top-5 Leaderboards**: Glowing Start & Summit Finish laser gates + 3D Hall of Fame scoreboards (`data/world_leaderboards.json`, `0.01s` precision) for both **Classic Sky Obby** (`easy`) and **Pro Obby Gauntlet** (`hard`), automatically cancelling runs on checkpoint warps (`R`/`T`) or hoverboard mounts.
+- **🌅 Dynamic 12-Minute Sky / Cotton-Candy Sunset / Aurora Night Cycle + Meteor Shower + Co-Op Obsidian Dragon Boss**: Server-synchronized `720s` Plaza sky cycle with GLSL Aurora ribbons & twinkling stars, Host Ella & Parent Admin Sky/Meteor Shower controls spawning catchable **🌠 Falling Stars**, and the summonable **🐉 Co-Op Obsidian Rift Dragon Boss** at Shadow Rift North Altar `(0, 0, -24.5)` with jump-over purple Shockwave Rings (`18 DMG` if `y < 0.65`, dodged when `y >= 0.65`), dynamic player HP scaling, and fair personal loot + guaranteed first-kill `pet_egg` for every contributor.
+- **Crystal Cavern (`G`) & Shadow Rift Mortal Arena (`K`) + Scam-Proof P2P Trading (`I`)**: 27-item persistent economy (`data/world_users.json`), 5 sculpted dungeon/arena monster types (`ella_world_environment.glb`, 47 meshes), anti-duplication house trophy pedestals (`🏆 My Loot`), and two-sided Lock + Confirm P2P trading.
+- **Stylized 3D Girl & Boy Characters + Dress to Impress Glam Salon (`C`)**: Rigged 25-bone skeletal characters (`ella_dti_wardrobe.glb`, 47 modular meshes across `Body_Stylized` & `Body_Male`), right-hand **Plasma Ray Gun / Crystal Blade / Starlight Wand** attachments, 9 poses/emotes (`1`–`9`), and dedicated `GlamSalonStage3D` mirror preview.
 - **Parent-Controlled Whitelist, Escalating Fines, 3D Debtor's Prison & Parental Safety Suite**:
   - **Evasion-Resistant Cursing Sanitization & Negative-Balance Fines**: Catches spaced/punctuation/leetspeak profanity evasion while preserving clean words (`"class"`, `"pass"`, `"grass"`, `"455 coins"`), deducting escalating Starlight Coin fines (`-15`, `-35`, `-75`, `-150`, ...) into signed negative `i64` debt balances and logging full strike/fine telemetry in `world_chat_blocked.jsonl`.
   - **3D Debtor's Prison (`ZONE_PRISON = 2`) & Community Service**: Habitual violators who drop below the debt threshold (`-50 🪙`) or reach the strike limit (`3`) are automatically sentenced into an enclosed 3D Debtor's Prison courtyard where building, trading, and dungeon warps are locked until they complete glowing 3D community-service chores (`E`, `+5 🪙` strictly capped at `0 🪙`) or receive a **🕊️ Parent Pardon**.
@@ -32,14 +34,14 @@
 
 ---
 
-## 🚀 Quick Start (Native Rust Binary)
+## 🚀 Quick Start (Native Rust Binary & `solidstate` Compute Offload)
 
 ```bash
-# 1. Build & run tests natively (zero Docker, zero cloud CI required)
+# 1. Verify JS/ES modules locally + offload Rust fmt, Clippy & 38/38 tests to solidstate (192.168.11.25)
 ./scripts/verify_native.sh
 
-# 2. Start the standalone server
-cargo run --release
+# 2. Build optimized release binary on solidstate (auto-synced back to target/release/ella-world-server)
+./scripts/remote_cargo_solidstate.sh build --release --bin ella-world-server
 ```
 
 Then open **`http://localhost:8097`** in two browser tabs and sign in with the starter accounts from `config/users.example.json` (`ella` / `changeme-starlight` and `maya` / `changeme-puppy`).
@@ -67,7 +69,7 @@ cargo build --release --target x86_64-unknown-linux-musl
 | `ELLA_WEBRTC_UDP_PORT` | `44444` | **UDP port** carrying browser Opus voice + 20 Hz binary game state (`4444` in standalone `:4444` mode) |
 | `ELLA_NATIVE_UDP_PORT` | `44445` | **UDP port** carrying raw `EWLD` v1 native client voice + state |
 | `ELLA_PUBLIC_IP` | *(unset)* | Optional public WAN IPv4 advertised as an additional `srflx` UDP ICE candidate alongside LAN `host` candidates |
-| `ELLA_DATA_DIR` | `./data` | Persistent storage directory for `world_users.json`, `world_blocks.json`, `world_chat.jsonl`, & `world_chat_blocked.jsonl` |
+| `ELLA_DATA_DIR` | `./data` | Persistent storage directory for `world_users.json`, `world_blocks.json`, `world_homes.json`, `world_leaderboards.json`, `world_chat.jsonl`, & `world_chat_blocked.jsonl` |
 | `ELLA_PUBLIC_DIR` | `./public` | Path to static Three.js client directory |
 | `ELLA_SEED_USERS_FILE` | `./config/users.example.json` | Initial seed template copied into `ELLA_DATA_DIR` on first boot |
 | `ELLA_HMAC_SECRET` | *(dev default)* | Secret key used to sign constant-time HMAC-SHA256 session tokens & password fingerprints |

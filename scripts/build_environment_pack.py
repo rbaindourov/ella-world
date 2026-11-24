@@ -31,6 +31,7 @@ PREVIEW_TREES = REPO_ROOT / "scratch/env_trees_preview.png"
 PREVIEW_DTI = REPO_ROOT / "scratch/env_dti_stage_preview.png"
 PREVIEW_STARGATE_CAMP = REPO_ROOT / "scratch/env_stargate_camp_preview.png"
 PREVIEW_ENEMIES = REPO_ROOT / "scratch/env_enemies_preview.png"
+PREVIEW_EXPANSION = REPO_ROOT / "scratch/env_expansion_preview.png"
 
 
 def clear_scene():
@@ -1293,6 +1294,591 @@ def build_mob_rift_spider():
     return obj
 
 
+# ============================================================================
+# Expansion Pack 3D Assets: Pets, Hoverboards/Mounts, Workshop, Mailbox & Boss
+# ============================================================================
+
+
+def build_pet_cloud_puppy():
+    """Fluffy white Cloud Puppy facing -Y (+Z in Three.js) with sky-blue ears, wagging puff tail & gold halo."""
+    bm = bmesh.new()
+    m_cloud = make_pbr_mat("Mat_Pet_CloudWhite", base_color=(0.98, 0.99, 1.0, 1.0), roughness=0.58)
+    m_sky = make_pbr_mat(
+        "Mat_Pet_SkyBlue",
+        base_color=(0.45, 0.82, 0.99, 1.0),
+        roughness=0.36,
+        emissive=(0.25, 0.68, 0.98),
+        emissive_strength=0.35,
+    )
+    m_dark = make_pbr_mat("Mat_Pet_DarkEye", base_color=(0.06, 0.08, 0.16, 1.0), roughness=0.10)
+    m_pink = make_pbr_mat("Mat_Pet_RosyPink", base_color=(0.98, 0.48, 0.72, 1.0), roughness=0.42)
+    m_gold = make_pbr_mat(
+        "Mat_Pet_HaloGold",
+        base_color=(1.0, 0.84, 0.24, 1.0),
+        roughness=0.18,
+        metallic=0.82,
+        emissive=(1.0, 0.78, 0.18),
+        emissive_strength=1.2,
+    )
+
+    # Plump cloud-puff torso + chest puff + head
+    append_sphere(bm, 0, 0.23, (0, 0.06, 0.28), scale=(1.0, 1.22, 0.92), u_segs=14, v_segs=10)
+    append_sphere(bm, 0, 0.16, (0, -0.14, 0.30), u_segs=12, v_segs=8)
+    append_sphere(bm, 0, 0.21, (0, -0.22, 0.50), scale=(1.04, 0.98, 0.96), u_segs=14, v_segs=10)
+    append_sphere(bm, 0, 0.10, (0, -0.39, 0.45), scale=(1.05, 0.85, 0.78), u_segs=10, v_segs=8)
+    append_sphere(bm, 3, 0.038, (0, -0.47, 0.47), u_segs=8, v_segs=6)  # cute pink nose
+
+    # Floppy sky-blue ears, glossy eyes & rosy cheeks
+    for sx in (-1.0, 1.0):
+        append_sphere(bm, 1, 0.095, (sx * 0.21, -0.18, 0.48), scale=(0.48, 0.78, 1.35), u_segs=10, v_segs=8)
+        append_sphere(bm, 2, 0.036, (sx * 0.085, -0.405, 0.53), u_segs=8, v_segs=6)
+        append_sphere(bm, 3, 0.028, (sx * 0.135, -0.385, 0.47), scale=(1.1, 0.45, 0.75), u_segs=8, v_segs=6)
+        for fy in (-0.11, 0.18):
+            append_sphere(bm, 0, 0.075, (sx * 0.12, fy, 0.08), scale=(0.95, 1.05, 1.0), u_segs=8, v_segs=6)
+
+    # Fluffy cloud-puff tail + floating golden starlight halo ring above head
+    append_sphere(bm, 1, 0.11, (0, 0.34, 0.38), u_segs=10, v_segs=8)
+    for i in range(12):
+        a0 = i * (math.tau / 12.0)
+        a1 = (i + 1) * (math.tau / 12.0)
+        p0 = Vector((math.cos(a0) * 0.13, -0.22 + math.sin(a0) * 0.13, 0.76))
+        p1 = Vector((math.cos(a1) * 0.13, -0.22 + math.sin(a1) * 0.13, 0.76))
+        mid = (p0 + p1) * 0.5
+        dv = p1 - p0
+        rot = dv.to_track_quat("Z", "Y").to_euler("XYZ")
+        append_cyl(bm, 4, 0.018, 0.018, dv.length * 1.18, 6, tuple(mid), rot=tuple(rot))
+
+    mesh = bpy.data.meshes.new("Env_Pet_CloudPuppy_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Pet_CloudPuppy", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_cloud, m_sky, m_dark, m_pink, m_gold):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_pet_starlight_kitsune():
+    """Sculpted 3-tailed Rose-Gold & Cream Starlight Kitsune spirit fox facing -Y."""
+    bm = bmesh.new()
+    m_coat = make_pbr_mat("Mat_Pet_KitsuneCoat", base_color=(0.99, 0.68, 0.34, 1.0), roughness=0.46)
+    m_cream = make_pbr_mat("Mat_Pet_KitsuneCream", base_color=(1.0, 0.96, 0.90, 1.0), roughness=0.50)
+    m_star = make_pbr_mat(
+        "Mat_Pet_KitsuneStar",
+        base_color=(0.98, 0.38, 0.78, 1.0),
+        roughness=0.18,
+        emissive=(0.98, 0.28, 0.72),
+        emissive_strength=1.9,
+    )
+    m_eye = make_pbr_mat("Mat_Pet_DarkEye")
+
+    # Slender fox body + cream chest ruff + pointed snout
+    append_sphere(bm, 0, 0.21, (0, 0.04, 0.29), scale=(0.90, 1.32, 0.92), u_segs=14, v_segs=10)
+    append_sphere(bm, 1, 0.15, (0, -0.16, 0.31), scale=(0.95, 0.95, 1.08), u_segs=10, v_segs=8)
+    append_sphere(bm, 0, 0.19, (0, -0.24, 0.52), scale=(1.02, 0.98, 0.94), u_segs=14, v_segs=10)
+    append_cyl(bm, 1, 0.095, 0.025, 0.20, 8, (0, -0.43, 0.47), rot=(1.35, 0, 0))
+    append_sphere(bm, 2, 0.040, (0, -0.41, 0.60), u_segs=8, v_segs=6)  # glowing forehead gem
+
+    # Tall pointed fox ears + eyes + 4 nimble paws
+    for sx in (-1.0, 1.0):
+        append_cyl(bm, 0, 0.075, 0.010, 0.24, 6, (sx * 0.13, -0.22, 0.74), rot=(0.10, -sx * 0.22, 0))
+        append_cyl(bm, 2, 0.042, 0.006, 0.16, 5, (sx * 0.13, -0.24, 0.73), rot=(0.10, -sx * 0.22, 0))
+        append_sphere(bm, 3, 0.034, (sx * 0.085, -0.40, 0.54), u_segs=8, v_segs=6)
+        for fy in (-0.12, 0.18):
+            append_cyl(bm, 0, 0.042, 0.032, 0.22, 8, (sx * 0.10, fy, 0.11))
+
+    # 3 Fanning spirit tails with glowing starlight tips!
+    for ti, spread in enumerate((-0.42, 0.0, 0.42)):
+        tx = math.sin(spread) * 0.26
+        tz = 0.44 + (0.06 if ti == 1 else 0.0)
+        append_sphere(bm, 0, 0.13, (tx * 0.7, 0.38, tz), scale=(0.78, 1.55, 0.85), u_segs=10, v_segs=8)
+        append_sphere(bm, 2, 0.075, (tx * 1.15, 0.56, tz + 0.09), u_segs=8, v_segs=6)
+
+    mesh = bpy.data.meshes.new("Env_Pet_StarlightKitsune_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Pet_StarlightKitsune", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_coat, m_cream, m_star, m_eye):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_pet_shadow_kitty():
+    """Obsidian-velvet mystic Shadow Kitty with glowing neon-violet eyes & golden crescent collar."""
+    bm = bmesh.new()
+    m_fur = make_pbr_mat("Mat_Pet_ShadowFur", base_color=(0.08, 0.07, 0.15, 1.0), roughness=0.45, metallic=0.12)
+    m_violet = make_pbr_mat(
+        "Mat_Pet_KittyViolet",
+        base_color=(0.76, 0.32, 1.0, 1.0),
+        roughness=0.12,
+        emissive=(0.68, 0.22, 1.0),
+        emissive_strength=2.6,
+    )
+    m_gold = make_pbr_mat("Mat_Pet_HaloGold")
+
+    append_sphere(bm, 0, 0.19, (0, 0.05, 0.27), scale=(0.88, 1.24, 0.94), u_segs=14, v_segs=10)
+    append_sphere(bm, 0, 0.19, (0, -0.20, 0.50), scale=(1.06, 0.95, 0.96), u_segs=14, v_segs=10)
+    # Collar + golden moon charm
+    append_cyl(bm, 1, 0.135, 0.135, 0.045, 14, (0, -0.17, 0.37), rot=(0.25, 0, 0))
+    append_sphere(bm, 2, 0.042, (0, -0.30, 0.34), u_segs=8, v_segs=6)
+
+    for sx in (-1.0, 1.0):
+        append_cyl(bm, 0, 0.072, 0.008, 0.19, 5, (sx * 0.12, -0.19, 0.70), rot=(0.06, -sx * 0.18, 0))
+        append_cyl(bm, 1, 0.038, 0.005, 0.12, 4, (sx * 0.12, -0.21, 0.69), rot=(0.06, -sx * 0.18, 0))
+        append_sphere(bm, 1, 0.042, (sx * 0.082, -0.375, 0.52), scale=(1.15, 0.55, 0.85), u_segs=8, v_segs=6)
+        for fy in (-0.10, 0.17):
+            append_cyl(bm, 0, 0.038, 0.030, 0.20, 8, (sx * 0.09, fy, 0.10))
+
+    # Graceful S-curved mystic cat tail with glowing violet tip
+    for i, (ty, tz) in enumerate([(0.26, 0.34), (0.36, 0.46), (0.38, 0.60)]):
+        append_sphere(bm, 1 if i == 2 else 0, 0.048, (0.04 * i, ty, tz), u_segs=8, v_segs=6)
+
+    mesh = bpy.data.meshes.new("Env_Pet_ShadowKitty_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Pet_ShadowKitty", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_fur, m_violet, m_gold):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_pet_baby_dragon_parts():
+    """Articulated Prismatic Baby Crystal Dragon (Body + WingL + WingR)."""
+    m_scale = make_pbr_mat(
+        "Mat_Pet_DragonScale",
+        base_color=(0.24, 0.78, 0.98, 1.0),
+        roughness=0.22,
+        metallic=0.38,
+        emissive=(0.14, 0.45, 0.85),
+        emissive_strength=0.45,
+    )
+    m_crystal = make_pbr_mat(
+        "Mat_Pet_DragonCrystal",
+        base_color=(0.98, 0.36, 0.82, 1.0),
+        roughness=0.14,
+        emissive=(0.95, 0.25, 0.78),
+        emissive_strength=1.8,
+        double_sided=True,
+    )
+    m_belly = make_pbr_mat("Mat_Pet_DragonBelly", base_color=(0.98, 0.95, 0.82, 1.0), roughness=0.35)
+    m_eye = make_pbr_mat("Mat_Pet_HaloGold")
+
+    bm = bmesh.new()
+    append_sphere(bm, 0, 0.20, (0, 0.04, 0.38), scale=(0.95, 1.18, 1.05), u_segs=14, v_segs=10)
+    append_sphere(bm, 2, 0.14, (0, -0.09, 0.36), scale=(0.88, 0.65, 0.98), u_segs=10, v_segs=8)
+    append_sphere(bm, 0, 0.18, (0, -0.18, 0.62), scale=(1.0, 1.08, 0.95), u_segs=14, v_segs=10)
+    append_sphere(bm, 0, 0.10, (0, -0.35, 0.58), scale=(0.95, 1.05, 0.75), u_segs=10, v_segs=8)
+
+    for sx in (-1.0, 1.0):
+        append_cyl(bm, 1, 0.042, 0.006, 0.20, 5, (sx * 0.10, -0.10, 0.80), rot=(-0.38, -sx * 0.24, 0))
+        append_sphere(bm, 3, 0.038, (sx * 0.095, -0.31, 0.65), u_segs=8, v_segs=6)
+        append_sphere(bm, 0, 0.065, (sx * 0.11, 0.02, 0.18), u_segs=8, v_segs=6)
+
+    # Spiked crystal tail
+    append_cyl(bm, 0, 0.09, 0.02, 0.36, 8, (0, 0.34, 0.30), rot=(-1.15, 0, 0))
+    append_cyl(bm, 1, 0.065, 0.008, 0.14, 4, (0, 0.52, 0.24), rot=(-1.35, 0, 0))
+    for i in range(3):
+        append_cyl(bm, 1, 0.038, 0.006, 0.12, 4, (0, 0.02 + i * 0.11, 0.58 - i * 0.08), rot=(-0.45, 0, 0))
+
+    b_mesh = bpy.data.meshes.new("Env_Pet_BabyDragon_Body_Mesh")
+    bm.to_mesh(b_mesh)
+    bm.free()
+    b_obj = bpy.data.objects.new("Env_Pet_BabyDragon_Body", b_mesh)
+    bpy.context.collection.objects.link(b_obj)
+    for m in (m_scale, m_crystal, m_belly, m_eye):
+        b_obj.data.materials.append(m)
+
+    def make_wing(name, side_sign):
+        wbm = bmesh.new()
+        append_box(wbm, 0, (0.38, 0.04, 0.04), (side_sign * 0.19, 0.0, 0.06), rot=(0, -side_sign * 0.28, 0))
+        append_box(
+            wbm,
+            1,
+            (0.38, 0.24, 0.02),
+            (side_sign * 0.22, 0.08, 0.02),
+            rot=(0.18, -side_sign * 0.22, 0),
+        )
+        wm = bpy.data.meshes.new(f"{name}_Mesh")
+        wbm.to_mesh(wm)
+        wbm.free()
+        wo = bpy.data.objects.new(name, wm)
+        bpy.context.collection.objects.link(wo)
+        wo.data.materials.append(m_scale)
+        wo.data.materials.append(m_crystal)
+        return wo
+
+    return b_obj, make_wing("Env_Pet_BabyDragon_WingL", -1.0), make_wing("Env_Pet_BabyDragon_WingR", 1.0)
+
+
+def build_mount_hoverboard():
+    """Sleek Anti-Grav Starlight Hoverboard (1.28m long along Y, 0.48m wide along X)."""
+    bm = bmesh.new()
+    m_deck = make_pbr_mat("Mat_Mount_Deck", base_color=(0.10, 0.14, 0.28, 1.0), roughness=0.24, metallic=0.68)
+    m_neon = make_pbr_mat(
+        "Mat_Mount_CyanGlow",
+        base_color=(0.18, 0.92, 1.0, 1.0),
+        roughness=0.12,
+        emissive=(0.12, 0.88, 1.0),
+        emissive_strength=2.6,
+    )
+    m_pink = make_pbr_mat(
+        "Mat_Mount_PinkGlow",
+        base_color=(0.98, 0.34, 0.76, 1.0),
+        roughness=0.18,
+        emissive=(0.96, 0.22, 0.68),
+        emissive_strength=1.8,
+    )
+
+    append_box(bm, 0, (0.46, 1.24, 0.07), (0, 0, 0.10), bevel_width=0.028)
+    append_box(bm, 2, (0.34, 0.86, 0.02), (0, 0, 0.14), bevel_width=0.01)
+    for sy in (-0.32, 0.32):
+        append_box(bm, 0, (0.30, 0.22, 0.018), (0, sy, 0.15))
+        append_cyl(bm, 1, 0.15, 0.12, 0.05, 16, (0, sy, 0.055))
+    for sx in (-0.235, 0.235):
+        append_box(bm, 1, (0.025, 1.12, 0.03), (sx, 0, 0.10))
+
+    mesh = bpy.data.meshes.new("Env_Mount_Hoverboard_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Mount_Hoverboard", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_deck, m_neon, m_pink):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_mount_starlight_skates():
+    """Twin Winged Roller-Thruster Starlight Skates spaced for avatar feet (±0.22 X)."""
+    bm = bmesh.new()
+    m_gold = make_pbr_mat("Mat_Pet_HaloGold")
+    m_neon = make_pbr_mat("Mat_Mount_CyanGlow")
+    m_pink = make_pbr_mat("Mat_Mount_PinkGlow")
+
+    for sx in (-0.22, 0.22):
+        append_box(bm, 0, (0.18, 0.42, 0.06), (sx, -0.02, 0.07), bevel_width=0.015)
+        for wy in (-0.13, 0.11):
+            append_cyl(bm, 1, 0.055, 0.055, 0.20, 12, (sx, wy, 0.055), rot=(0, math.pi * 0.5, 0))
+        append_box(
+            bm,
+            2,
+            (0.03, 0.22, 0.14),
+            (sx + (0.11 if sx > 0 else -0.11), 0.08, 0.16),
+            rot=(0.35, 0, 0),
+        )
+
+    mesh = bpy.data.meshes.new("Env_Mount_StarlightSkates_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Mount_StarlightSkates", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_gold, m_neon, m_pink):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_mount_comet_surfer():
+    """Royal-Gold & Cosmic-Violet Comet Surfer Glider Board with swept wings (1.46m long)."""
+    bm = bmesh.new()
+    m_gold = make_pbr_mat("Mat_Pet_HaloGold")
+    m_violet = make_pbr_mat("Mat_Pet_KittyViolet")
+    m_cyan = make_pbr_mat("Mat_Mount_CyanGlow")
+
+    append_sphere(bm, 0, 0.28, (0, 0, 0.11), scale=(0.92, 2.55, 0.22), u_segs=16, v_segs=10)
+    for sx in (-1.0, 1.0):
+        append_box(
+            bm,
+            1,
+            (0.32, 0.48, 0.035),
+            (sx * 0.34, 0.18, 0.12),
+            rot=(0.08, -sx * 0.15, -sx * 0.32),
+            bevel_width=0.01,
+        )
+    append_sphere(bm, 2, 0.09, (0, -0.42, 0.15), scale=(1.0, 1.3, 0.55), u_segs=10, v_segs=8)
+    append_cyl(bm, 2, 0.11, 0.06, 0.24, 12, (0, 0.68, 0.11), rot=(math.pi * 0.5, 0, 0))
+
+    mesh = bpy.data.meshes.new("Env_Mount_CometSurfer_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Mount_CometSurfer", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_gold, m_violet, m_cyan):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_crafting_bench():
+    """Starlight Workshop Crafting Bench + Crystal Anvil + Glowing Arcane Forge Spire."""
+    bm = bmesh.new()
+    m_wood = make_pbr_mat("Mat_Bench_Wood", base_color=(0.38, 0.22, 0.12, 1.0), roughness=0.62)
+    m_stone = make_pbr_mat("Mat_Bench_Obsidian", base_color=(0.14, 0.16, 0.26, 1.0), roughness=0.35, metallic=0.58)
+    m_gold = make_pbr_mat("Mat_Pet_HaloGold")
+    m_cyan = make_pbr_mat("Mat_Mount_CyanGlow")
+    m_pink = make_pbr_mat("Mat_Mount_PinkGlow")
+
+    # Heavy timber workbench table (2.1m x 1.0m x 0.92m)
+    append_box(bm, 0, (2.10, 1.00, 0.12), (0, 0, 0.88), bevel_width=0.025)
+    append_box(bm, 0, (1.88, 0.82, 0.06), (0, 0, 0.26))
+    for lx in (-0.88, 0.88):
+        for ly in (-0.38, 0.38):
+            append_box(bm, 0, (0.14, 0.14, 0.84), (lx, ly, 0.42))
+
+    # Left side: Starlight Crystal Anvil + Golden Smithing Hammer
+    append_box(bm, 1, (0.48, 0.32, 0.16), (-0.56, -0.04, 1.02), bevel_width=0.02)
+    append_box(bm, 1, (0.64, 0.26, 0.14), (-0.56, -0.04, 1.18), bevel_width=0.02)
+    append_cyl(bm, 3, 0.11, 0.02, 0.24, 6, (-0.88, -0.04, 1.18), rot=(0, -math.pi * 0.5, 0))
+    append_cyl(bm, 0, 0.024, 0.024, 0.34, 8, (-0.42, -0.22, 1.28), rot=(0, 0.95, 0.35))
+    append_box(bm, 2, (0.12, 0.08, 0.08), (-0.29, -0.16, 1.35), rot=(0, 0.2, 0.35))
+
+    # Center: Floating Arcane Rune Ring + Prism Crystal Core
+    append_cyl(bm, 2, 0.28, 0.32, 0.05, 16, (0.08, 0.02, 0.96))
+    append_cyl(bm, 3, 0.15, 0.01, 0.36, 6, (0.08, 0.02, 1.38))
+    append_cyl(bm, 3, 0.15, 0.01, 0.22, 6, (0.08, 0.02, 1.10), rot=(math.pi, 0, 0))
+
+    # Right side: Glowing Alchemist Potion Flasks
+    append_sphere(bm, 4, 0.11, (0.64, -0.10, 1.05), u_segs=12, v_segs=10)
+    append_cyl(bm, 2, 0.04, 0.05, 0.09, 10, (0.64, -0.10, 1.18))
+    append_sphere(bm, 3, 0.085, (0.82, 0.12, 1.02), u_segs=10, v_segs=8)
+
+    mesh = bpy.data.meshes.new("Env_Crafting_Bench_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Crafting_Bench", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_wood, m_stone, m_gold, m_cyan, m_pink):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_plot_mailbox():
+    """Neighborhood Home Mailbox with Doorbell Button (🔔) facing -Y (+Z in Three.js)."""
+    bm = bmesh.new()
+    m_post = make_pbr_mat("Mat_Mailbox_Post", base_color=(0.95, 0.96, 0.98, 1.0), roughness=0.36)
+    m_box = make_pbr_mat("Mat_Mailbox_Body", base_color=(0.24, 0.68, 0.96, 1.0), roughness=0.30, metallic=0.25)
+    m_gold = make_pbr_mat("Mat_Pet_HaloGold")
+    m_bell = make_pbr_mat(
+        "Mat_Mailbox_Doorbell",
+        base_color=(1.0, 0.32, 0.58, 1.0),
+        roughness=0.16,
+        emissive=(1.0, 0.24, 0.52),
+        emissive_strength=2.0,
+    )
+
+    append_box(bm, 0, (0.28, 0.28, 0.08), (0, 0, 0.04), bevel_width=0.015)
+    append_box(bm, 0, (0.12, 0.12, 1.06), (0, 0, 0.56), bevel_width=0.01)
+    # Arched mailbox chest
+    append_box(bm, 1, (0.36, 0.52, 0.24), (0, -0.02, 1.18), bevel_width=0.025)
+    append_cyl(bm, 1, 0.18, 0.18, 0.52, 14, (0, -0.02, 1.30), rot=(math.pi * 0.5, 0, 0))
+    # Golden mail slot trim + Glowing Ringable Doorbell Button on front (-Y)!
+    append_box(bm, 2, (0.24, 0.03, 0.05), (0, -0.285, 1.30))
+    append_cyl(bm, 2, 0.065, 0.065, 0.03, 14, (0, -0.285, 1.15), rot=(math.pi * 0.5, 0, 0))
+    append_sphere(bm, 3, 0.045, (0, -0.30, 1.15), u_segs=10, v_segs=8)
+    # Raised parcel flag on right side
+    append_box(bm, 3, (0.025, 0.05, 0.24), (0.20, -0.08, 1.38))
+    append_box(bm, 3, (0.025, 0.12, 0.08), (0.20, -0.12, 1.48))
+
+    mesh = bpy.data.meshes.new("Env_Plot_Mailbox_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Plot_Mailbox", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_post, m_box, m_gold, m_bell):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_obby_gate():
+    """Sleek Starlight Speedrun Laser Gate Arch (3.8m span x 3.5m tall) for Sky & Pro Obby."""
+    bm = bmesh.new()
+    m_pearl = make_pbr_mat("Mat_Gate_Pearl", base_color=(0.95, 0.96, 1.0, 1.0), roughness=0.26, metallic=0.35)
+    m_slate = make_pbr_mat("Mat_Gate_Slate", base_color=(0.11, 0.14, 0.24, 1.0), roughness=0.32, metallic=0.68)
+    m_gold = make_pbr_mat("Mat_Pet_HaloGold")
+    m_cyan = make_pbr_mat(
+        "Mat_Gate_Emitter",
+        base_color=(0.22, 0.88, 1.0, 1.0),
+        roughness=0.12,
+        emissive=(0.18, 0.78, 1.0),
+        emissive_strength=2.6,
+    )
+
+    for sx in (-1.0, 1.0):
+        px = sx * 1.78
+        append_cyl(bm, 1, 0.30, 0.36, 0.22, 12, (px, 0, 0.11))
+        append_cyl(bm, 0, 0.16, 0.20, 3.22, 12, (px, 0, 1.80))
+        append_cyl(bm, 2, 0.22, 0.22, 0.10, 12, (px, 0, 1.10))
+        append_cyl(bm, 2, 0.22, 0.22, 0.10, 12, (px, 0, 2.55))
+        append_sphere(bm, 3, 0.16, (px, 0, 3.52), u_segs=10, v_segs=8)
+
+    # Overhead arch header beam + gold crest
+    append_box(bm, 1, (3.92, 0.34, 0.28), (0, 0, 3.36), bevel_width=0.03)
+    append_box(bm, 2, (3.98, 0.38, 0.07), (0, 0, 3.53), bevel_width=0.015)
+    append_sphere(bm, 3, 0.20, (0, 0, 3.72), scale=(1.0, 0.55, 1.15), u_segs=10, v_segs=8)
+
+    mesh = bpy.data.meshes.new("Env_Obby_Gate_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Obby_Gate", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_pearl, m_slate, m_gold, m_cyan):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_leaderboard_board():
+    """Twin-pedestal Hall of Fame Top-5 Leaderboard Frame facing -Y (+Z in Three.js Y-up)."""
+    bm = bmesh.new()
+    m_slate = make_pbr_mat("Mat_Gate_Slate")
+    m_gold = make_pbr_mat("Mat_Pet_HaloGold")
+    m_glow = make_pbr_mat("Mat_Gate_Emitter")
+
+    for sx in (-1.0, 1.0):
+        px = sx * 1.56
+        append_box(bm, 0, (0.42, 0.48, 0.18), (px, 0, 0.09), bevel_width=0.02)
+        append_cyl(bm, 0, 0.11, 0.13, 3.25, 10, (px, 0, 1.72))
+        append_sphere(bm, 1, 0.15, (px, 0, 3.42), u_segs=10, v_segs=8)
+
+    # Beveled scoreboard housing centered at Z=2.15 so screenMesh (3.08 x 2.12 at y=2.15, z=+0.14) sits flush
+    append_box(bm, 0, (3.44, 0.20, 2.38), (0, 0.02, 2.15), bevel_width=0.03)
+    # Gold outer bezel frame bars
+    append_box(bm, 1, (3.50, 0.24, 0.10), (0, 0.0, 3.34), bevel_width=0.015)
+    append_box(bm, 1, (3.50, 0.24, 0.10), (0, 0.0, 0.96), bevel_width=0.015)
+    for sx in (-1.0, 1.0):
+        append_box(bm, 1, (0.10, 0.24, 2.46), (sx * 1.70, 0.0, 2.15), bevel_width=0.015)
+    append_sphere(bm, 2, 0.16, (0, -0.06, 3.52), u_segs=10, v_segs=8)
+
+    mesh = bpy.data.meshes.new("Env_Leaderboard_Board_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Leaderboard_Board", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_slate, m_gold, m_glow):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_boss_altar():
+    """Obsidian Dragon Summoning Altar for the North Island of Shadow Rift."""
+    bm = bmesh.new()
+    m_obs = make_pbr_mat("Mat_Boss_Obsidian", base_color=(0.09, 0.08, 0.14, 1.0), roughness=0.28, metallic=0.62)
+    m_magma = make_pbr_mat(
+        "Mat_Boss_Magma",
+        base_color=(1.0, 0.26, 0.08, 1.0),
+        roughness=0.14,
+        emissive=(1.0, 0.18, 0.05),
+        emissive_strength=3.0,
+    )
+    m_gold = make_pbr_mat("Mat_Pet_HaloGold")
+
+    append_cyl(bm, 0, 1.65, 1.85, 0.24, 8, (0, 0, 0.12))
+    append_cyl(bm, 0, 1.15, 1.35, 0.28, 8, (0, 0, 0.38))
+    append_cyl(bm, 0, 0.48, 0.62, 0.92, 6, (0, 0, 0.96))
+    append_cyl(bm, 2, 0.62, 0.48, 0.12, 8, (0, 0, 1.46))
+    # 4 Curved obsidian dragon-horn pillars surrounding floating magma summoning orb
+    for i in range(4):
+        ang = (i + 0.5) * (math.tau / 4.0)
+        px, py = math.cos(ang) * 1.18, math.sin(ang) * 1.18
+        append_cyl(bm, 0, 0.18, 0.03, 1.55, 6, (px, py, 1.12), rot=(py * 0.22, -px * 0.22, 0))
+    append_sphere(bm, 1, 0.30, (0, 0, 1.88), u_segs=14, v_segs=12)
+
+    mesh = bpy.data.meshes.new("Env_Boss_Altar_Mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new("Env_Boss_Altar", mesh)
+    bpy.context.collection.objects.link(obj)
+    for m in (m_obs, m_magma, m_gold):
+        obj.data.materials.append(m)
+    return obj
+
+
+def build_boss_obsidian_dragon_parts():
+    """Massive Co-Op Obsidian Dragon Boss (Body + Articulated WingL + WingR) facing -Y."""
+    m_obs = make_pbr_mat("Mat_Boss_Obsidian")
+    m_magma = make_pbr_mat("Mat_Boss_Magma")
+    m_violet = make_pbr_mat(
+        "Mat_Boss_VoidMembrane",
+        base_color=(0.58, 0.12, 0.88, 1.0),
+        roughness=0.22,
+        emissive=(0.82, 0.14, 0.42),
+        emissive_strength=1.5,
+        double_sided=True,
+    )
+    m_gold = make_pbr_mat("Mat_Pet_HaloGold")
+
+    bm = bmesh.new()
+    # Armored draconic torso + glowing molten magma chest core + muscular legs
+    append_sphere(bm, 0, 0.98, (0, 0.18, 1.52), scale=(0.96, 1.32, 1.15), u_segs=16, v_segs=12)
+    append_sphere(bm, 1, 0.56, (0, -0.58, 1.56), scale=(0.86, 0.52, 0.96), u_segs=12, v_segs=10)
+    # Sinuous armored neck + fierce horned dragon skull & lower jaw facing -Y
+    append_cyl(bm, 0, 0.48, 0.36, 1.12, 10, (0, -0.52, 2.38), rot=(0.52, 0, 0))
+    append_box(bm, 0, (0.74, 0.98, 0.52), (0, -1.02, 2.86), rot=(0.14, 0, 0), bevel_width=0.05)
+    append_box(bm, 0, (0.56, 0.78, 0.24), (0, -1.12, 2.52), rot=(-0.22, 0, 0), bevel_width=0.03)
+    append_sphere(bm, 1, 0.22, (0, -1.02, 2.66), u_segs=10, v_segs=8)  # fiery maw glow
+
+    # Swept crown horns, glowing magma eyes, stout legs & claws
+    for sx in (-1.0, 1.0):
+        append_cyl(bm, 3, 0.14, 0.015, 1.05, 6, (sx * 0.34, -0.52, 3.32), rot=(-0.68, -sx * 0.32, 0))
+        append_sphere(bm, 1, 0.095, (sx * 0.28, -1.38, 2.94), u_segs=8, v_segs=8)
+        append_cyl(bm, 0, 0.36, 0.26, 1.32, 10, (sx * 0.68, -0.05, 0.66))
+        append_box(bm, 0, (0.52, 0.68, 0.22), (sx * 0.68, -0.18, 0.11), bevel_width=0.03)
+
+    # Heavy spiked tail sweeping +Y + dorsal magma crystal ridges
+    append_cyl(bm, 0, 0.52, 0.12, 2.15, 10, (0, 1.65, 0.92), rot=(-1.18, 0, 0))
+    append_cyl(bm, 1, 0.26, 0.02, 0.58, 4, (0, 2.68, 0.52), rot=(-1.32, 0, 0))
+    for i in range(5):
+        append_cyl(bm, 1, 0.14, 0.015, 0.44, 5, (0, -0.25 + i * 0.42, 2.55 - i * 0.28), rot=(-0.48, 0, 0))
+
+    b_mesh = bpy.data.meshes.new("Env_Boss_ObsidianDragon_Body_Mesh")
+    bm.to_mesh(b_mesh)
+    bm.free()
+    b_obj = bpy.data.objects.new("Env_Boss_ObsidianDragon_Body", b_mesh)
+    bpy.context.collection.objects.link(b_obj)
+    for m in (m_obs, m_magma, m_violet, m_gold):
+        b_obj.data.materials.append(m)
+
+    def make_boss_wing(name, side_sign):
+        wbm = bmesh.new()
+        append_cyl(
+            wbm,
+            0,
+            0.12,
+            0.06,
+            2.25,
+            8,
+            (side_sign * 1.08, -0.08, 0.32),
+            rot=(0, side_sign * (math.pi * 0.42), 0),
+        )
+        append_cyl(wbm, 3, 0.07, 0.01, 0.38, 5, (side_sign * 1.05, -0.28, 0.56), rot=(0.65, 0, 0))
+        for fx, fy, fz in [(2.15, 0.12, 0.22), (1.72, 0.58, -0.22), (1.05, 0.72, -0.42)]:
+            p0 = Vector((side_sign * 0.18, 0.0, 0.12))
+            p1 = Vector((side_sign * fx, fy, fz))
+            mid = (p0 + p1) * 0.5
+            dv = p1 - p0
+            rot = dv.to_track_quat("Z", "Y").to_euler("XYZ")
+            append_cyl(wbm, 0, 0.055, 0.018, dv.length, 6, tuple(mid), rot=tuple(rot))
+        append_box(
+            wbm,
+            2,
+            (1.95, 0.92, 0.04),
+            (side_sign * 1.15, 0.34, 0.02),
+            rot=(0.24, -side_sign * 0.22, 0),
+        )
+        wm = bpy.data.meshes.new(f"{name}_Mesh")
+        wbm.to_mesh(wm)
+        wbm.free()
+        wo = bpy.data.objects.new(name, wm)
+        bpy.context.collection.objects.link(wo)
+        for m in (m_obs, m_magma, m_violet, m_gold):
+            wo.data.materials.append(m)
+        return wo
+
+    return (
+        b_obj,
+        make_boss_wing("Env_Boss_ObsidianDragon_WingL", -1.0),
+        make_boss_wing("Env_Boss_ObsidianDragon_WingR", 1.0),
+    )
+
+
 def build_cc0_prop(name, src_subdir, pred, target_polys, target_height=None, target_width=None, anchor_z="bottom", diff_tex=None, mat_override=None):
     bp = SRC_DIR / src_subdir / f"{src_subdir}.blend"
     objs = append_objects_from_blend(bp, pred)
@@ -1595,6 +2181,29 @@ def main():
     built["Env_Mob_VoidWraith"] = build_mob_void_wraith()
     built["Env_Mob_RiftSpider"] = build_mob_rift_spider()
 
+    # 6. Expansion Pack: Adoptable 3D Pets, Hoverboards/Mounts, Workshop, Mailbox & Obsidian Dragon Boss
+    built["Env_Pet_CloudPuppy"] = build_pet_cloud_puppy()
+    built["Env_Pet_StarlightKitsune"] = build_pet_starlight_kitsune()
+    built["Env_Pet_ShadowKitty"] = build_pet_shadow_kitty()
+    pdrag_body, pdrag_wl, pdrag_wr = build_pet_baby_dragon_parts()
+    built["Env_Pet_BabyDragon_Body"] = pdrag_body
+    built["Env_Pet_BabyDragon_WingL"] = pdrag_wl
+    built["Env_Pet_BabyDragon_WingR"] = pdrag_wr
+
+    built["Env_Mount_Hoverboard"] = build_mount_hoverboard()
+    built["Env_Mount_StarlightSkates"] = build_mount_starlight_skates()
+    built["Env_Mount_CometSurfer"] = build_mount_comet_surfer()
+
+    built["Env_Crafting_Bench"] = build_crafting_bench()
+    built["Env_Plot_Mailbox"] = build_plot_mailbox()
+    built["Env_Obby_Gate"] = build_obby_gate()
+    built["Env_Leaderboard_Board"] = build_leaderboard_board()
+    built["Env_Boss_Altar"] = build_boss_altar()
+    boss_body, boss_wl, boss_wr = build_boss_obsidian_dragon_parts()
+    built["Env_Boss_ObsidianDragon_Body"] = boss_body
+    built["Env_Boss_ObsidianDragon_WingL"] = boss_wl
+    built["Env_Boss_ObsidianDragon_WingR"] = boss_wr
+
     # Reset all asset transforms to origin before saving .blend and exporting .glb
     for o in built.values():
         o.location = Vector((0, 0, 0))
@@ -1691,6 +2300,52 @@ def main():
         PREVIEW_ENEMIES,
         cam_loc=(0.0, -9.8, 2.8),
         cam_target=(0.0, 0.0, 1.1),
+        spacing=0.0,
+    )
+
+    # Compose Expansion Pack Showcase Preview (4 Pets, 3 Mounts, Workshop, Mailbox, Obby Gate, Leaderboard, Altar & Obsidian Dragon Boss)
+    for o in built.values():
+        o.location = Vector((0, 0, 0))
+    built["Env_Pet_CloudPuppy"].location = Vector((-5.2, -3.2, 0))
+    built["Env_Pet_StarlightKitsune"].location = Vector((-3.6, -3.2, 0))
+    built["Env_Pet_ShadowKitty"].location = Vector((-2.0, -3.2, 0))
+    built["Env_Pet_BabyDragon_Body"].location = Vector((-0.4, -3.2, 0))
+    built["Env_Pet_BabyDragon_WingL"].location = Vector((-0.55, -3.2, 0.48))
+    built["Env_Pet_BabyDragon_WingR"].location = Vector((-0.25, -3.2, 0.48))
+    built["Env_Mount_Hoverboard"].location = Vector((1.4, -3.2, 0))
+    built["Env_Mount_StarlightSkates"].location = Vector((2.8, -3.2, 0))
+    built["Env_Mount_CometSurfer"].location = Vector((4.4, -3.2, 0))
+    built["Env_Plot_Mailbox"].location = Vector((-5.6, 0.2, 0))
+    built["Env_Crafting_Bench"].location = Vector((-3.1, 0.2, 0))
+    built["Env_Boss_Altar"].location = Vector((0.0, 0.2, 0))
+    built["Env_Boss_ObsidianDragon_Body"].location = Vector((3.8, 0.6, 0))
+    built["Env_Boss_ObsidianDragon_WingL"].location = Vector((3.0, 0.6, 1.9))
+    built["Env_Boss_ObsidianDragon_WingR"].location = Vector((4.6, 0.6, 1.9))
+    built["Env_Obby_Gate"].location = Vector((-3.2, 4.2, 0))
+    built["Env_Leaderboard_Board"].location = Vector((2.8, 4.2, 0))
+    render_studio_preview(
+        [
+            built["Env_Pet_CloudPuppy"],
+            built["Env_Pet_StarlightKitsune"],
+            built["Env_Pet_ShadowKitty"],
+            built["Env_Pet_BabyDragon_Body"],
+            built["Env_Pet_BabyDragon_WingL"],
+            built["Env_Pet_BabyDragon_WingR"],
+            built["Env_Mount_Hoverboard"],
+            built["Env_Mount_StarlightSkates"],
+            built["Env_Mount_CometSurfer"],
+            built["Env_Plot_Mailbox"],
+            built["Env_Crafting_Bench"],
+            built["Env_Obby_Gate"],
+            built["Env_Leaderboard_Board"],
+            built["Env_Boss_Altar"],
+            built["Env_Boss_ObsidianDragon_Body"],
+            built["Env_Boss_ObsidianDragon_WingL"],
+            built["Env_Boss_ObsidianDragon_WingR"],
+        ],
+        PREVIEW_EXPANSION,
+        cam_loc=(0.0, -13.0, 4.9),
+        cam_target=(0.0, 0.5, 1.4),
         spacing=0.0,
     )
 

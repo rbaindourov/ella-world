@@ -463,9 +463,12 @@ pub async fn handle_client_event_command(
             let theme = cmd.get("theme").and_then(|v| v.as_str());
             let target = cmd.get("targetUsername").and_then(|v| v.as_str());
             let stars = cmd.get("stars").and_then(|v| v.as_u64()).map(|s| s as u8);
-            let _ = world
+            if let Err(err) = world
                 .mutate_runway(self_id, username, action, theme, target, stars)
-                .await;
+                .await
+            {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
         }
         "zone_portal" => {
             let zone = cmd.get("zone").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
@@ -558,6 +561,115 @@ pub async fn handle_client_event_command(
             let trade_id = cmd.get("tradeId").and_then(|v| v.as_str());
             if let Err(err) = world.trade_cancel(self_id, trade_id).await {
                 emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "companions" => {
+            let action = cmd.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let pet_id = cmd.get("petId").and_then(|v| v.as_str());
+            let mount_id = cmd.get("mountId").and_then(|v| v.as_str());
+            let nickname = cmd.get("nickname").and_then(|v| v.as_str());
+            if let Err(err) = world
+                .mutate_companions(self_id, username, action, pet_id, mount_id, nickname)
+                .await
+            {
+                emit_action_error(world, self_id, cmd_type, &err).await;
+            }
+        }
+        "homes" => {
+            let action = cmd.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let plot_id = cmd.get("plotId").and_then(|v| v.as_str());
+            let custom_title = cmd.get("customTitle").and_then(|v| v.as_str());
+            let door_locked = cmd.get("doorLocked").and_then(|v| v.as_bool());
+            let co_builders = cmd.get("coBuilders").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            });
+            match world
+                .mutate_home(
+                    self_id,
+                    username,
+                    false,
+                    action,
+                    plot_id,
+                    custom_title,
+                    door_locked,
+                    co_builders,
+                )
+                .await
+            {
+                Ok(res) => {
+                    let _ = world
+                        .send_peer_targeted_json(self_id, res.to_string())
+                        .await;
+                }
+                Err(err) => {
+                    emit_action_error(world, self_id, cmd_type, &err).await;
+                }
+            }
+        }
+        "craft" => {
+            let recipe_id = cmd.get("recipeId").and_then(|v| v.as_str()).unwrap_or("");
+            match world.craft_recipe(self_id, username, recipe_id).await {
+                Ok(res) => {
+                    let _ = world
+                        .send_peer_targeted_json(self_id, res.to_string())
+                        .await;
+                }
+                Err(err) => {
+                    emit_action_error(world, self_id, cmd_type, &err).await;
+                }
+            }
+        }
+        "obby" => {
+            let action = cmd.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let course = cmd.get("course").and_then(|v| v.as_str());
+            match world
+                .obby_speedrun_action(self_id, username, action, course)
+                .await
+            {
+                Ok(res) => {
+                    let _ = world
+                        .send_peer_targeted_json(self_id, res.to_string())
+                        .await;
+                }
+                Err(err) => {
+                    emit_action_error(world, self_id, cmd_type, &err).await;
+                }
+            }
+        }
+        "sky" => {
+            let action = cmd.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let mode = cmd.get("mode").and_then(|v| v.as_str());
+            let star_id = cmd.get("starId").and_then(|v| v.as_str());
+            match world
+                .mutate_sky(self_id, Some(username), false, action, mode, star_id)
+                .await
+            {
+                Ok(res) => {
+                    let _ = world
+                        .send_peer_targeted_json(self_id, res.to_string())
+                        .await;
+                }
+                Err(err) => {
+                    emit_action_error(world, self_id, cmd_type, &err).await;
+                }
+            }
+        }
+        "arena_boss" => {
+            let use_beacon = cmd
+                .get("useBeacon")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            match world.summon_arena_boss(self_id, username, use_beacon).await {
+                Ok(res) => {
+                    let _ = world
+                        .send_peer_targeted_json(self_id, res.to_string())
+                        .await;
+                }
+                Err(err) => {
+                    emit_action_error(world, self_id, cmd_type, &err).await;
+                }
             }
         }
         _ => {}

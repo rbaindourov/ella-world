@@ -55,13 +55,13 @@ Existing `data/world_blocks.json` files hydrate with zero migration steps via `#
 ## 4. Blender 5.2 Asset Pack (`scripts/build_props_and_loot_pack.py`)
 
 Generated non-destructively via headless Blender 5.2 (`blender -b --factory-startup -P scripts/build_props_and_loot_pack.py`):
-- **Source `.blend`**: `assets/blender/ella_world_props_loot.blend`
-- **Runtime `.glb`**: `public/models/ella_world_props_loot.glb` (25 meshes, `PaintTint` material slot dynamically recolored per placed block's `color` swatch while preserving metallic chrome, glass, porcelain, Cushion fabric, and emissive accents):
+- **Source `.blend`**: `assets/blender/ella_world_props_loot.blend` (`664.2 KB`)
+- **Runtime `.glb`**: `public/models/ella_world_props_loot.glb` (`33` meshes, `26,211` polys, `24,640` verts, `1,072.4 KB`; `PaintTint` material slot dynamically recolored per placed block's `color` swatch while preserving metallic chrome, glass, porcelain, Cushion fabric, and emissive accents):
   - **Architecture (5)**: `Prop_Stairs`, `Prop_Door_Frame`, `Prop_Door_Leaf`, `Prop_Window_Frame`, `Prop_Window_Sash`.
-  - **Kitchen (6)**: `Prop_Kitchen_Counter`, `Prop_Kitchen_Sink`, `Prop_Kitchen_Stove`, `Prop_Kitchen_Fridge`, `Prop_Dining_Table`, `Prop_Chair` (sourced & normalized from CC0 PolyHaven `DiningChair_01`).
+  - **Kitchen & Living (7)**: `Prop_Kitchen_Counter`, `Prop_Kitchen_Sink`, `Prop_Kitchen_Stove`, `Prop_Kitchen_Fridge`, `Prop_Dining_Table`, `Prop_Chair` (CC0 PolyHaven `DiningChair_01`), `Prop_Sofa` (`2×1` plush couch).
   - **Bathroom (3)**: `Prop_Bath_Tub`, `Prop_Bath_Vanity`, `Prop_Bath_Toilet`.
-  - **Bedroom (4)**: `Prop_Bed` (normalized from CC0 PolyHaven `GothicBed_01`), `Prop_Nightstand_Lamp` (normalized from CC0 PolyHaven `ClassicNightstand_01`), `Prop_Wardrobe`, `Prop_Rug`.
-  - **Trophy Pedestal & 3D Loot Relics (7)**: `Loot_Display_Pedestal`, `Loot_Ray_Gun`, `Loot_Geode_Lamp`, `Loot_Slime_Lamp`, `Loot_Bat_Plush`, `Loot_Royal_Chalice` (normalized from CC0 PolyHaven `brass_goblets`), and `Loot_Dragon_Egg`.
+  - **Bedroom & Lighting (5)**: `Prop_Bed` (CC0 PolyHaven `GothicBed_01`), `Prop_Nightstand_Lamp` (CC0 PolyHaven `ClassicNightstand_01`), `Prop_Crystal_Lamp` (toggleable Aurora floor/table lamp), `Prop_Wardrobe`, `Prop_Rug`.
+  - **Trophy Pedestal, Crafted Gear & 3D Loot Relics (13)**: `Loot_Display_Pedestal`, `Loot_Ray_Gun`, `Loot_Crystal_Blade`, `Loot_Starlight_Wand`, `Loot_Aegis_Charm`, `Loot_Starlight_Potion`, `Loot_Rift_Beacon`, `Loot_Pet_Egg`, `Loot_Geode_Lamp`, `Loot_Slime_Lamp`, `Loot_Bat_Plush`, `Loot_Royal_Chalice` (CC0 PolyHaven `brass_goblets`), and `Loot_Dragon_Egg`.
 
 ---
 
@@ -75,15 +75,29 @@ Players can display any owned item from their Backpack (`🏆 My Loot` tab in Bu
 
 ---
 
-## 6. New Dungeon Drops & First Legendary Item (`legendary_ray_gun`)
+## 6. Dungeon Drops, Legendary Ray Gun & Starlight Workshop Crafted Gear
 
-Added 6 new items to `ITEM_CATALOG` (`src/economy.rs`):
-- `geode_lamp` (*uncommon*, Crystal Veins & Wooden Chests) — **🔮 Amethyst Geode Lamp**
-- `slime_lava_lamp` (*rare*, Shadow Slimes) — **🧪 Neon Slime Lava Lamp**
-- `bat_plushie` (*rare*, Crystal Bats) — **🦇 Plushie Crystal Bat**
-- `royal_chalice` (*epic*, Wooden & Golden Vault Chests) — **🏆 Golden Starlight Chalice**
-- `dragon_egg_relic` (*epic*, Golden Vault Chests) — **🥚 Starlight Dragon Egg**
-- `legendary_ray_gun` (*legendary*, `10%` Golden Vault Chest jackpot + rare `2%` Crystal Bat drop, `950 🪙` trade value) — **🔫 Starlight Plasma Ray Gun**:
-  - **Right-Hand 3D Weapon Attachment**: Equippable via Backpack (`🔫 Equip Ray Gun`) or Glam Salon (`accessory: "ray_gun"`), mounting `Loot_Ray_Gun` onto `Hand.R` (`StylizedCharacterRig`) and `rightArmPivot` (`ClassicBlockyRig`).
-  - **Ranged Crystal Cavern Plasma Beam**: Fires a `14.5m` cyan-magenta plasma beam (`POST /api/ella-world/dungeon/attack` with `mode: "raygun"` or `WS/UDP` `"dungeon_attack"`), dealing **`3 HP` instant-defeat damage** to Shadow Slimes and Crystal Bats and broadcasting `UdpWorldEvent::RayGunBeam` to all cavern peers.
-  - **Starlight Plaza Laser Light Show**: Clicking in Starlight Plaza with the Ray Gun equipped fires harmless neon laser beams (`POST /api/ella-world/raygun` / `"raygun_zap"`, `200ms` per-player cooldown) visible to everyone in the Plaza.
+`ITEM_CATALOG` (`src/economy.rs`, 27 items total) includes:
+- **Home Trophy Relics**: `geode_lamp`, `slime_lava_lamp`, `bat_plushie`, `royal_chalice`, `dragon_egg_relic`, and `aurora_crystal_lamp`.
+- **Right-Hand 3D Combat & Light-Show Weapons**:
+  - `legendary_ray_gun` (`🔫 Starlight Plasma Ray Gun`, `accessory: "ray_gun"`): `14.5m` `3 HP` plasma beam in Crystal Cavern / Shadow Rift + Plaza laser shows.
+  - `crystal_blade` (`⚔️ Starlight Crystal Blade`, `accessory: "crystal_blade"`, crafted at Starlight Workshop): `4.6m` `2 DMG` melee cleave in Crystal Cavern & Shadow Rift.
+  - `starlight_wand` (`🪄 Starlight Astral Wand`, `accessory: "starlight_wand"`, crafted at Starlight Workshop): `16.0m` `2 DMG` ranged star-bolt + `+8 HP` self-mend per hit in Shadow Rift + pastel star-beams in Plaza.
+- **Charms, Elixirs, Beacons & Eggs**:
+  - `aegis_heart_charm` (`🛡️ Aegis Heart Charm`): Passively raises Shadow Rift Max HP from `100` to `150` while held in Backpack.
+  - `starlight_potion` (`✨ Starlight Elixir`): Restores `+75 HP` in Shadow Rift and grants `30s` Swiftness + Cloud Leap.
+  - `rift_beacon` (`🔮 Obsidian Rift Beacon`): Summons the Obsidian Rift Dragon Boss without cooldown and boosts `pet_egg` drop chance to `80%`.
+  - `pet_egg` (`🥚 Starlight Companion Egg`) & `dragon_scale` (`🐉 Obsidian Dragon Scale`).
+
+---
+
+## 7. Claimable Neighborhood Homes, 3D Mailboxes, Co-Builders, Doorbells & Interactive Furniture
+
+- **6 Claimable Plots (`data/world_homes.json`, `GET/POST /api/ella-world/homes`)**:
+  - `plot_1`..`plot_6` (3 furnished starter villas + 3 open architect plots). Each player can claim 1 plot at a time for free (`action: "claim"`) and switch or `release` anytime; Host Ella (`role == "host"`) and Parent Admin can moderate/release any plot.
+  - Owners customize their 3D `Env_Plot_Mailbox` nameplate (`customTitle`), invite `coBuilders` (comma-separated friend usernames), and toggle `doorLocked` (`🔓 Open` vs `🔒 Locked + 🔔 Doorbell`).
+  - Visitors pressing `E` or clicking a friend's 3D Mailbox trigger `action: "ring_doorbell"`, playing a WebAudio Ding-Dong chime, mailbox sparkles, and a top-layer `popover="manual"` alert (`#doorbell-popover`) with a one-click **`🔓 Open Home`** button for the owner.
+- **Interactive Furniture & Toggleable Room Lighting**:
+  - Pressing `E` or clicking a `chair` or `sofa` seats the avatar (`emote: "sit"`); interacting with a `bed` triggers the horizontal `sleep` pose (`emote: "sleep"`, shortcut `9`).
+  - Pressing `E` or clicking a `nightstand_lamp` or `crystal_lamp` toggles `VoxelBlock.open` (`action: "toggle"`), switching its warm `THREE.PointLight` and emissive bulb shade on (`!open`) or dimmed (`open`) across all connected players.
+
