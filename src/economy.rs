@@ -495,7 +495,7 @@ pub struct MountDef {
     pub rarity: &'static str,
     pub icon: &'static str,
     pub glb_node: &'static str,
-    pub speed_mult: f32,
+    pub speed_mult: f64,
     pub coin_price: u64,
     pub description: &'static str,
 }

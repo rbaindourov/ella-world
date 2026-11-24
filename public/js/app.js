@@ -7464,7 +7464,8 @@ async function mutateCompanions(payload) {
     } else if (data.action === 'equip_mount') {
       const mId = data.companions?.equippedMount;
       const mDef = mId ? mountCatalog.find((m) => m.id === mId) : null;
-      const spd = mDef ? (mDef.speedMult ?? mDef.speedMultiplier ?? 1.58) : 1.58;
+      const rawSpd = mDef ? (mDef.speedMult ?? mDef.speedMultiplier ?? 1.58) : 1.58;
+      const spd = Math.round(Number(rawSpd) * 100) / 100;
       showToast(
         mId
           ? `🛹 Riding ${mDef ? mDef.name : mId}! (${spd}x Plaza Speed)`
@@ -7625,7 +7626,8 @@ function renderCompanionsModal() {
     for (const mount of mountCatalog) {
       const owned = (playerCompanions.ownedMounts || []).includes(mount.id);
       const riding = playerCompanions.equippedMount === mount.id;
-      const spd = mount.speedMult ?? mount.speedMultiplier ?? 1.58;
+      const rawSpd = mount.speedMult ?? mount.speedMultiplier ?? 1.58;
+      const spd = Math.round(Number(rawSpd) * 100) / 100;
       const card = document.createElement('article');
       card.className = `backpack-card rarity-${mount.rarity || 'common'}${!owned ? ' is-unowned' : ''}`;
 
