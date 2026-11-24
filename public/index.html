@@ -333,7 +333,7 @@
         </p>
         <div class="arena-death-actions">
           <button type="button" id="arena-respawn-btn" class="primary-cta-btn arena-respawn-btn">
-            ⚡ Respawn at Sanctuary (100 HP)
+            ⚡ Respawn at Sanctuary (<span id="arena-respawn-max-hp">100</span> HP)
           </button>
           <button type="button" id="arena-flee-plaza-btn" class="secondary-outline-btn">
             ⛲ Return to Starlight Plaza
@@ -1704,7 +1704,10 @@
             <input type="text" id="pet-nickname-input" maxlength="22" autocomplete="off" placeholder="Name your pet (e.g. Marshmallow)..." />
             <button type="submit" class="small-action-btn">🏷️ Save Name</button>
           </form>
-          <button type="button" id="hatch-pet-egg-btn" class="primary-cta-btn">🥚 Hatch Egg (<span id="companions-egg-count">0</span>)</button>
+          <div class="btn-group">
+            <button type="button" id="buy-pet-egg-btn" class="secondary-outline-btn" title="Purchase a Starlight Companion Egg with Starlight Coins">🪙 Buy Egg (<span id="companions-egg-price">120</span>)</button>
+            <button type="button" id="hatch-pet-egg-btn" class="primary-cta-btn">🥚 Hatch Egg (<span id="companions-egg-count">0</span>)</button>
+          </div>
         </div>
 
         <div class="glam-tablist" id="companions-tablist" focusgroup="tablist nomemory" role="tablist" aria-label="Companions and Mounts">

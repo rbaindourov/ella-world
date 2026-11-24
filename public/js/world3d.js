@@ -1197,6 +1197,31 @@ function buildLootDecorVisual(lootItemId, tintHex, extraUserData) {
     }
   }
 
+  if (
+    lootItemId === 'aurora_crystal_lamp' ||
+    lootItemId === 'geode_lamp' ||
+    lootItemId === 'slime_lava_lamp'
+  ) {
+    const auraColor =
+      lootItemId === 'aurora_crystal_lamp'
+        ? '#34d399'
+        : lootItemId === 'geode_lamp'
+          ? '#c084fc'
+          : '#22d3ee';
+    const auraOrb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.28, 12, 12),
+      new THREE.MeshBasicMaterial({
+        color: auraColor,
+        transparent: true,
+        opacity: 0.24,
+        depthWrite: false
+      })
+    );
+    auraOrb.position.y = 0.28;
+    if (extraUserData) Object.assign(auraOrb.userData, extraUserData);
+    trophyHolder.add(auraOrb);
+  }
+
   if (extraUserData) {
     Object.assign(trophyHolder.userData, extraUserData);
     Object.assign(root.userData, extraUserData);
@@ -2381,6 +2406,11 @@ export class BlockyWorld3D {
       fallingStars: []
     };
     this.currentNightFactor = 0;
+    this.plotLanternGlowMat = null;
+    this.nightLanternMaterials = [];
+    this.nightLanternLights = [];
+    this.windowGlowMaterials = new Map();
+    this._lastAppliedWarmGlow = -1;
     this.fallingStarsGroup = new THREE.Group();
     this.plazaGroup.add(this.fallingStarsGroup);
     this.fallingStarsMap = new Map();
@@ -3309,8 +3339,9 @@ export class BlockyWorld3D {
     const lanternGlowMat = new THREE.MeshStandardMaterial({
       color: '#fef08a',
       emissive: '#fbbf24',
-      emissiveIntensity: 0.85
+      emissiveIntensity: 0.48
     });
+    this.plotLanternGlowMat = lanternGlowMat;
     const buildPlots = [
       { x: 52, z: -26, size: 18, name: '🏡 Sunset Plot #1', sub: 'Open Build Lot (Press B)', accent: '#38bdf8' },
       { x: 82, z: -26, size: 18, name: '🌸 Rosewater Villa', sub: '2-Story Prebuilt Home (Press E!)', accent: '#f472b6' },
@@ -4353,11 +4384,31 @@ export class BlockyWorld3D {
         }
       }
 
-      // 2 Ornate Streetlamps framing the Runway Podium Entrance
+      // 2 Ornate Streetlamps framing the Runway Podium Entrance (warm up at Sunset & Aurora Night!)
+      this.nightLanternMaterials = [];
+      this.nightLanternLights = [];
+      const registerNightLanternMesh = (obj) => {
+        obj.traverse((child) => {
+          if (child.isMesh && child.material) {
+            const mats = Array.isArray(child.material) ? child.material : [child.material];
+            const clonedMats = mats.map((m) => {
+              if (m.emissive && (m.emissiveIntensity > 0.05 || m.emissive.r + m.emissive.g > 0.2)) {
+                const cm = m.clone();
+                cm.userData = { ...(cm.userData || {}), baseEmissive: m.emissiveIntensity || 0.45 };
+                this.nightLanternMaterials.push(cm);
+                return cm;
+              }
+              return m;
+            });
+            child.material = Array.isArray(child.material) ? clonedMats : clonedMats[0];
+          }
+        });
+      };
       for (const side of [-1, 1]) {
         const lamp = cloneEnvTemplate('Env_DTI_Lamp');
         if (lamp) {
           lamp.position.set(rx + side * 4.5, 0.0, 13.6);
+          registerNightLanternMesh(lamp);
           this.dtiStageDecorGroup.add(lamp);
         }
       }
@@ -4404,7 +4455,21 @@ export class BlockyWorld3D {
       const lantern = cloneEnvTemplate('Env_Camp_Lantern');
       if (lantern) {
         lantern.position.set(2.6, 0.72, 0.6);
-        this.campfireAnchor.add(lantern);
+        lantern.traverse((child) => {
+          if (child.isMesh && child.material && child.material.emissive) {
+            if (child.material.emissiveIntensity > 0.05 || child.material.emissive.r > 0.15) {
+              const cm = child.material.clone();
+              cm.userData = { ...(cm.userData || {}), baseEmissive: child.material.emissiveIntensity || 0.5 };
+              child.material = cm;
+              this.nightLanternMaterials.push(cm);
+            }
+          }
+        });
+        const lanternPt = new THREE.PointLight('#fde047', 0.35, 10.5, 1.8);
+        lanternPt.position.set(2.6, 1.12, 0.6);
+        lanternPt.userData = { baseIntensity: 0.35, nightBoost: 1.45 };
+        this.campfireAnchor.add(lantern, lanternPt);
+        this.nightLanternLights.push(lanternPt);
       }
       const pot = cloneEnvTemplate('Env_Camp_Pot');
       if (pot) {
@@ -5296,6 +5361,8 @@ export class BlockyWorld3D {
     this.voxelMap.clear();
     this.savedBlocksByKey.clear();
     this.animatedHinges.clear();
+    this.windowGlowMaterials.clear();
+    this._lastAppliedWarmGlow = -1;
     this.voxelColliders = [];
 
     for (const b of blocksArray || []) {
@@ -5544,9 +5611,23 @@ export class BlockyWorld3D {
       sashPivot.position.set(-0.42, 0, 0);
       Object.assign(sashPivot.userData, meta);
 
+      const initWarm = Math.min(1, (this.currentNightFactor || 0) * 1.15);
+      const winGlowMat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color('#7dd3fc').lerp(new THREE.Color('#fde68a'), initWarm),
+        emissive: '#fbbf24',
+        emissiveIntensity: initWarm * 1.05,
+        transparent: true,
+        opacity: 0.14 + initWarm * 0.68,
+        roughness: 0.22
+      });
+      this.windowGlowMaterials.set(key, winGlowMat);
+
       if (frame && sash) {
         root.add(frame);
-        sashPivot.add(sash);
+        const glowPane = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.74, 0.026), winGlowMat);
+        glowPane.position.set(0.42, 0.5, 0);
+        Object.assign(glowPane.userData, meta);
+        sashPivot.add(sash, glowPane);
         root.add(sashPivot);
       } else {
         const sill = new THREE.Mesh(
@@ -5554,10 +5635,7 @@ export class BlockyWorld3D {
           new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.4 })
         );
         sill.position.set(0, 0.05, 0);
-        const pane = new THREE.Mesh(
-          new THREE.BoxGeometry(0.84, 0.82, 0.05),
-          new THREE.MeshStandardMaterial({ color: '#7dd3fc', transparent: true, opacity: 0.42 })
-        );
+        const pane = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.82, 0.05), winGlowMat);
         pane.position.set(0.42, 0.5, 0);
         Object.assign(sill.userData, meta);
         Object.assign(pane.userData, meta);
@@ -5777,6 +5855,7 @@ export class BlockyWorld3D {
     }
     this.savedBlocksByKey.delete(key);
     this.animatedHinges.delete(key);
+    this.windowGlowMaterials.delete(key);
     this.voxelColliders = this.voxelColliders.filter((c) => c.voxelKey !== key);
     if (rebuildImmediately) this._rebuildActiveColliders();
   }
@@ -6672,6 +6751,56 @@ export class BlockyWorld3D {
     const dist = delta.length();
     if (dist < 0.1) return;
 
+    if (style === 'crystal_slash') {
+      const yaw = Math.atan2(delta.x, delta.z);
+      const slashGroup = new THREE.Group();
+      slashGroup.position.set(
+        fromVec.x + Math.sin(yaw) * 0.85,
+        fromVec.y + 0.05,
+        fromVec.z + Math.cos(yaw) * 0.85
+      );
+      slashGroup.rotation.order = 'YXZ';
+      slashGroup.rotation.y = yaw;
+      slashGroup.rotation.x = Math.PI * 0.44;
+      slashGroup.rotation.z = -0.35;
+
+      const coreMat = new THREE.MeshBasicMaterial({
+        color: '#e0f2fe',
+        transparent: true,
+        opacity: 0.96,
+        side: THREE.DoubleSide
+      });
+      const outerMat = new THREE.MeshBasicMaterial({
+        color: '#38bdf8',
+        transparent: true,
+        opacity: 0.78,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      });
+
+      const outerArc = new THREE.Mesh(
+        new THREE.RingGeometry(0.82, 1.48, 24, 1, -Math.PI * 0.46, Math.PI * 0.92),
+        outerMat
+      );
+      const coreArc = new THREE.Mesh(
+        new THREE.RingGeometry(1.18, 1.42, 24, 1, -Math.PI * 0.42, Math.PI * 0.84),
+        coreMat
+      );
+      coreArc.position.z = 0.01;
+      slashGroup.add(outerArc, coreArc);
+      this.scene.add(slashGroup);
+      this.laserBeams.push({
+        group: slashGroup,
+        coreMat,
+        outerMat,
+        isSlashArc: true,
+        baseYaw: yaw,
+        bornAt: performance.now()
+      });
+      this.spawnSparkleBurst(new THREE.Vector3(toVec.x, toVec.y - 0.35, toVec.z), '#38bdf8');
+      return;
+    }
+
     const dir = delta.clone().divideScalar(dist);
     const mid = fromVec.clone().addScaledVector(dir, dist * 0.5);
     const beamGroup = new THREE.Group();
@@ -6682,11 +6811,9 @@ export class BlockyWorld3D {
     const outerColor =
       style === 'star_bolt'
         ? '#f472b6'
-        : style === 'crystal_slash'
-          ? '#38bdf8'
-          : isDungeonHit
-            ? '#22d3ee'
-            : '#f472b6';
+        : isDungeonHit
+          ? '#22d3ee'
+          : '#f472b6';
     const coreMat = new THREE.MeshBasicMaterial({
       color: coreHex,
       transparent: true,
@@ -6951,10 +7078,12 @@ export class BlockyWorld3D {
       if (dBoss < maxWeaponRange + 1.8) {
         const ry = Math.atan2(bPos.x - pos.x, bPos.z - pos.z);
         this.selfAvatar.group.rotation.y = ry;
-        const fromArr = [pos.x + Math.sin(ry) * 0.55, pos.y + 1.05, pos.z + Math.cos(ry) * 0.55];
-        const toArr = [bPos.x, bPos.y + 1.8, bPos.z];
-        this.lastLocalBeamAt = performance.now();
-        this.spawnRayGunBeam(fromArr, toArr, true, beamStyle);
+        if (hasRayGun || hasWand || hasBlade) {
+          const fromArr = [pos.x + Math.sin(ry) * 0.55, pos.y + 1.05, pos.z + Math.cos(ry) * 0.55];
+          const toArr = [bPos.x, bPos.y + 1.8, bPos.z];
+          this.lastLocalBeamAt = performance.now();
+          this.spawnRayGunBeam(fromArr, toArr, true, beamStyle);
+        }
         this.onAttackMob('obsidian_dragon', hasRayGun ? 'raygun' : 'blast');
         return;
       }
@@ -7534,7 +7663,10 @@ export class BlockyWorld3D {
         fl.mesh.rotation.y = tSec * 1.8 + fl.phase;
       }
       if (this.campLight) {
-        this.campLight.intensity = 2.2 + Math.sin(tSec * 13.0) * 0.35 + Math.cos(tSec * 7.5) * 0.22;
+        const nf = this.currentNightFactor || 0;
+        this.campLight.intensity =
+          2.2 + nf * 1.55 + Math.sin(tSec * 13.0) * 0.35 + Math.cos(tSec * 7.5) * 0.22;
+        this.campLight.distance = 15 + nf * 7.0;
       }
       for (const em of this.campEmbers) {
         const life = (tSec * em.speed + em.phase) % 2.8;
@@ -7566,7 +7698,7 @@ export class BlockyWorld3D {
 
     for (let i = this.laserBeams.length - 1; i >= 0; i--) {
       const bm = this.laserBeams[i];
-      const age = (now - bm.bornAt) / 320;
+      const age = (now - bm.bornAt) / (bm.isSlashArc ? 280 : 320);
       if (age >= 1) {
         this.scene.remove(bm.group);
         this.laserBeams.splice(i, 1);
@@ -7574,9 +7706,15 @@ export class BlockyWorld3D {
       }
       const fade = 1 - age;
       bm.coreMat.opacity = fade * 0.96;
-      bm.outerMat.opacity = fade * 0.62;
-      const pulse = 1 + age * 0.65;
-      bm.group.scale.set(pulse, 1, pulse);
+      bm.outerMat.opacity = fade * (bm.isSlashArc ? 0.78 : 0.62);
+      if (bm.isSlashArc) {
+        const sweep = 1 + age * 0.42;
+        bm.group.scale.set(sweep, sweep, 1);
+        bm.group.rotation.z = -0.35 + age * 0.7;
+      } else {
+        const pulse = 1 + age * 0.65;
+        bm.group.scale.set(pulse, 1, pulse);
+      }
     }
 
     if (this.currentZone === 0) {
@@ -7826,16 +7964,18 @@ export class BlockyWorld3D {
 
       const isSprinting = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
       const potionMult = serverNowMs < this.speedBoostUntilMs ? 1.35 : 1.0;
+      const petSprintMult =
+        isSprinting && this.selfAvatar.equippedPet === 'shadow_kitty' ? 1.12 : 1.0;
       const eqMount = this.currentZone === 0 && !this.selfAvatar.emote ? this.selfAvatar.equippedMount : null;
       const mountMult =
         eqMount === 'comet_surfer'
-          ? 1.78
+          ? 1.75
           : eqMount === 'sunset_skates'
-            ? 1.68
+            ? 1.66
             : eqMount === 'starlight_board'
-              ? 1.62
+              ? 1.58
               : 1.0;
-      const speed = (isSprinting ? 11.4 : 8.4) * Math.max(potionMult, mountMult);
+      const speed = (isSprinting ? 11.4 : 8.4) * Math.max(potionMult * petSprintMult, mountMult);
       const forwardVec = new THREE.Vector3(-Math.sin(this.cameraYaw), 0, -Math.cos(this.cameraYaw));
       const rightVec = new THREE.Vector3(Math.cos(this.cameraYaw), 0, -Math.sin(this.cameraYaw));
 
@@ -7845,6 +7985,15 @@ export class BlockyWorld3D {
 
       let totalDx = 0;
       let totalDz = 0;
+      const rwShow = this.runwayShowState;
+      const myUname = this.selfAvatar.user?.username?.toLowerCase() || '';
+      const isSpotlightContestant =
+        this.currentZone === 0 &&
+        !this.salonMirrorMode &&
+        rwShow?.phase === 'catwalk' &&
+        Boolean(rwShow.spotlightUsername) &&
+        rwShow.spotlightUsername.toLowerCase() === myUname;
+
       if (moveDir.lengthSq() > 0.001) {
         moveDir.normalize();
         totalDx = moveDir.x * speed * dt;
@@ -7852,6 +8001,38 @@ export class BlockyWorld3D {
         this.selfAvatar.group.rotation.y = Math.atan2(moveDir.x, moveDir.z);
         this.selfAvatar.emote = null;
         this.selfAvatar.anim = this.isGrounded ? (isSprinting ? 'run' : 'walk') : 'jump';
+      } else if (isSpotlightContestant) {
+        const turnKey = `${rwShow.showId || 0}:${rwShow.spotlightIndex || 0}`;
+        if (this._catwalkTurnKey !== turnKey) {
+          this._catwalkTurnKey = turnKey;
+          if (Math.abs(pos.x - -24) > 5.5 || pos.z < -13.0 || pos.z > 14.5) {
+            pos.set(-24, 0.54, -8.8);
+            this.velocity.set(0, 0, 0);
+            this.isGrounded = true;
+          }
+        }
+        const catwalkElapsed = Math.max(
+          0,
+          serverNowMs - (Number(rwShow.phaseStartedAt) || serverNowMs)
+        );
+        if (catwalkElapsed < 7200) {
+          const frac = Math.min(1, catwalkElapsed / 7200);
+          const targetX = -24;
+          const targetZ = -8.8 + frac * 19.8;
+          const maxStep = 4.6 * dt;
+          totalDx = THREE.MathUtils.clamp(targetX - pos.x, -maxStep, maxStep);
+          totalDz = THREE.MathUtils.clamp(targetZ - pos.z, -maxStep, maxStep);
+          this.selfAvatar.group.rotation.y = 0;
+          this.selfAvatar.emote = null;
+          this.selfAvatar.anim = Math.hypot(totalDx, totalDz) > 0.002 ? 'walk' : 'idle';
+        } else {
+          const maxStep = 4.6 * dt;
+          totalDx = THREE.MathUtils.clamp(-24 - pos.x, -maxStep, maxStep);
+          totalDz = THREE.MathUtils.clamp(11.0 - pos.z, -maxStep, maxStep);
+          this.selfAvatar.group.rotation.y = Math.sin((catwalkElapsed - 7200) * 0.0022) * 0.45;
+          this.selfAvatar.anim = 'idle';
+          this.selfAvatar.emote = 'pose';
+        }
       } else {
         this.selfAvatar.anim = this.isGrounded ? 'idle' : 'jump';
       }
@@ -8073,6 +8254,7 @@ export class BlockyWorld3D {
           ) {
             this.lastObbyGateAt[`${courseKey}_start`] = now;
             this.spawnSparkleBurst(pos, '#34d399');
+            this._emitMoveNow();
             this.onObbyGateCrossed(courseKey, 'start');
           }
           this._inStartGate[courseKey] = insideStart;
@@ -8087,6 +8269,7 @@ export class BlockyWorld3D {
               this.lastObbyGateAt[`${courseKey}_finish`] = now;
               this.activeObbyCourse = null;
               this.spawnCelebrationConfetti(pos);
+              this._emitMoveNow();
               this.onObbyGateCrossed(courseKey, 'finish');
             }
           }
@@ -8620,6 +8803,32 @@ export class BlockyWorld3D {
     );
     const starOp = Math.max(meteorActive ? 0.85 : 0, k0.stars + (k1.stars - k0.stars) * alpha);
     this.currentNightFactor = starOp;
+    const warmGlow = Math.min(1, starOp * 1.15);
+
+    if (this.plotLanternGlowMat) {
+      this.plotLanternGlowMat.emissiveIntensity = 0.45 + warmGlow * 1.15;
+    }
+    for (const lm of this.nightLanternMaterials) {
+      if (lm) {
+        lm.emissiveIntensity = (lm.userData?.baseEmissive ?? 0.45) + warmGlow * 1.25;
+      }
+    }
+    for (const lt of this.nightLanternLights) {
+      if (lt && lt.userData) {
+        lt.intensity = (lt.userData.baseIntensity || 0.35) + warmGlow * (lt.userData.nightBoost || 1.35);
+      }
+    }
+    if (Math.abs(warmGlow - this._lastAppliedWarmGlow) > 0.015) {
+      this._lastAppliedWarmGlow = warmGlow;
+      const winCol = this._tmpColA.set('#7dd3fc').lerp(this._tmpColB.set('#fde68a'), warmGlow);
+      for (const wm of this.windowGlowMaterials.values()) {
+        if (wm) {
+          wm.color.copy(winCol);
+          wm.emissiveIntensity = warmGlow * 1.05;
+          wm.opacity = 0.14 + warmGlow * 0.68;
+        }
+      }
+    }
 
     for (let i = 0; i < this.auroraMaterials.length; i++) {
       const m = this.auroraMaterials[i];

@@ -18,8 +18,8 @@ use crate::economy::{
     PrisonState, TradeSession, TradeSideOffer, ARENA_AEGIS_MAX_HP, ARENA_BOSS_ALTAR_POS,
     ARENA_RETURN_PORTAL_POS, ARENA_SPAWN_POS, CRAFTING_RECIPES, DUNGEON_RETURN_PORTAL_POS,
     DUNGEON_SPAWN_POS, ITEM_CATALOG, MAX_ITEM_STACK, MOUNT_CATALOG, PET_CATALOG,
-    PLAZA_ARENA_PORTAL_POS, PLAZA_ARENA_RETURN_SPAWN_POS, PLAZA_PORTAL_POS, PLAZA_RETURN_SPAWN_POS,
-    PRISON_RELEASE_PORTAL_POS, PRISON_SPAWN_POS, PRISON_WORK_REWARD_COINS,
+    PET_EGG_SHOP_PRICE, PLAZA_ARENA_PORTAL_POS, PLAZA_ARENA_RETURN_SPAWN_POS, PLAZA_PORTAL_POS,
+    PLAZA_RETURN_SPAWN_POS, PRISON_RELEASE_PORTAL_POS, PRISON_SPAWN_POS, PRISON_WORK_REWARD_COINS,
     TRADE_ACTIVE_IDLE_TTL_MS, TRADE_INVITE_TTL_MS,
 };
 use crate::models::{
@@ -1654,6 +1654,7 @@ impl WorldEngine {
             "moderation": moderation_snapshot,
             "itemCatalog": ITEM_CATALOG,
             "petCatalog": PET_CATALOG,
+            "petEggShopPrice": PET_EGG_SHOP_PRICE,
             "mountCatalog": MOUNT_CATALOG,
             "craftingRecipes": CRAFTING_RECIPES,
             "homes": homes_views,
@@ -1772,6 +1773,7 @@ impl WorldEngine {
             "parentalWorld": parental_world,
             "itemCatalog": ITEM_CATALOG,
             "petCatalog": PET_CATALOG,
+            "petEggShopPrice": PET_EGG_SHOP_PRICE,
             "mountCatalog": MOUNT_CATALOG,
             "craftingRecipes": CRAFTING_RECIPES,
             "homes": homes_views,
@@ -2314,10 +2316,8 @@ impl WorldEngine {
 
         // 2. Remove block / furniture / displayed loot trophy (`action == "remove"`)
         if action == "remove" {
-            {
-                let hd = self.homes_data.read().await;
-                check_cells_plot_permission(&[(x, y, z)], &hd)?;
-            }
+            let hd = self.homes_data.read().await;
+            check_cells_plot_permission(&[(x, y, z)], &hd)?;
             let (next_version, snapshot, blocks_file, refunded_loot) = {
                 let mut bd = self.blocks_data.write().await;
                 let hit_idx = bd.blocks.iter().position(|b| {
@@ -2325,9 +2325,18 @@ impl WorldEngine {
                 });
                 let mut refund: Option<(String, String)> = None;
                 if let Some(idx) = hit_idx {
+                    let full_cells = block_occupied_cells(
+                        bd.blocks[idx].x,
+                        bd.blocks[idx].y,
+                        bd.blocks[idx].z,
+                        &bd.blocks[idx].kind,
+                        bd.blocks[idx].rot,
+                    );
+                    check_cells_plot_permission(&full_cells, &hd)?;
                     if let Some(ref item_id) = bd.blocks[idx].loot_item_id {
                         if !bd.blocks[idx].author.eq_ignore_ascii_case(username)
                             && !actor_role.eq_ignore_ascii_case("host")
+                            && !actor_role.eq_ignore_ascii_case("admin")
                         {
                             return Err(format!(
                                 "Only {} can pick up their displayed trophy!",
@@ -2341,6 +2350,7 @@ impl WorldEngine {
                 bd.version += 1;
                 (bd.version, bd.blocks.clone(), bd.clone(), refund)
             };
+            drop(hd);
 
             self.persist_blocks_async(blocks_file).await;
 
@@ -3894,23 +3904,47 @@ impl WorldEngine {
     }
 
     pub async fn tick_arena_if_occupied(&self) {
-        let arena_players: Vec<(String, String, f32, f32, f32)> = {
+        let raw_players: Vec<(String, String, String, f32, f32, f32)> = {
             let map = self.players.read().await;
             map.values()
                 .filter(|p| p.zone == ZONE_ARENA)
-                .map(|p| (p.id.clone(), p.user.display_name.clone(), p.x, p.y, p.z))
+                .map(|p| {
+                    (
+                        p.id.clone(),
+                        p.user.username.clone(),
+                        p.user.display_name.clone(),
+                        p.x,
+                        p.y,
+                        p.z,
+                    )
+                })
                 .collect()
         };
-        if arena_players.is_empty() {
+        if raw_players.is_empty() {
             return;
         }
+        let arena_players: Vec<(String, String, f32, f32, f32, u8)> = {
+            let cfg = self.users_cfg.read().await;
+            raw_players
+                .into_iter()
+                .map(|(pid, uname, disp, x, y, z)| {
+                    let max_hp = cfg
+                        .users
+                        .iter()
+                        .find(|u| u.username.eq_ignore_ascii_case(&uname))
+                        .map(|u| max_hp_for_inventory(&u.inventory))
+                        .unwrap_or(100);
+                    (pid, disp, x, y, z, max_hp)
+                })
+                .collect()
+        };
         let now = now_ms();
-        let (world_changed, mobs, boss_snap, damage_notices, maybe_snapshot) = {
+        let (world_changed, mobs, boss_snap, damage_notices, max_hp_updates, maybe_snapshot) = {
             let mut ar = self.arena.write().await;
-            let (changed, mobs, notices) = ar.tick(now, &arena_players);
+            let (changed, mobs, notices, hp_updates) = ar.tick(now, &arena_players);
             let b_snap = ar.boss.snapshot();
             let snap = if changed { Some(ar.snapshot()) } else { None };
-            (changed, mobs, b_snap, notices, snap)
+            (changed, mobs, b_snap, notices, hp_updates, snap)
         };
         let _ = self.udp_event_tx.send(UdpWorldEvent::ArenaMobs {
             server_time_ms: now,
@@ -3927,6 +3961,15 @@ impl WorldEngine {
                     arena,
                 });
             }
+        }
+        for (pid, st) in max_hp_updates {
+            let payload = serde_json::json!({
+                "type": "arena_player_status",
+                "event": "aegis_sync",
+                "arenaStatus": st,
+            })
+            .to_string();
+            let _ = self.send_peer_targeted_json(&pid, payload).await;
         }
         for notice in damage_notices {
             if notice.just_died {
@@ -6704,12 +6747,28 @@ impl WorldEngine {
                         user.pet_nickname = Some(clean_nick);
                     }
                 }
+                "buy_egg" => {
+                    let cur_eggs = user.inventory.get("pet_egg").copied().unwrap_or(0);
+                    if cur_eggs >= MAX_ITEM_STACK {
+                        return Err("Your Starlight Companion Egg stack is full!".into());
+                    }
+                    let cost_i64 = PET_EGG_SHOP_PRICE as i64;
+                    if user.coins < cost_i64 {
+                        return Err(format!(
+                            "Need {} 🪙 to buy a Starlight Companion Egg 🥚 (you have {} 🪙)!",
+                            PET_EGG_SHOP_PRICE, user.coins
+                        ));
+                    }
+                    user.coins -= cost_i64;
+                    add_inventory_item(&mut user.inventory, "pet_egg", 1);
+                    economy_changed = true;
+                }
                 "hatch_egg" => {
                     if !remove_inventory_item(&mut user.inventory, "pet_egg", 1) {
-                        return Err(
-                            "You need a Starlight Companion Egg 🥚 to hatch! Earn one from Dungeons, Bosses, or Crafting."
-                                .into(),
-                        );
+                        return Err(format!(
+                            "You need a Starlight Companion Egg 🥚 to hatch! Earn one from Dungeons or Bosses, or buy one here for {} 🪙!",
+                            PET_EGG_SHOP_PRICE
+                        ));
                     }
                     let hatched = roll_hatched_pet(&user.owned_pets);
                     let was_owned = !user.owned_pets.insert(hatched.id.to_string());
@@ -6749,6 +6808,7 @@ impl WorldEngine {
                         user.owned_mounts.insert(mdef.id.to_string());
                         economy_changed = true;
                     }
+                    user.preferred_mount = Some(mdef.id.to_string());
                     user.equipped_mount = Some(mdef.id.to_string());
                     mounted_now = true;
                 }
@@ -6760,7 +6820,7 @@ impl WorldEngine {
                         if user.equipped_mount.is_some() {
                             user.equipped_mount = None;
                         } else {
-                            user.equipped_mount = Some("starlight_board".to_string());
+                            user.equipped_mount = Some(user.best_owned_mount());
                             mounted_now = true;
                         }
                     } else {
@@ -6771,6 +6831,7 @@ impl WorldEngine {
                             return Err(format!("Unlock {} {} first!", mdef.icon, mdef.name));
                         }
                         user.owned_mounts.insert(mdef.id.to_string());
+                        user.preferred_mount = Some(mdef.id.to_string());
                         user.equipped_mount = Some(mdef.id.to_string());
                         mounted_now = true;
                     }
@@ -6975,9 +7036,18 @@ impl WorldEngine {
                         }
                     }
                     if let Some(target) = hd.plots.iter_mut().find(|p| p.plot_id == def.id) {
+                        let same_owner = target
+                            .owner_username
+                            .as_deref()
+                            .map(|o| o.eq_ignore_ascii_case(username))
+                            .unwrap_or(false);
                         target.owner_username = Some(username.to_lowercase());
                         target.owner_display_name = Some(disp_name.clone());
-                        if target.custom_title.is_none() {
+                        if !same_owner {
+                            target.custom_title = Some(format!("{disp_name}'s Home"));
+                            target.co_builders.clear();
+                            target.door_locked = false;
+                        } else if target.custom_title.is_none() {
                             target.custom_title = Some(format!("{disp_name}'s Home"));
                         }
                         target.claimed_at_ms = Some(now);
@@ -7156,6 +7226,7 @@ impl WorldEngine {
 
         Ok(serde_json::json!({
             "ok": true,
+            "type": "homes_ack",
             "action": act,
             "homes": views,
         }))
@@ -7257,6 +7328,7 @@ impl WorldEngine {
 
         Ok(serde_json::json!({
             "ok": true,
+            "type": "craft_ack",
             "recipeId": recipe.id,
             "itemId": out_def.id,
             "itemName": out_def.name,
@@ -7286,6 +7358,8 @@ impl WorldEngine {
                 .is_some();
             return Ok(serde_json::json!({
                 "ok": true,
+                "type": "obby_speedrun_ack",
+                "action": "cancel",
                 "cancelled": removed,
             }));
         }
@@ -7368,6 +7442,7 @@ impl WorldEngine {
 
             return Ok(serde_json::json!({
                 "ok": true,
+                "type": "obby_speedrun_ack",
                 "action": "start",
                 "course": course.id,
                 "startedAtMs": now,
@@ -7499,6 +7574,7 @@ impl WorldEngine {
 
             return Ok(serde_json::json!({
                 "ok": true,
+                "type": "obby_speedrun_ack",
                 "action": "finish",
                 "course": course.id,
                 "elapsedMs": elapsed_ms,
@@ -7601,6 +7677,7 @@ impl WorldEngine {
 
             return Ok(serde_json::json!({
                 "ok": true,
+                "type": "sky_ack",
                 "action": "catch_star",
                 "coinsAwarded": total_coins,
                 "bonusShard": caught_star.bonus_shard,
@@ -7649,6 +7726,7 @@ impl WorldEngine {
             });
             return Ok(serde_json::json!({
                 "ok": true,
+                "type": "sky_ack",
                 "action": "set_sky",
                 "sky": sky_snap,
             }));
@@ -7675,6 +7753,7 @@ impl WorldEngine {
                 .await;
             return Ok(serde_json::json!({
                 "ok": true,
+                "type": "sky_ack",
                 "action": "start_meteor_shower",
                 "sky": sky_snap,
             }));

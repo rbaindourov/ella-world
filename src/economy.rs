@@ -400,6 +400,8 @@ pub struct PetDef {
     pub bonus_combat_dmg: u8,
 }
 
+pub const PET_EGG_SHOP_PRICE: u64 = 120;
+
 pub const PET_CATALOG: &[PetDef] = &[
     PetDef {
         id: "cloud_puppy",
@@ -1467,6 +1469,13 @@ pub struct ArenaDamageNotice {
     pub just_died: bool,
 }
 
+pub type ArenaTickResult = (
+    bool,
+    Vec<DungeonMob>,
+    Vec<ArenaDamageNotice>,
+    Vec<(String, ArenaPlayerStatus)>,
+);
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BossShockwave {
@@ -2054,17 +2063,18 @@ impl ArenaState {
     }
 
     /// Advances Shadow Rift Arena chasing AI, melee strikes, Boss Shockwave Rings, lava burn hazards, node/mob respawns, and drops.
-    /// `arena_players` entries: `(self_id, display_name, x, y, z)`.
+    /// `arena_players` entries: `(self_id, display_name, x, y, z, desired_max_hp)`.
     pub fn tick(
         &mut self,
         now: u64,
-        arena_players: &[(String, String, f32, f32, f32)],
-    ) -> (bool, Vec<DungeonMob>, Vec<ArenaDamageNotice>) {
+        arena_players: &[(String, String, f32, f32, f32, u8)],
+    ) -> ArenaTickResult {
         let dt = ((now.saturating_sub(self.last_tick_ms)) as f32 * 0.001).clamp(0.05, 0.40);
         self.last_tick_ms = now;
 
         let mut world_changed = false;
         let mut damage_notices = Vec::new();
+        let mut max_hp_updates = Vec::new();
 
         for node in &mut self.nodes {
             if !node.available && now >= node.ready_at_ms {
@@ -2080,11 +2090,14 @@ impl ArenaState {
             world_changed = true;
         }
 
-        // Ensure every player in ZONE_ARENA has an ArenaPlayerStatus and check lava hazards
-        for (pid, disp, px, py, pz) in arena_players {
+        // Ensure every player in ZONE_ARENA has an ArenaPlayerStatus reconciled with Aegis Max HP and check lava hazards
+        for (pid, disp, px, py, pz, desired_max_hp) in arena_players {
             if !self.player_statuses.contains_key(pid) {
-                self.player_statuses
-                    .insert(pid.clone(), ArenaPlayerStatus::fresh(now));
+                let fresh = ArenaPlayerStatus::fresh_with_max_hp(now, *desired_max_hp);
+                self.player_statuses.insert(pid.clone(), fresh.clone());
+                max_hp_updates.push((pid.clone(), fresh));
+            } else if let Some(synced) = self.sync_player_max_hp(pid, *desired_max_hp) {
+                max_hp_updates.push((pid.clone(), synced));
             }
             let is_alive = self
                 .player_statuses
@@ -2110,15 +2123,19 @@ impl ArenaState {
         // Collect living, non-Sanctuary player targets for mob & boss aggro
         let valid_targets: Vec<(String, String, f32, f32, f32)> = arena_players
             .iter()
-            .filter(|(pid, _, px, _, pz)| {
-                !is_in_arena_sanctuary(*px, *pz)
+            .filter_map(|(pid, disp, px, py, pz, _)| {
+                let eligible = !is_in_arena_sanctuary(*px, *pz)
                     && self
                         .player_statuses
                         .get(pid)
                         .map(|s| s.alive)
-                        .unwrap_or(false)
+                        .unwrap_or(false);
+                if eligible {
+                    Some((pid.clone(), disp.clone(), *px, *py, *pz))
+                } else {
+                    None
+                }
             })
-            .cloned()
             .collect();
 
         let t_sec = (now % 3_600_000) as f32 * 0.001;
@@ -2284,7 +2301,12 @@ impl ArenaState {
             }
         }
 
-        (world_changed, self.mobs.clone(), damage_notices)
+        (
+            world_changed,
+            self.mobs.clone(),
+            damage_notices,
+            max_hp_updates,
+        )
     }
 }
 

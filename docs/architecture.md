@@ -264,52 +264,54 @@ To prevent penalized players from signing out, opening an Incognito window, or l
 
 ### 14.1 Adoptable 3D Pets & Plaza Hoverboards / Mounts (`POST /api/ella-world/companions`)
 - **Zero-Friction Starter Kit (`ensure_starter_companions`)**: Every existing and newly created account automatically owns `cloud_puppy` (equipped by default) and `starlight_board`.
-- **4 Sculpted 3D Pets (`PET_CATALOG`)**:
-  - `cloud_puppy` (*common*, starter): `+1.2m` loot magnet radius.
-  - `starlight_kitsune` (*rare*, `160 🪙` or `pet_egg`): `+1.8m` magnet + `+10%` bonus Starlight Coins.
-  - `shadow_kitty` (*epic*, `240 🪙` or `pet_egg`): `+2.2m` magnet + `+15%` bonus coins.
-  - `baby_crystal_dragon` (*legendary*, hatched from `pet_egg` with articulated flapping `WingL`/`WingR`): `+2.8m` magnet + `+20%` bonus coins + `+1` bonus combat damage.
+- **4 Sculpted 3D Pets (`PET_CATALOG`) & Shop/Dungeon Companion Eggs (`PET_EGG_SHOP_PRICE = 120`)**:
+  - `cloud_puppy` (*common*, `0 🪙` starter): `+2.0m` loot magnet radius + `+5%` bonus Starlight Coins.
+  - `starlight_kitsune` (*rare*, `160 🪙` or `pet_egg`): `+1.5m` magnet + `+20%` bonus Starlight Coins.
+  - `shadow_kitty` (*epic*, `220 🪙` or `pet_egg`): `+1.5m` magnet + `+10%` bonus coins + `+12%` sprint agility.
+  - `baby_crystal_dragon` (*legendary*, `420 🪙` or hatched from `pet_egg` with articulated flapping `WingL`/`WingR`): `+2.5m` magnet + `+15%` bonus coins + `+1` bonus combat damage.
+  - Players can earn `pet_egg` from Golden Vault Chests, Obsidian Dragon Boss kills, Starlight Workshop crafting, or purchase one directly via `action: "buy_egg"` (`120 🪙`).
 - **3 Plaza Hoverboards & Skates (`MOUNT_CATALOG`)**:
-  - `starlight_board` (*common*, starter, `1.62×` Plaza speed), `sunset_skates` (*rare*, `140 🪙`, `1.70×` Plaza speed), and `comet_surfer` (*legendary*, `280 🪙`, `1.78×` Plaza speed).
+  - `starlight_board` (*common*, `0 🪙` starter, `1.58×` Plaza speed), `sunset_skates` (*rare*, `150 🪙`, `1.66×` Plaza speed), and `comet_surfer` (*epic*, `320 🪙`, `1.75×` Plaza speed).
+  - `UserAccount::preferred_mount` remembers the player's chosen hoverboard/skates so quick-toggling (`X` / `mountId: "toggle"`) re-equips their unlocked mount instead of resetting to `starlight_board`.
   - Binary `OP_C2S_STATE` / `OP_S2C_WORLD_STATE` extended with `anim = 4 ("hover")` and `emote = 9 ("sleep")` (`src/udp_wire.rs`).
   - **World-Space Trailing Pet Physics (`WorldAvatar.petHolder`)**: Companion pets detach into world-space coordinate smoothing so spinning or flipping the owner avatar never whips the pet around in a rigid circle.
 
 ### 14.2 Claimable Neighborhood Homes, 3D Nameplate Mailboxes, Co-Builders & Doorbells (`GET/POST /api/ella-world/homes`, `world_homes.json`)
-- **6 Neighborhood Plots (`plot_1`..`plot_6`)**: Persisted atomically in `data/world_homes.json`. Enforces **1 claimed plot per player** (claiming a new plot cleanly releases the player's previous plot so `3` furnished villas + `3` open architect lots are never hoarded by one account).
-- **Plot Permissions (`plot_build_or_door_check`)**:
+- **6 Neighborhood Plots (`plot_1`..`plot_6`)**: Persisted atomically in `data/world_homes.json`. Enforces **1 claimed plot per player** (claiming a new plot cleanly releases the player's previous plot and resets any previous stranger's `coBuilders`/`doorLocked`/`customTitle`).
+- **Plot Permissions (`HomePlotClaim::is_authorized_builder`)**:
   - Unclaimed plots remain open for collaborative building.
-  - On a claimed plot, voxel placement/removal inside `[centerX ± halfExtent, centerZ ± halfExtent]` is restricted to the `ownerUsername`, invited `coBuilders`, Host Ella (`role == "host"`), and Parent Admin.
+  - On a claimed plot, voxel placement and multi-cell `block_occupied_cells` removal inside `[centerX ± halfExtent, centerZ ± halfExtent]` are restricted to `ownerUsername`, invited `coBuilders`, Host Ella (`role == "host"`), and Parent Admin (`role == "admin"`).
   - When `doorLocked == true`, visitors cannot toggle doors/windows inside the plot (`🔒 Home is locked — press E on the 3D Mailbox to ring the Doorbell!`), while Host Ella & Parent Admin retain moderation override (`action: "release"`).
 - **Live Doorbell Chime & Top-Layer Popover**: `action: "ring_doorbell"` broadcasts `home_doorbell`, triggering 3D mailbox sparkles, a synthesized two-tone WebAudio Ding-Dong chime, and a non-modal `popover="manual"` notification (`#doorbell-popover`) with a one-click **`🔓 Open Home`** button for the owner.
 - **Interactive Home Furniture**: Sitting on `chair` / `sofa` (`emote: "sit"`), lying down on `bed` (`emote: "sleep"`), and toggling `nightstand_lamp` / `crystal_lamp` `PointLight` illumination via `action: "toggle"`.
 
 ### 14.3 Starlight Workshop Crafting Bench & Gear Progression (`GET/POST /api/ella-world/craft`)
-- **3D Plaza Workshop (`Env_Crafting_Bench` at `(12.5, 0, 6.5)`)**: Combines Dungeon & Shadow Rift drops (`star_shard`, `cavern_relic`, `void_crystal`, `dragon_scale`, `ancient_key`, `solar_citrine`) + Starlight Coins across 7 recipes (`CRAFTING_RECIPES`):
-  1. `crystal_blade` (`⚔️ Starlight Crystal Blade`, `accessory: "crystal_blade"`, `2 DMG` melee cleave).
-  2. `starlight_wand` (`🪄 Starlight Astral Wand`, `accessory: "starlight_wand"`, `16.0m` `2 DMG` astral bolt + `+8 HP` self-mend per hit in Shadow Rift).
-  3. `aegis_heart_charm` (`🛡️ Aegis Heart Charm`, passive `100 -> 150 Max HP` in Shadow Rift whenever held in Backpack).
+- **3D Plaza Workshop (`Env_Crafting_Bench` at `(12.5, 0, 6.5)`)**: Combines real `ITEM_CATALOG` Dungeon & Shadow Rift drops (`star_shard`, `slime_gel`, `moon_opal`, `crown_relic`) + Starlight Coins across 7 recipes (`CRAFTING_RECIPES`):
+  1. `crystal_blade` (`⚔️ Starlight Crystal Blade`, `accessory: "crystal_blade"`, `6.2m` `2 DMG` melee cleave + 3D glowing crystal crescent slash arc).
+  2. `starlight_wand` (`🪄 Starlight Astral Wand`, `accessory: "starlight_wand"`, `16.2m` `2 DMG` astral bolt + `+8 HP` self-mend per hit in Shadow Rift).
+  3. `aegis_heart_charm` (`🛡️ Aegis Heart Charm`, passive `100 -> 150 Max HP` in Shadow Rift whenever held in Backpack, reconciled live on Arena ticks, trades, and crafts).
   4. `starlight_potion` (`✨ Starlight Elixir`, `+75 HP` heal + `30s` Swiftness & Cloud Leap).
   5. `rift_beacon` (`🔮 Obsidian Rift Beacon`, bypasses Dragon Boss altar cooldown + `80%` `pet_egg` luck).
-  6. `aurora_crystal_lamp` (`💎 Aurora Crystal Lamp`, placeable toggleable room lamp).
+  6. `aurora_crystal_lamp` (`💎 Aurora Crystal Lamp`, glowing northern-lights home decor relic).
   7. `pet_egg` (`🥚 Starlight Companion Egg`, hatches 3D pets in `#companions-dialog`).
 
 ### 14.4 Timed "Start Fashion Show!" Mode on the DTI Runway (`POST /api/ella-world/runway`)
 - **Opt-In Non-Modal Invite (`#fashion-invite-popover`)**: `action: "start_show"` broadcasts `show_started` without force-teleporting builders or dungeon fighters.
 - **4-State Server Machine (`idle -> dress_up (45s) -> catwalk (12s/model) -> podium (18s) -> idle`)**:
-  - Contestants locking outfits early (`action: "ready_show"`) advance immediately to `catwalk`.
-  - During `catwalk`, 3D stage spotlight `runwaySpotlightGroup` tracks `spotlightUsername` and self-voting is blocked (`HTTP 400`).
+  - Contestants locking outfits early (`action: "ready_show"`) advance immediately to `catwalk`; when `dress_up` transitions to `catwalk`, any contestant still inside Glam Studio automatically saves & exits onto the Runway stage.
+  - During `catwalk`, 3D stage spotlight `runwaySpotlightGroup` tracks `spotlightUsername`, spotlighted contestants automatically strut from backstage (`z = -8.8`) to the front podium disc (`z = 11.0`) and strike a pose (yielding immediately if manual WASD keys are pressed), and self-voting is blocked (`HTTP 400`).
   - **Solo / Small-Party AI Runway Judges**: Whenever `< 3` human voters rate a contestant, friendly AI Judges inject `4★–5★` scores so solo and 2-friend shows always feel celebratory, awarding `+60 / +40 / +25 / +15 🪙` on the Podium!
 
 ### 14.5 Obby Speedrun Gates & Persistent Top-5 Leaderboards (`GET/POST /api/ella-world/obby`, `world_leaderboards.json`)
-- **Start & Summit Finish Laser Gates (`Env_Obby_Gate`) + 3D Hall of Fame Scoreboards (`Env_Leaderboard_Board`)**: Built for both **Classic Sky Obby (`easy`)** and **Pro Obby Gauntlet (`hard`)**.
-- **Anti-Cheese Fairness**: Crossing a Start Gate automatically dismounts any active hoverboard (`companions_update` `"auto_dismount_obby"`), enforces server-authoritative minimum possible times (`>= 4,000 ms` easy, `>= 6,000 ms` hard), and cancels active runs if a player warps to a checkpoint (`R`/`T`) or mounts mid-run. Personal bests & Top-5 all-time records (`0.01s` precision) persist atomically in `data/world_leaderboards.json`.
+- **Start & Summit Finish Laser Gates (`Env_Obby_Gate`) + 3D Hall of Fame Scoreboards (`Env_Leaderboard_Board`)**: Built for both **Classic Sky Obby (`easy`)** (`(0, 0, -13.5)` -> `(6.5, 17.0, -20.0)`) and **Pro Obby Gauntlet (`hard`)** (`(54.2, 0, 52.0)` -> `(64.0, 39.0, 74.0)`).
+- **Anti-Cheese Fairness**: Crossing a Start Gate flushes an immediate `C2S_STATE` frame and automatically dismounts any active hoverboard (`companions_update` `"auto_dismount_obby"`), enforces server-authoritative minimum possible times (`>= 2,800 ms` easy, `>= 5,000 ms` hard), and cancels active runs if a player warps (`H`/`F`/`R`/`T`/Mailbox/Zone) or mounts mid-run. Personal bests & Top-5 all-time records (`0.01s` precision) persist atomically in `data/world_leaderboards.json`.
 
 ### 14.6 Dynamic 12-Minute Sky / Sunset / Aurora Night Cycle, Meteor Shower & Co-Op Obsidian Dragon Boss (`GET/POST /api/ella-world/sky`, `POST /api/ella-world/arena/boss`)
-- **Synchronized Plaza Sky Cycle (`720,000 ms`)**: Transitions smoothly across **Sunny Day**, **Cotton-Candy Sunset**, and **Aurora Night** (GLSL Northern Lights ribbons + 260 twinkling stars + warm cottage window glow). Host Ella (`role == "host"`) and Parent Admin can override the phase (`auto` / `day` / `sunset` / `aurora_night`) or launch a **🌠 Starlight Meteor Shower** spawning catchable **Falling Stars** (`action: "catch_star"`, `+12..25 🪙` + `35%` `star_shard`).
+- **Synchronized Plaza Sky Cycle (`720,000 ms`)**: Transitions smoothly across **Sunny Day**, **Cotton-Candy Sunset**, and **Aurora Night** (GLSL Northern Lights ribbons + 260 twinkling stars + **warm golden cottage windows, campfires, and street/plot lanterns that brighten automatically at Sunset & Night**). Host Ella (`role == "host"`) and Parent Admin can override the phase (`auto` / `day` / `sunset` / `aurora_night`) or launch a **🌠 Starlight Meteor Shower** spawning catchable **Falling Stars** (`action: "catch_star"`, `+16..32 🪙` + pet bonus + `40%` `star_shard`).
 - **Co-Op Obsidian Rift Dragon Boss (`Env_Boss_ObsidianDragon_*` at `(0, 0, -24.5)`)**:
-  - Summoned at the North Island Altar (`POST /api/ella-world/arena/boss`, `90s` cooldown or instant with `rift_beacon`).
+  - Summoned at the North Island Altar (`POST /api/ella-world/arena/boss`, `25s` cooldown or instant with `rift_beacon`).
   - Scales HP dynamically by active Arena player count (`18 + (players - 1) * 12`) and pulses expanding purple **Shockwave Rings** (`18 DMG` on ground contact if `y < 0.65`, cleanly dodged by jumping `y >= 0.65`).
-  - **Zero Loot-Stealing**: Every contributing attacker receives personal Starlight Coins (`+55 🪙`), `dragon_scale` drops, and a **guaranteed `pet_egg` on their first Obsidian Dragon defeat** (`first_boss_defeated`).
+  - **Zero Loot-Stealing**: Every contributing attacker receives personal Starlight Coins (`95..=140 🪙`), a personal rare/epic/legendary relic (`roll_boss_personal_loot`), and a **guaranteed `pet_egg` on their first Obsidian Dragon defeat** (`first_boss_defeated`, plus `40%` base / `80%` `rift_beacon` `pet_egg` rolls on repeat kills).
 
 ---
 
@@ -318,5 +320,6 @@ To prevent penalized players from signing out, opening an Incognito window, or l
 To keep the local workstation (`darter`) cool and responsive, heavy `cargo` compilations, Clippy checks, and integration test runs offload over LAN SSH to **`solidstate` (`robert@192.168.11.25:~/builds/ella-world`)**:
 - **`.cargo/config.toml`**: Caps any accidental local `cargo` invocation to `jobs = 2`.
 - **`scripts/remote_cargo_solidstate.sh`**: Syncs tracked sources (`Cargo.toml`, `Cargo.lock`, `src/`, `tests/`, `config/`, `public/`) via `rsync`, executes `cargo "$@"` against the warm remote `target/` cache on `solidstate`, and automatically pulls `target/release/ella-world-server` back to local `target/release/` on `--release` builds.
-- **`scripts/verify_native.sh`**: Runs browser ES module & CLI `node --check` syntax checks + zero-SSE audit locally, then runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and all **38 unit + integration tests** on `solidstate`.
+- **`scripts/verify_native.sh`**: Runs browser ES module & CLI `node --check` syntax checks + zero-SSE audit locally, then runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and all **39 unit + integration tests** on `solidstate`.
+
 

@@ -3,7 +3,9 @@ use crate::device_sig::{
     active_penalties_for_user, build_machine_seal_set_cookie, extract_effective_client_ip,
     extract_machine_seal_cookie, ClientDeviceTelemetry, ClientPeerAddr,
 };
-use crate::economy::{CRAFTING_RECIPES, ITEM_CATALOG, MOUNT_CATALOG, PET_CATALOG};
+use crate::economy::{
+    CRAFTING_RECIPES, ITEM_CATALOG, MOUNT_CATALOG, PET_CATALOG, PET_EGG_SHOP_PRICE,
+};
 use crate::models::{
     normalize_chat_mode, now_ms, AvatarAppearance, UserAccount, SAFE_QUICK_CHAT_PHRASES,
 };
@@ -252,6 +254,7 @@ async fn build_admin_dashboard(world: &WorldEngine) -> Value {
         "recentDeviceEvasions": recent_evasions,
         "itemCatalog": ITEM_CATALOG,
         "petCatalog": PET_CATALOG,
+        "petEggShopPrice": PET_EGG_SHOP_PRICE,
         "mountCatalog": MOUNT_CATALOG,
         "craftingRecipes": CRAFTING_RECIPES,
         "homes": homes_views,
@@ -1492,6 +1495,7 @@ async fn economy_catalog_handler(State(st): State<AppState>) -> Json<Value> {
         "itemCatalog": ITEM_CATALOG,
         "items": ITEM_CATALOG,
         "petCatalog": PET_CATALOG,
+        "petEggShopPrice": PET_EGG_SHOP_PRICE,
         "mountCatalog": MOUNT_CATALOG,
         "craftingRecipes": CRAFTING_RECIPES,
         "dungeon": dungeon,

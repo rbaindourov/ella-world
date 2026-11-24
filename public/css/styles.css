@@ -3956,6 +3956,12 @@ dialog::backdrop {
   color: #a7f3d0;
 }
 
+.hud-sky-pill.is-meteor {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.34), rgba(245, 158, 11, 0.3));
+  border-color: rgba(253, 224, 71, 0.78);
+  color: #fef08a;
+}
+
 .hud-chip-btn.pets-chip {
   background: rgba(236, 72, 153, 0.22);
   border-color: rgba(244, 114, 182, 0.62);

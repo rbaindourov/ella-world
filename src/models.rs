@@ -412,6 +412,8 @@ pub struct PlayerCompanionsSnapshot {
     pub pet_nickname: Option<String>,
     pub owned_mounts: Vec<String>,
     pub equipped_mount: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_mount: Option<String>,
     pub first_boss_defeated: bool,
 }
 
@@ -495,6 +497,8 @@ pub struct UserAccount {
     pub owned_mounts: HashSet<String>,
     #[serde(default)]
     pub equipped_mount: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_mount: Option<String>,
     #[serde(default)]
     pub first_boss_defeated: bool,
     #[serde(default)]
@@ -559,6 +563,7 @@ impl UserAccount {
             pet_nickname: None,
             owned_mounts: default_owned_mounts(),
             equipped_mount: None,
+            preferred_mount: None,
             first_boss_defeated: false,
             violation_strikes: 0,
             in_debtors_prison: false,
@@ -577,6 +582,21 @@ impl UserAccount {
     pub fn ensure_starter_companions(&mut self) {
         self.owned_pets.insert("cloud_puppy".to_string());
         self.owned_mounts.insert("starlight_board".to_string());
+    }
+
+    pub fn best_owned_mount(&self) -> String {
+        if let Some(ref pref) = self.preferred_mount {
+            if pref == "starlight_board" || self.owned_mounts.contains(pref) {
+                return pref.clone();
+            }
+        }
+        if self.owned_mounts.contains("comet_surfer") {
+            "comet_surfer".to_string()
+        } else if self.owned_mounts.contains("sunset_skates") {
+            "sunset_skates".to_string()
+        } else {
+            "starlight_board".to_string()
+        }
     }
 
     pub fn is_subadmin(&self) -> bool {
@@ -625,6 +645,7 @@ impl UserAccount {
             pet_nickname: self.pet_nickname.clone(),
             owned_mounts: mounts,
             equipped_mount: self.equipped_mount.clone(),
+            preferred_mount: Some(self.best_owned_mount()),
             first_boss_defeated: self.first_boss_defeated,
         }
     }
@@ -1642,7 +1663,7 @@ impl HomePlotClaim {
     }
 
     pub fn is_authorized_builder(&self, username: &str, role: &str) -> bool {
-        if role.eq_ignore_ascii_case("host") {
+        if role.eq_ignore_ascii_case("host") || role.eq_ignore_ascii_case("admin") {
             return true;
         }
         let Some(owner) = &self.owner_username else {
@@ -1768,7 +1789,7 @@ pub const OBBY_COURSES: &[ObbyCourseSpec] = &[
         start_radius: 8.5,
         finish_pos: [6.5, 16.5, -20.0],
         finish_radius: 9.0,
-        min_elapsed_ms: 100,
+        min_elapsed_ms: 2_800,
         completion_coins: 12,
         record_bonus_coins: 25,
     },
@@ -1779,7 +1800,7 @@ pub const OBBY_COURSES: &[ObbyCourseSpec] = &[
         start_radius: 9.0,
         finish_pos: [72.6, 40.2, 69.2],
         finish_radius: 9.5,
-        min_elapsed_ms: 100,
+        min_elapsed_ms: 5_000,
         completion_coins: 35,
         record_bonus_coins: 55,
     },

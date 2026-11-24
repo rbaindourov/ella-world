@@ -61,7 +61,7 @@ Generated non-destructively via headless Blender 5.2 (`blender -b --factory-star
   - **Kitchen & Living (7)**: `Prop_Kitchen_Counter`, `Prop_Kitchen_Sink`, `Prop_Kitchen_Stove`, `Prop_Kitchen_Fridge`, `Prop_Dining_Table`, `Prop_Chair` (CC0 PolyHaven `DiningChair_01`), `Prop_Sofa` (`2×1` plush couch).
   - **Bathroom (3)**: `Prop_Bath_Tub`, `Prop_Bath_Vanity`, `Prop_Bath_Toilet`.
   - **Bedroom & Lighting (5)**: `Prop_Bed` (CC0 PolyHaven `GothicBed_01`), `Prop_Nightstand_Lamp` (CC0 PolyHaven `ClassicNightstand_01`), `Prop_Crystal_Lamp` (toggleable Aurora floor/table lamp), `Prop_Wardrobe`, `Prop_Rug`.
-  - **Trophy Pedestal, Crafted Gear & 3D Loot Relics (13)**: `Loot_Display_Pedestal`, `Loot_Ray_Gun`, `Loot_Crystal_Blade`, `Loot_Starlight_Wand`, `Loot_Aegis_Charm`, `Loot_Starlight_Potion`, `Loot_Rift_Beacon`, `Loot_Pet_Egg`, `Loot_Geode_Lamp`, `Loot_Slime_Lamp`, `Loot_Bat_Plush`, `Loot_Royal_Chalice` (CC0 PolyHaven `brass_goblets`), and `Loot_Dragon_Egg`.
+  - **Trophy Pedestal, Crafted Gear & 3D Loot Relics (14)**: `Loot_Display_Pedestal`, `Loot_Ray_Gun`, `Loot_Crystal_Blade`, `Loot_Starlight_Wand`, `Loot_Aegis_Charm`, `Loot_Starlight_Potion`, `Loot_Rift_Beacon`, `Loot_Aurora_Lamp`, `Loot_Pet_Egg`, `Loot_Geode_Lamp`, `Loot_Slime_Lamp`, `Loot_Bat_Plush`, `Loot_Royal_Chalice` (CC0 PolyHaven `brass_goblets`), and `Loot_Dragon_Egg`.
 
 ---
 
@@ -69,25 +69,25 @@ Generated non-destructively via headless Blender 5.2 (`blender -b --factory-star
 
 Players can display any owned item from their Backpack (`🏆 My Loot` tab in Build Mode or `🏠 Decorate Home` inside Backpack `I`):
 1. **Atomic `-1` Deduction**: Placing `kind: "loot_decor"` with `lootItemId` atomically decrements `1` from `UserAccount::inventory` inside `WorldEngine::mutate_block_ext` and runs `reconcile_equipped_cosmetics` (automatically holstering an equipped cosmetic/weapon if its last copy is placed on a pedestal).
-2. **Owner-Only Protection**: Friends cannot overwrite a `loot_decor` pedestal with another block or pick up another player's displayed trophy (`Only <author> can pick up their displayed trophy!`).
+2. **Owner-Only Protection**: Friends cannot overwrite a `loot_decor` pedestal with another block or pick up another player's displayed trophy (`Only <author> can pick up their displayed trophy!`), with Host Ella & Parent Admin moderation override.
 3. **Guaranteed `+1` Refund**: Removing a `loot_decor` pedestal (`Right-Click` or `⛏️ Remove`) refunds `+1` of `lootItemId` to `block.author`. Parent `POST /api/ella-world/admin/world/reset` also refunds all displayed `loot_decor` items back to their owners before clearing `world_blocks.json`, and the `12,000`-block FIFO cap (expanded for the `210 × 210` map across `x/z ∈ [-100, 100], y ∈ [1, 80]`) evicts plain `"block"` entries before `loot_decor`.
-4. **Walkable Single (`door`) & Grand `2×2` Double Doors (`double_door`)**: Both doors open/close manually via `E` (even while Build Mode is active) or clicking either leaf. Open doorways register in `openDoorPortals` for snag-free passage (`0.26` corridor radius + gentle lateral centering), and `double_door` enforces an authoritative `2×2` voxel footprint (`block_occupied_cells`) on placement, overlap, toggling, and removal.
+4. **Walkable Single (`door`) & Grand `2×2` Double Doors (`double_door`)**: Both doors open/close manually via `E` (even while Build Mode is active) or clicking either leaf. Open doorways register in `openDoorPortals` for snag-free passage (`0.26` corridor radius + gentle lateral centering), and `double_door` enforces an authoritative `2×2` voxel footprint (`block_occupied_cells`) on placement, overlap, toggling, and removal (including plot-boundary grief checks across all occupied cells).
 
 ---
 
 ## 6. Dungeon Drops, Legendary Ray Gun & Starlight Workshop Crafted Gear
 
-`ITEM_CATALOG` (`src/economy.rs`, 27 items total) includes:
+`ITEM_CATALOG` (`src/economy.rs`, 28 items total) includes:
 - **Home Trophy Relics**: `geode_lamp`, `slime_lava_lamp`, `bat_plushie`, `royal_chalice`, `dragon_egg_relic`, and `aurora_crystal_lamp`.
 - **Right-Hand 3D Combat & Light-Show Weapons**:
-  - `legendary_ray_gun` (`🔫 Starlight Plasma Ray Gun`, `accessory: "ray_gun"`): `14.5m` `3 HP` plasma beam in Crystal Cavern / Shadow Rift + Plaza laser shows.
-  - `crystal_blade` (`⚔️ Starlight Crystal Blade`, `accessory: "crystal_blade"`, crafted at Starlight Workshop): `4.6m` `2 DMG` melee cleave in Crystal Cavern & Shadow Rift.
-  - `starlight_wand` (`🪄 Starlight Astral Wand`, `accessory: "starlight_wand"`, crafted at Starlight Workshop): `16.0m` `2 DMG` ranged star-bolt + `+8 HP` self-mend per hit in Shadow Rift + pastel star-beams in Plaza.
+  - `legendary_ray_gun` (`🔫 Starlight Plasma Ray Gun`, `accessory: "ray_gun"`): `14.2m` `3 HP` plasma beam in Crystal Cavern / Shadow Rift + Plaza laser shows.
+  - `crystal_blade` (`⚔️ Starlight Crystal Blade`, `accessory: "crystal_blade"`, crafted at Starlight Workshop): `6.2m` `2 DMG` melee cleave + 3D glowing crystal crescent slash arc in Crystal Cavern & Shadow Rift.
+  - `starlight_wand` (`🪄 Starlight Astral Wand`, `accessory: "starlight_wand"`, crafted at Starlight Workshop): `16.2m` `2 DMG` ranged star-bolt + `+8 HP` self-mend per hit in Shadow Rift + pastel star-beams in Plaza.
 - **Charms, Elixirs, Beacons & Eggs**:
   - `aegis_heart_charm` (`🛡️ Aegis Heart Charm`): Passively raises Shadow Rift Max HP from `100` to `150` while held in Backpack.
   - `starlight_potion` (`✨ Starlight Elixir`): Restores `+75 HP` in Shadow Rift and grants `30s` Swiftness + Cloud Leap.
   - `rift_beacon` (`🔮 Obsidian Rift Beacon`): Summons the Obsidian Rift Dragon Boss without cooldown and boosts `pet_egg` drop chance to `80%`.
-  - `pet_egg` (`🥚 Starlight Companion Egg`) & `dragon_scale` (`🐉 Obsidian Dragon Scale`).
+  - `pet_egg` (`🥚 Starlight Companion Egg`): Earned from Golden Vault Chests, Obsidian Dragon Boss kills, Starlight Workshop crafting, or bought in `#companions-dialog` for `120 🪙`.
 
 ---
 

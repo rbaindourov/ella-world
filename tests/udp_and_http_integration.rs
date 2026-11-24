@@ -5926,3 +5926,297 @@ async fn expansion_sky_meteor_shower_and_coop_obsidian_dragon_boss_end_to_end() 
 
     running.http_task.abort();
 }
+
+#[tokio::test]
+async fn expansion_reviewer_edge_cases_shop_egg_mount_toggle_plot_boundary_and_aegis_sync() {
+    use ella_world::udp_wire::ZONE_ARENA;
+
+    let cfg = make_test_config("exp_reviewer_edge_cases");
+    let running = start_all_servers(cfg).await.expect("start server");
+
+    let (_, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "rev_e" })),
+    )
+    .await;
+    let ella_token = ella_login["token"].as_str().unwrap().to_string();
+    let ella_id = ella_login["selfId"].as_str().unwrap().to_string();
+    assert_eq!(ella_login["petEggShopPrice"], 120);
+
+    let (_, maya_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "rev_m" })),
+    )
+    .await;
+    let maya_token = maya_login["token"].as_str().unwrap().to_string();
+    let maya_id = maya_login["selfId"].as_str().unwrap().to_string();
+
+    let (_, chloe_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "chloe", "password": "changeme-rainbow", "clientId": "rev_c" })),
+    )
+    .await;
+    let chloe_token = chloe_login["token"].as_str().unwrap().to_string();
+
+    // Seed Maya with 500 Starlight Coins
+    {
+        let mut cfg_w = running.world.users_cfg.write().await;
+        let m = cfg_w
+            .users
+            .iter_mut()
+            .find(|u| u.username == "maya")
+            .unwrap();
+        m.coins = 500;
+    }
+
+    // 1. Shop Pet Egg purchase (`buy_egg` = 120 coins -> +1 `pet_egg`) + hatch!
+    let (st_buy_egg, buy_egg_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/companions",
+        Some(json!({ "token": maya_token, "action": "buy_egg" })),
+    )
+    .await;
+    assert_eq!(st_buy_egg, 200);
+    assert_eq!(buy_egg_res["economy"]["coins"], 380);
+    assert_eq!(buy_egg_res["economy"]["inventory"]["pet_egg"], 1);
+
+    let (st_hatch, hatch_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/companions",
+        Some(json!({ "token": maya_token, "action": "hatch_egg" })),
+    )
+    .await;
+    assert_eq!(st_hatch, 200);
+    assert!(hatch_res["hatchedPetId"].as_str().is_some());
+
+    // 2. Unlocking `comet_surfer` (320 coins) and quick-toggling (`mountId: "toggle"`) preserves `comet_surfer`!
+    let (st_buy_mount, buy_mount_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/companions",
+        Some(json!({ "token": maya_token, "action": "buy_mount", "mountId": "comet_surfer" })),
+    )
+    .await;
+    assert_eq!(st_buy_mount, 200);
+    assert_eq!(buy_mount_res["companions"]["equippedMount"], "comet_surfer");
+    assert_eq!(
+        buy_mount_res["companions"]["preferredMount"],
+        "comet_surfer"
+    );
+
+    let (_, tog_off) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/companions",
+        Some(json!({ "token": maya_token, "action": "equip_mount", "mountId": "toggle" })),
+    )
+    .await;
+    assert!(tog_off["companions"]["equippedMount"].is_null());
+
+    let (_, tog_on) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/companions",
+        Some(json!({ "token": maya_token, "action": "equip_mount", "mountId": "toggle" })),
+    )
+    .await;
+    assert_eq!(
+        tog_on["companions"]["equippedMount"], "comet_surfer",
+        "Quick-toggle after dismounting must re-equip preferred mount instead of resetting to starlight_board"
+    );
+
+    // 3. Plot Ownership Switch Reset + Multi-Cell `double_door` Boundary Grief Protection!
+    let (st_claim1, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/homes",
+        Some(json!({ "token": ella_token, "action": "claim", "plotId": "plot_1" })),
+    )
+    .await;
+    assert_eq!(st_claim1, 200);
+    let (st_upd1, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/homes",
+        Some(json!({
+            "token": ella_token,
+            "action": "update_settings",
+            "plotId": "plot_1",
+            "customTitle": "Ella Secret Loft",
+            "coBuilders": ["maya"],
+            "doorLocked": true
+        })),
+    )
+    .await;
+    assert_eq!(st_upd1, 200);
+
+    // Ella switches to `plot_4` -> `plot_1` becomes unclaimed; Chloe claims `plot_1` -> must NOT inherit Maya as co-builder!
+    let (st_switch, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/homes",
+        Some(json!({ "token": ella_token, "action": "claim", "plotId": "plot_4" })),
+    )
+    .await;
+    assert_eq!(st_switch, 200);
+
+    let (st_chloe_claim, chloe_claim_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/homes",
+        Some(json!({ "token": chloe_token, "action": "claim", "plotId": "plot_1" })),
+    )
+    .await;
+    assert_eq!(st_chloe_claim, 200);
+    let p1 = chloe_claim_res["homes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["plotId"] == "plot_1")
+        .unwrap();
+    assert_eq!(p1["ownerUsername"], "chloe");
+    assert_eq!(p1["coBuilders"].as_array().unwrap().len(), 0);
+    assert_eq!(p1["doorLocked"], false);
+
+    // Chloe places a 2-wide `double_door` at `(42, 1, -26, rot=0)` straddling `(42, -26)` outside and `(43, -26)` inside `plot_1`
+    let (st_place_dd, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": chloe_token,
+            "action": "place",
+            "x": 42,
+            "y": 1,
+            "z": -26,
+            "kind": "double_door",
+            "rot": 0,
+            "color": "#f472b6"
+        })),
+    )
+    .await;
+    assert_eq!(st_place_dd, 200);
+
+    // Maya tries removing Chloe's `double_door` by clicking the OUTSIDE cell `(42, 1, -26)` -> MUST be rejected (400)!
+    let (st_grief_rm, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": maya_token,
+            "action": "remove",
+            "x": 42,
+            "y": 1,
+            "z": -26
+        })),
+    )
+    .await;
+    assert_eq!(
+        st_grief_rm, 400,
+        "Stranger must not delete a multi-cell block straddling a claimed plot boundary via its outside cell"
+    );
+
+    // 4. Obby Anti-Teleport `min_elapsed_ms` Guard (`< 2_800ms` rejected on Sky Obby)
+    running
+        .world
+        .apply_c2s_state(
+            &ella_id,
+            DecodedC2SState {
+                seq: 10,
+                client_time_ms: 100,
+                x: 0.0,
+                y: 0.8,
+                z: -13.5,
+                ry: 0.0,
+                anim: "run".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: 0,
+            },
+        )
+        .await;
+    let (st_ob_s, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/obby",
+        Some(json!({ "token": ella_token, "action": "start", "course": "easy" })),
+    )
+    .await;
+    assert_eq!(st_ob_s, 200);
+    {
+        let mut runs = running.world.active_obby_runs.write().await;
+        if let Some(r) = runs.get_mut(&ella_id) {
+            r.started_at_ms = r.started_at_ms.saturating_sub(150); // Impossible 0.15s teleport!
+        }
+    }
+    running
+        .world
+        .apply_c2s_state(
+            &ella_id,
+            DecodedC2SState {
+                seq: 11,
+                client_time_ms: 250,
+                x: 6.5,
+                y: 17.0,
+                z: -20.0,
+                ry: 0.0,
+                anim: "jump".into(),
+                emote: None,
+                muted: false,
+                speaking: false,
+                zone: 0,
+            },
+        )
+        .await;
+    let (st_ob_fast, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/obby",
+        Some(json!({ "token": ella_token, "action": "finish", "course": "easy" })),
+    )
+    .await;
+    assert_eq!(
+        st_ob_fast, 400,
+        "Spoofed 150ms Sky Obby finish must be rejected by min_elapsed_ms (2_800ms)"
+    );
+
+    // 5. Acquiring `aegis_heart_charm` while already inside `ZONE_ARENA` dynamically upgrades `max_hp` to `150` on tick!
+    let (st_arena_in, arena_in_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/dungeon/portal",
+        Some(json!({ "token": maya_token, "targetZone": ZONE_ARENA })),
+    )
+    .await;
+    assert_eq!(st_arena_in, 200);
+    assert_eq!(arena_in_res["arenaStatus"]["maxHp"], 100);
+    assert_eq!(arena_in_res["arenaStatus"]["hp"], 100);
+
+    {
+        let mut cfg_w = running.world.users_cfg.write().await;
+        let m = cfg_w
+            .users
+            .iter_mut()
+            .find(|u| u.username == "maya")
+            .unwrap();
+        m.inventory.insert("aegis_heart_charm".to_string(), 1);
+    }
+    running.world.tick_arena_if_occupied().await;
+    {
+        let ar = running.world.arena.read().await;
+        let st = ar.status_for(&maya_id);
+        assert_eq!(st.max_hp, 150);
+        assert_eq!(st.hp, 150);
+    }
+
+    running.http_task.abort();
+}
