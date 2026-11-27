@@ -265,7 +265,7 @@ function resolveSuperadminPasswordFromRemote(sshHost) {
       '-o',
       'BatchMode=yes',
       sshHost,
-      'grep -h "^Environment=ELLA_SUPERADMIN_PASSWORD=" /etc/systemd/system/ella-world.service.d/*.conf /etc/systemd/system/ella-world.service 2>/dev/null | tail -n 1 || true'
+      'sudo -n grep -h "^Environment=ELLA_SUPERADMIN_PASSWORD=" /etc/systemd/system/ella-world.service.d/*.conf /etc/systemd/system/ella-world.service 2>/dev/null | tail -n 1 || true'
     ],
     { encoding: 'utf8' }
   ).trim();
