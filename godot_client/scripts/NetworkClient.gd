@@ -34,6 +34,7 @@ var server_base_url: String = "https://robertscreations.com:4444"
 var native_udp_port: int = 44445
 var auth_token: String = ""
 var admin_token: String = ""
+var machine_seal: String = ""
 var current_world_slug: String = "ella"
 var current_world_name: String = "Ella's World"
 var self_id: String = ""
@@ -54,6 +55,10 @@ var ping_timer: float = 0.0
 var c2s_seq: int = 0
 var last_rtt_ms: float = 0.0
 
+var _seen_state_seqs: Dictionary = {}
+var _seen_state_seq_order: Array[int] = []
+var _seen_chat_ids: Dictionary = {}
+
 var ptt_active: bool = false
 var voice_muted: bool = true
 var mic_player: AudioStreamPlayer = null
@@ -71,7 +76,6 @@ func _ready() -> void:
 	_setup_voice_audio_nodes()
 
 func _setup_voice_audio_nodes() -> void:
-	# Output stream generator for incoming 48 kHz stereo decoded Opus voice frames
 	voice_out_player = AudioStreamPlayer.new()
 	var gen := AudioStreamGenerator.new()
 	gen.mix_rate = 48000.0
@@ -112,6 +116,7 @@ func _load_saved_settings() -> void:
 	if cfg.load(SETTINGS_PATH) == OK:
 		server_base_url = str(cfg.get_value("net", "server_base_url", server_base_url))
 		auth_token = str(cfg.get_value("auth", "token", ""))
+		machine_seal = str(cfg.get_value("auth", "machine_seal", ""))
 		current_world_slug = str(cfg.get_value("auth", "world_slug", "ella"))
 		username = str(cfg.get_value("auth", "username", ""))
 		client_id = str(cfg.get_value("auth", "client_id", ""))
@@ -120,6 +125,7 @@ func _save_settings() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("net", "server_base_url", server_base_url)
 	cfg.set_value("auth", "token", auth_token)
+	cfg.set_value("auth", "machine_seal", machine_seal)
 	cfg.set_value("auth", "world_slug", current_world_slug)
 	cfg.set_value("auth", "username", username)
 	cfg.set_value("auth", "client_id", client_id)
@@ -174,6 +180,9 @@ func request_json(path: String, method: int = HTTPClient.METHOD_GET, body_dict: 
 		var text := body.get_string_from_utf8()
 		var parsed: Variant = JSON.parse_string(text) if not text.is_empty() else {}
 		var data: Dictionary = parsed if parsed is Dictionary else {"raw": text}
+		if data.has("machineSeal") and not str(data["machineSeal"]).is_empty():
+			machine_seal = str(data["machineSeal"])
+			_save_settings()
 		if callback.is_valid():
 			callback.call(response_code, data)
 	)
@@ -183,13 +192,27 @@ func request_json(path: String, method: int = HTTPClient.METHOD_GET, body_dict: 
 		if callback.is_valid():
 			callback.call(0, {"ok": false, "error": "Network request failed to start (%d)." % err})
 
-func login_with_password(uname: String, pw: String, world_slug: String = "") -> void:
-	var body := {
-		"username": uname.strip_edges(),
-		"password": pw,
+func build_machine_auth_fields() -> Dictionary:
+	var fields := {
 		"clientId": client_id,
-		"deviceFp": _build_device_fingerprint()
+		"deviceTelemetry": _build_device_telemetry()
 	}
+	if not machine_seal.is_empty():
+		fields["machineSeal"] = machine_seal
+	return fields
+
+func _with_machine_fields(base: Dictionary) -> Dictionary:
+	var merged := base.duplicate(true)
+	var mf := build_machine_auth_fields()
+	for k in mf.keys():
+		merged[k] = mf[k]
+	return merged
+
+func login_with_password(uname: String, pw: String, world_slug: String = "") -> void:
+	var body := _with_machine_fields({
+		"username": uname.strip_edges(),
+		"password": pw
+	})
 	if not world_slug.strip_edges().is_empty():
 		body["worldSlug"] = world_slug.strip_edges().to_lower()
 	request_json("/api/ella-world/login", HTTPClient.METHOD_POST, body, "", _on_auth_http_response)
@@ -198,58 +221,50 @@ func resume_saved_session() -> void:
 	if auth_token.is_empty():
 		auth_failed.emit("No saved session token.")
 		return
-	var body := {
-		"token": auth_token,
-		"deviceFp": _build_device_fingerprint()
-	}
+	var body := _with_machine_fields({
+		"token": auth_token
+	})
 	request_json("/api/ella-world/resume", HTTPClient.METHOD_POST, body, "", _on_auth_http_response)
 
 func redeem_friend_invite(code: String, uname: String, dname: String, pw: String) -> void:
-	var body := {
+	var body := _with_machine_fields({
 		"code": code.strip_edges().to_upper(),
 		"username": uname.strip_edges(),
 		"displayName": dname.strip_edges(),
-		"password": pw,
-		"clientId": client_id,
-		"deviceFp": _build_device_fingerprint()
-	}
+		"password": pw
+	})
 	request_json("/api/ella-world/invites/redeem", HTTPClient.METHOD_POST, body, "", _on_auth_http_response)
 
 func create_family_playground(code: String, world_name: String, world_slug: String, admin_pw: String, host_uname: String, host_dname: String, host_pw: String) -> void:
-	var body := {
+	var body := _with_machine_fields({
 		"code": code.strip_edges().to_upper(),
 		"worldName": world_name.strip_edges(),
 		"worldSlug": world_slug.strip_edges().to_lower(),
 		"adminPassword": admin_pw,
 		"hostUsername": host_uname.strip_edges(),
 		"hostDisplayName": host_dname.strip_edges(),
-		"hostPassword": host_pw,
-		"clientId": client_id,
-		"deviceFp": _build_device_fingerprint()
-	}
+		"hostPassword": host_pw
+	})
 	request_json("/api/ella-world/invites/redeem-family", HTTPClient.METHOD_POST, body, "", _on_auth_http_response)
 
 func switch_playground(target_slug: String) -> void:
 	if auth_token.is_empty():
 		return
-	var body := {
+	var body := _with_machine_fields({
 		"token": auth_token,
-		"worldSlug": target_slug.strip_edges().to_lower(),
-		"clientId": client_id,
-		"deviceFp": _build_device_fingerprint()
-	}
+		"worldSlug": target_slug.strip_edges().to_lower()
+	})
 	request_json("/api/ella-world/playgrounds/switch", HTTPClient.METHOD_POST, body, auth_token, _on_auth_http_response)
 
 func redeem_additional_invite(code: String, cb: Callable) -> void:
-	var body := {
+	var body := _with_machine_fields({
 		"token": auth_token,
-		"code": code.strip_edges().to_upper(),
-		"clientId": client_id,
-		"deviceFp": _build_device_fingerprint()
-	}
+		"code": code.strip_edges().to_upper()
+	})
 	request_json("/api/ella-world/invites/join-world", HTTPClient.METHOD_POST, body, auth_token, func(status: int, data: Dictionary) -> void:
 		if status >= 200 and status < 300 and data.has("token"):
 			_apply_authenticated_session(data)
+			auth_succeeded.emit(data)
 		if cb.is_valid():
 			cb.call(status, data)
 	)
@@ -282,13 +297,22 @@ func _on_auth_http_response(status: int, data: Dictionary) -> void:
 func _apply_authenticated_session(data: Dictionary) -> void:
 	disconnect_realtime()
 	auth_token = str(data.get("token", ""))
-	current_world_slug = str(data.get("worldSlug", current_world_slug))
-	current_world_name = str(data.get("worldName", current_world_name))
+	if data.has("machineSeal") and not str(data["machineSeal"]).is_empty():
+		machine_seal = str(data["machineSeal"])
+	# Reset per-playground admin token unless newly minted by /invites/redeem-family
+	admin_token = str(data.get("adminToken", "")) if data.has("adminToken") else ""
+
+	var wm: Dictionary = data.get("worldMeta", {}) if data.get("worldMeta") is Dictionary else {}
+	current_world_slug = str(data.get("worldSlug", wm.get("worldSlug", current_world_slug)))
+	current_world_name = str(data.get("worldName", wm.get("worldName", current_world_name)))
 	if data.has("nativeUdpPort"):
 		native_udp_port = int(data["nativeUdpPort"])
+	elif wm.has("nativeUdpPort"):
+		native_udp_port = int(wm["nativeUdpPort"])
+
 	var self_obj: Dictionary = data.get("self", {}) if data.get("self") is Dictionary else {}
-	self_id = str(self_obj.get("id", ""))
-	var user_obj: Dictionary = self_obj.get("user", {}) if self_obj.get("user") is Dictionary else {}
+	self_id = str(data.get("selfId", self_obj.get("id", "")))
+	var user_obj: Dictionary = self_obj.get("user", data.get("user", {})) if self_obj.get("user", data.get("user", {})) is Dictionary else {}
 	username = str(user_obj.get("username", username))
 	display_name = str(user_obj.get("displayName", username))
 	user_role = str(user_obj.get("role", "friend"))
@@ -297,7 +321,10 @@ func _apply_authenticated_session(data: Dictionary) -> void:
 	connect_realtime_transports()
 	if data.has("players") or data.has("blocks"):
 		welcome_received.emit(data)
-	refresh_my_playgrounds()
+	if data.has("myPlaygrounds"):
+		playgrounds_updated.emit(data)
+	else:
+		refresh_my_playgrounds()
 
 func connect_realtime_transports() -> void:
 	if auth_token.is_empty():
@@ -307,6 +334,9 @@ func connect_realtime_transports() -> void:
 
 func disconnect_realtime() -> void:
 	set_ptt_speaking(false)
+	_seen_state_seqs.clear()
+	_seen_state_seq_order.clear()
+	_seen_chat_ids.clear()
 	if ws_peer != null:
 		ws_peer.close()
 		ws_peer = null
@@ -389,9 +419,8 @@ func _poll_ws_spine() -> void:
 				var txt := pkt.get_string_from_utf8()
 				var parsed: Variant = JSON.parse_string(txt)
 				if parsed is Dictionary:
-					_dispatch_incoming_json(parsed)
+					_dispatch_incoming_json(parsed, false)
 			else:
-				# Binary fallback (`OP_S2C_WORLD_STATE` / `OP_S2C_PONG`) over WSS when UDP is blocked
 				var decoded := decode_s2c_world_state_bytes(pkt, Time.get_ticks_msec() & 0x7FFFFFFF)
 				if not decoded.is_empty():
 					var rtt := float(decoded.get("rttMs", last_rtt_ms))
@@ -427,9 +456,10 @@ func _poll_udp_fastlane(delta: float, now_ms: int) -> void:
 					last_rtt_ms = float(item.get("rttMs", last_rtt_ms))
 					_emit_transport_status()
 				"event_json":
-					var parsed: Variant = JSON.parse_string(str(item.get("json", "")))
-					if parsed is Dictionary:
-						_dispatch_incoming_json(parsed)
+					if not ws_connected:
+						var parsed: Variant = JSON.parse_string(str(item.get("json", "")))
+						if parsed is Dictionary:
+							_dispatch_incoming_json(parsed, true)
 				"voice_pcm":
 					var frames: PackedVector2Array = item.get("frames", PackedVector2Array())
 					if voice_out_playback != null and not frames.is_empty():
@@ -456,10 +486,10 @@ func _poll_udp_fastlane(delta: float, now_ms: int) -> void:
 				if rtt > 0.0:
 					last_rtt_ms = rtt
 				remote_states_received.emit(res.get("players", []), last_rtt_ms)
-			elif kind == "event_json":
+			elif kind == "event_json" and not ws_connected:
 				var parsed: Variant = JSON.parse_string(str(res.get("json", "")))
 				if parsed is Dictionary:
-					_dispatch_incoming_json(parsed)
+					_dispatch_incoming_json(parsed, true)
 		if not udp_welcomed:
 			udp_hello_retry_timer -= delta
 			if udp_hello_retry_timer <= 0.0:
@@ -501,17 +531,56 @@ func _send_ws_json(payload: Dictionary) -> void:
 	if ws_connected and ws_peer != null:
 		ws_peer.send_text(JSON.stringify(payload))
 
-func _dispatch_incoming_json(msg: Dictionary) -> void:
+func _record_seen_state_seq(sseq: int) -> void:
+	if sseq <= 0 or _seen_state_seqs.has(sseq):
+		return
+	_seen_state_seqs[sseq] = true
+	_seen_state_seq_order.append(sseq)
+	while _seen_state_seq_order.size() > 256:
+		var oldest: int = _seen_state_seq_order.pop_front()
+		_seen_state_seqs.erase(oldest)
+
+func should_accept_world_event(msg: Dictionary) -> bool:
+	var msg_type := str(msg.get("type", ""))
+	var sseq := int(msg.get("stateSeq", 0)) if msg.has("stateSeq") else 0
+	if msg_type == "chat":
+		var chat_obj: Variant = msg.get("chat", msg.get("entry", null))
+		if chat_obj is Dictionary:
+			var cid := str(chat_obj.get("id", ""))
+			if not cid.is_empty():
+				if _seen_chat_ids.has(cid):
+					return false
+				_seen_chat_ids[cid] = true
+				if _seen_chat_ids.size() > 256:
+					_seen_chat_ids.clear()
+					_seen_chat_ids[cid] = true
+				_record_seen_state_seq(sseq)
+				return true
+	if sseq > 0 and msg_type != "world_sync_digest" and msg_type != "welcome_snapshot" and msg_type != "pong" and msg_type != "cmd_ack":
+		if _seen_state_seqs.has(sseq):
+			return false
+		_record_seen_state_seq(sseq)
+	return true
+
+func _dispatch_incoming_json(msg: Dictionary, _from_udp: bool = false) -> void:
 	var msg_type := str(msg.get("type", ""))
 	if msg_type == "welcome_snapshot":
+		if msg.has("stateSeq"):
+			_record_seen_state_seq(int(msg["stateSeq"]))
 		if msg.has("self") and msg["self"] is Dictionary:
 			self_id = str(msg["self"].get("id", self_id))
+		if msg.get("chatHistory") is Array:
+			for c in msg["chatHistory"]:
+				if c is Dictionary and c.has("id"):
+					_seen_chat_ids[str(c["id"])] = true
 		welcome_received.emit(msg)
 		return
 	if msg_type == "session_revoked":
 		var reason := str(msg.get("reason", "Your session was signed out by a parent."))
 		disconnect_realtime()
 		session_revoked.emit(reason)
+		return
+	if not should_accept_world_event(msg):
 		return
 	world_event_received.emit(msg)
 
@@ -525,14 +594,22 @@ func _emit_transport_status() -> void:
 		mode = "WSS Spine"
 	connection_status_changed.emit(mode, last_rtt_ms)
 
-func _build_device_fingerprint() -> Dictionary:
+func _build_device_telemetry() -> Dictionary:
+	var scr := DisplayServer.screen_get_size()
+	var scale_x100 := int(round(DisplayServer.screen_get_scale() * 100.0))
 	return {
-		"platform": OS.get_name(),
-		"model": OS.get_model_name(),
-		"renderer": RenderingServer.get_video_adapter_name(),
-		"cores": OS.get_processor_count(),
-		"locale": OS.get_locale(),
-		"clientTokenSeed": client_id
+		"gpuVendor": RenderingServer.get_video_adapter_vendor(),
+		"gpuRenderer": RenderingServer.get_video_adapter_name(),
+		"glCaps": OS.get_model_name(),
+		"screenW": maxi(int(scr.x), 1280),
+		"screenH": maxi(int(scr.y), 720),
+		"colorDepth": 24,
+		"pixelRatioX100": maxi(scale_x100, 100),
+		"cpuCores": maxi(OS.get_processor_count(), 1),
+		"maxTouchPoints": 10 if DisplayServer.is_touchscreen_available() else 0,
+		"osFamily": OS.get_name(),
+		"timezone": Time.get_time_zone_from_system().get("name", "UTC"),
+		"language": OS.get_locale()
 	}
 
 # ============================================================================

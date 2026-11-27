@@ -2,11 +2,11 @@ class_name AvatarRig
 extends Node3D
 ## Shared Blender 5.2 DTI Wardrobe + Companion Rig (`AvatarRig.gd`)
 ## Loads `res://assets/models/ella_dti_wardrobe.glb` and `res://assets/models/ella_world_environment.glb`
-## so Godot 4 Android players and Three.js Web players share identical modular slots, colors,
-## fabric finishes (`matte`, `satin`, `glitter`), skeletal animations, 3D pets, and hoverboards.
+## so Godot 4 Android players and Three.js Web players share identical 1.55x world scale, modular slots,
+## colors, fabric finishes (`matte`, `satin`, `glitter`), skeletal animations, 3D pets, and hoverboards.
 
 static var _wardrobe_packed: PackedScene = null
-static var _env_packed: PackedScene = null
+static var _env_templates: Dictionary = {}
 static var _assets_probed: bool = false
 
 var peer_id: String = ""
@@ -24,19 +24,20 @@ var glb_instance: Node3D = null
 var anim_player: AnimationPlayer = null
 var fallback_root: Node3D = null
 var pet_pivot: Node3D = null
+var pet_wing_l: Node3D = null
+var pet_wing_r: Node3D = null
 var mount_pivot: Node3D = null
 var nametag_label: Label3D = null
 var voice_ring: MeshInstance3D = null
 
-var _slot_meshes: Dictionary = {}
+var _slot_nodes: Dictionary = {} # canonical slot name -> Node3D
+var _slot_meshes_map: Dictionary = {} # canonical slot name -> Array[MeshInstance3D]
 var _pet_bob_time: float = 0.0
 
 const PET_NODE_MAP := {
 	"cloud_puppy": "Env_Pet_CloudPuppy",
 	"starlight_kitsune": "Env_Pet_StarlightKitsune",
-	"shadow_kitty": "Env_Pet_ShadowKitty",
-	"baby_crystal_dragon": "Env_Pet_BabyDragon",
-	"baby_dragon": "Env_Pet_BabyDragon"
+	"shadow_kitty": "Env_Pet_ShadowKitty"
 }
 
 const MOUNT_NODE_MAP := {
@@ -54,7 +55,39 @@ static func _ensure_shared_packs() -> void:
 	if ResourceLoader.exists("res://assets/models/ella_dti_wardrobe.glb"):
 		_wardrobe_packed = load("res://assets/models/ella_dti_wardrobe.glb") as PackedScene
 	if ResourceLoader.exists("res://assets/models/ella_world_environment.glb"):
-		_env_packed = load("res://assets/models/ella_world_environment.glb") as PackedScene
+		var env_packed := load("res://assets/models/ella_world_environment.glb") as PackedScene
+		if env_packed != null:
+			var env_root := env_packed.instantiate() as Node3D
+			if env_root != null:
+				_index_env_templates(env_root)
+				env_root.free()
+
+static func _index_env_templates(node: Node) -> void:
+	if node is Node3D and (node.name.begins_with("Env_Pet_") or node.name.begins_with("Env_Mount_")):
+		var dup := (node as Node3D).duplicate() as Node3D
+		dup.position = Vector3.ZERO
+		_env_templates[str(node.name)] = dup
+		return
+	for c in node.get_children():
+		_index_env_templates(c)
+
+static func clone_companion_template(tpl_name: String) -> Node3D:
+	_ensure_shared_packs()
+	if tpl_name.is_empty() or not _env_templates.has(tpl_name):
+		return null
+	var src: Node3D = _env_templates[tpl_name]
+	var dup := src.duplicate() as Node3D
+	dup.position = Vector3.ZERO
+	return dup
+
+static func release_shared_caches() -> void:
+	for k in _env_templates.keys():
+		var n: Variant = _env_templates[k]
+		if is_instance_valid(n):
+			(n as Node).free()
+	_env_templates.clear()
+	_wardrobe_packed = null
+	_assets_probed = false
 
 func _ready() -> void:
 	_ensure_shared_packs()
@@ -75,6 +108,8 @@ func _ready() -> void:
 	_instantiate_wardrobe_or_fallback()
 	if not current_avatar.is_empty():
 		apply_avatar_appearance(current_avatar)
+	else:
+		apply_avatar_appearance({})
 	set_companions(equipped_pet_id, equipped_mount_id)
 
 func _build_voice_ring_and_nametag() -> void:
@@ -119,14 +154,33 @@ func set_speaking(speaking: bool) -> void:
 	if voice_ring != null:
 		voice_ring.visible = speaking
 
+static func _is_canonical_slot_name(n: String) -> bool:
+	return (
+		n == "Body_Stylized"
+		or n == "Body_Male"
+		or n == "Face_Brows"
+		or n == "Face_Brows_Male"
+		or n == "Face_SmileTeeth"
+		or n == "Eye_L"
+		or n == "Eye_R"
+		or n.begins_with("Hair_")
+		or n.begins_with("Top_")
+		or n.begins_with("Bottom_")
+		or n.begins_with("Shoe_")
+		or n.begins_with("Hat_")
+		or n.begins_with("Acc_")
+	)
+
 func _instantiate_wardrobe_or_fallback() -> void:
 	if _wardrobe_packed != null:
 		glb_instance = _wardrobe_packed.instantiate() as Node3D
 		if glb_instance != null:
+			# Match exact 1.55x world scale used by StylizedCharacterRig in `public/js/world3d.js`
+			glb_instance.scale = Vector3(1.55, 1.55, 1.55)
 			visual_root.add_child(glb_instance)
-			_index_glb_hierarchy(glb_instance)
+			_clone_all_mesh_materials(glb_instance)
+			_index_canonical_slots(glb_instance, "")
 
-	# Build lightweight blocky/procedural fallback too so `"blocky"` avatarMode works!
 	fallback_root = Node3D.new()
 	fallback_root.name = "BlockyFallback"
 	var torso := _make_box(Vector3(0.72, 0.86, 0.38), Vector3(0, 1.12, 0), "#f472b6")
@@ -153,20 +207,32 @@ func _make_box(sz: Vector3, pos: Vector3, hex_col: String) -> MeshInstance3D:
 	mi.material_override = mat
 	return mi
 
-func _index_glb_hierarchy(node: Node) -> void:
+func _clone_all_mesh_materials(node: Node) -> void:
 	if node is AnimationPlayer and anim_player == null:
 		anim_player = node as AnimationPlayer
 	if node is MeshInstance3D:
 		var mi := node as MeshInstance3D
-		_slot_meshes[mi.name] = mi
-		# Duplicate surface materials per avatar instance so recoloring one player never tints others
 		if mi.mesh != null:
 			for s_idx in range(mi.mesh.get_surface_count()):
 				var base_mat := mi.get_active_material(s_idx)
 				if base_mat != null:
-					mi.set_surface_override_material(s_idx, base_mat.duplicate() as Material)
+					var dup_mat := base_mat.duplicate() as Material
+					dup_mat.resource_name = base_mat.resource_name
+					mi.set_surface_override_material(s_idx, dup_mat)
 	for child in node.get_children():
-		_index_glb_hierarchy(child)
+		_clone_all_mesh_materials(child)
+
+func _index_canonical_slots(node: Node, active_slot: String) -> void:
+	var slot_key := active_slot
+	var nname := str(node.name)
+	if slot_key.is_empty() and node is Node3D and _is_canonical_slot_name(nname):
+		slot_key = nname
+		_slot_nodes[slot_key] = node as Node3D
+		_slot_meshes_map[slot_key] = []
+	if not slot_key.is_empty() and node is MeshInstance3D:
+		(_slot_meshes_map[slot_key] as Array).append(node as MeshInstance3D)
+	for child in node.get_children():
+		_index_canonical_slots(child, slot_key)
 
 func apply_avatar_appearance(av: Dictionary) -> void:
 	current_avatar = av.duplicate(true)
@@ -174,23 +240,25 @@ func apply_avatar_appearance(av: Dictionary) -> void:
 		return
 
 	var avatar_mode := str(av.get("avatarMode", "stylized")).to_lower()
-	var body_type := str(av.get("bodyType", "female")).to_lower()
+	var preset := str(av.get("characterPreset", "ella_idol")).to_lower()
+	var body_type := str(av.get("bodyType", "male" if (preset == "jack_tech49" or preset == "maverick_cabin") else "female")).to_lower()
 	var is_male := (body_type == "male")
-	var skin_col := Color.from_string(str(av.get("skinColor", "#f6c8b6")), Color("#f6c8b6"))
-	var eye_col := Color.from_string(str(av.get("eyeColor", "#38bdf8")), Color("#38bdf8"))
-	var hair_style := str(av.get("hairStyle", "long_glam"))
-	var hair_col := Color.from_string(str(av.get("hairColor", "#4a2511")), Color("#4a2511"))
-	var top_style := str(av.get("topStyle", "cropped_puff"))
+	var skin_col := Color.from_string(str(av.get("skinColor", "#ffdfc4")), Color("#ffdfc4"))
+	var eye_col := Color.from_string(str(av.get("eyeColor", "#60a5fa")), Color("#60a5fa"))
+	var hair_style := str(av.get("hairStyle", "tech_crop" if is_male else "twin_pigtails"))
+	var hair_col := Color.from_string(str(av.get("hairColor", "#fde047")), Color("#fde047"))
+	var top_style := str(av.get("topStyle", "tech_jacket" if is_male else "glam_gown"))
 	var top_col := Color.from_string(str(av.get("topColor", av.get("torsoColor", "#f472b6"))), Color("#f472b6"))
-	var bot_style := str(av.get("bottomStyle", "pleated_skirt"))
-	var bot_col := Color.from_string(str(av.get("bottomColor", av.get("legsColor", "#60a5fa"))), Color("#60a5fa"))
-	var shoe_style := str(av.get("shoeStyle", "platform_boots"))
-	var shoe_col := Color.from_string(str(av.get("shoeColor", "#f8fafc")), Color("#f8fafc"))
-	var hat_style := str(av.get("hat", "none"))
+	var bot_style := str(av.get("bottomStyle", "tech_pants" if is_male else "pleated_skirt"))
+	var bot_col := Color.from_string(str(av.get("bottomColor", av.get("legsColor", "#6366f1"))), Color("#6366f1"))
+	var shoe_style := str(av.get("shoeStyle", "flight_boots" if is_male else "runway_heels"))
+	var shoe_col := Color.from_string(str(av.get("shoeColor", "#fbbf24")), Color("#fbbf24"))
+	var hat_style := str(av.get("hat", "none" if is_male else "crown"))
 	var hat_col := Color.from_string(str(av.get("hatColor", "#fbbf24")), Color("#fbbf24"))
-	var acc_style := str(av.get("accessory", "none"))
-	var acc_col := Color.from_string(str(av.get("accessoryColor", "#38bdf8")), Color("#38bdf8"))
-	var finish := str(av.get("fabricFinish", "matte")).to_lower()
+	var acc_style := str(av.get("accessory", "aviators" if is_male else "star_purse"))
+	var acc_col := Color.from_string(str(av.get("accessoryColor", "#ec4899")), Color("#ec4899"))
+	var finish := str(av.get("fabricFinish", "glitter")).to_lower()
+	var is_full_gown := (top_style == "glam_gown")
 
 	var rough := 0.58
 	var metal := 0.05
@@ -199,7 +267,7 @@ func apply_avatar_appearance(av: Dictionary) -> void:
 		metal = 0.22
 	elif finish == "glitter":
 		rough = 0.16
-		metal = 0.58
+		metal = 0.52
 
 	var use_glb := (glb_instance != null and avatar_mode != "blocky")
 	if glb_instance != null:
@@ -212,45 +280,55 @@ func apply_avatar_appearance(av: Dictionary) -> void:
 			_tint_node_material(fallback_root.get_node_or_null("BlockyLegs") as MeshInstance3D, bot_col, rough, metal)
 			return
 
-	for mesh_name: String in _slot_meshes.keys():
-		var mi: MeshInstance3D = _slot_meshes[mesh_name]
-		if mesh_name == "Body_Stylized":
-			mi.visible = not is_male
-		elif mesh_name == "Body_Male":
-			mi.visible = is_male
-		elif mesh_name == "Face_Brows":
-			mi.visible = not is_male
-		elif mesh_name == "Face_Brows_Male":
-			mi.visible = is_male
-		elif mesh_name.begins_with("Hair_"):
-			mi.visible = (mesh_name == "Hair_" + hair_style)
-		elif mesh_name.begins_with("Top_"):
-			mi.visible = (mesh_name == "Top_" + top_style)
-		elif mesh_name.begins_with("Bottom_"):
-			mi.visible = (mesh_name == "Bottom_" + bot_style)
-		elif mesh_name.begins_with("Shoe_"):
-			mi.visible = (mesh_name == "Shoe_" + shoe_style)
-		elif mesh_name.begins_with("Hat_"):
-			mi.visible = (hat_style != "none" and mesh_name == "Hat_" + hat_style)
-		elif mesh_name.begins_with("Acc_"):
-			mi.visible = (acc_style != "none" and mesh_name == "Acc_" + acc_style)
+	for slot_name: String in _slot_nodes.keys():
+		var snode: Node3D = _slot_nodes[slot_name]
+		var vis := false
+		if slot_name == "Body_Stylized" or slot_name == "Face_Brows":
+			vis = not is_male
+		elif slot_name == "Body_Male" or slot_name == "Face_Brows_Male":
+			vis = is_male
+		elif slot_name == "Face_SmileTeeth" or slot_name == "Eye_L" or slot_name == "Eye_R":
+			vis = true
+		elif slot_name.begins_with("Hair_"):
+			vis = (slot_name == "Hair_" + hair_style)
+		elif slot_name.begins_with("Top_"):
+			vis = (slot_name == "Top_" + top_style)
+		elif slot_name.begins_with("Bottom_"):
+			vis = (not is_full_gown and bot_style != "none" and slot_name == "Bottom_" + bot_style)
+		elif slot_name.begins_with("Shoe_"):
+			vis = (slot_name == "Shoe_" + shoe_style)
+		elif slot_name.begins_with("Hat_"):
+			vis = (hat_style != "none" and hat_style != "wings" and slot_name == "Hat_" + hat_style)
+		elif slot_name == "Acc_wings":
+			vis = (acc_style == "wings" or hat_style == "wings")
+		elif slot_name.begins_with("Acc_"):
+			vis = (acc_style != "none" and slot_name == "Acc_" + acc_style)
 
-		_apply_wardrobe_surface_tints(mi, skin_col, eye_col, hair_col, top_col, bot_col, shoe_col, hat_col, acc_col, rough, metal)
+		snode.visible = vis
+		for mi_var in (_slot_meshes_map.get(slot_name, []) as Array):
+			var mi := mi_var as MeshInstance3D
+			mi.visible = vis
+			_apply_wardrobe_surface_tints(slot_name, mi, is_male, skin_col, eye_col, hair_col, top_col, bot_col, shoe_col, hat_col, acc_col, acc_style != "none", rough, metal)
 
-	# Ensure fallback slot visibility if an unknown custom style key was passed
-	_ensure_category_fallback("Hair_", "Hair_short_crop" if is_male else "Hair_long_glam")
-	_ensure_category_fallback("Top_", "Top_tech_jacket" if is_male else "Top_cropped_puff")
-	_ensure_category_fallback("Bottom_", "Bottom_tech_pants" if is_male else "Bottom_pleated_skirt")
-	_ensure_category_fallback("Shoe_", "Shoe_flight_boots" if is_male else "Shoe_platform_boots")
+	_ensure_category_fallback("Hair_", "Hair_tech_crop" if is_male else "Hair_twin_pigtails")
+	_ensure_category_fallback("Top_", "Top_tech_jacket" if is_male else "Top_glam_gown")
+	if not is_full_gown:
+		_ensure_category_fallback("Bottom_", "Bottom_tech_pants" if is_male else "Bottom_pleated_skirt")
+	_ensure_category_fallback("Shoe_", "Shoe_flight_boots" if is_male else "Shoe_runway_heels")
 
 func _ensure_category_fallback(prefix: String, default_slot: String) -> void:
 	var any_vis := false
-	for k: String in _slot_meshes.keys():
-		if k.begins_with(prefix) and (_slot_meshes[k] as MeshInstance3D).visible:
+	for k: String in _slot_nodes.keys():
+		if k.begins_with(prefix) and (_slot_nodes[k] as Node3D).visible:
 			any_vis = true
 			break
-	if not any_vis and _slot_meshes.has(default_slot):
-		(_slot_meshes[default_slot] as MeshInstance3D).visible = true
+	if not any_vis and _slot_nodes.has(default_slot):
+		(_slot_nodes[default_slot] as Node3D).visible = true
+		for mi_var in (_slot_meshes_map.get(default_slot, []) as Array):
+			(mi_var as MeshInstance3D).visible = true
+
+func is_slot_visible(slot_name: String) -> bool:
+	return _slot_nodes.has(slot_name) and (_slot_nodes[slot_name] as Node3D).visible
 
 func _tint_node_material(mi: MeshInstance3D, col: Color, rough: float, metal: float) -> void:
 	if mi == null or not (mi.material_override is StandardMaterial3D):
@@ -261,7 +339,9 @@ func _tint_node_material(mi: MeshInstance3D, col: Color, rough: float, metal: fl
 	sm.metallic = metal
 
 func _apply_wardrobe_surface_tints(
+	slot_name: String,
 	mi: MeshInstance3D,
+	is_male: bool,
 	skin_col: Color,
 	eye_col: Color,
 	hair_col: Color,
@@ -270,6 +350,7 @@ func _apply_wardrobe_surface_tints(
 	shoe_col: Color,
 	hat_col: Color,
 	acc_col: Color,
+	has_acc: bool,
 	rough: float,
 	metal: float
 ) -> void:
@@ -283,10 +364,20 @@ func _apply_wardrobe_surface_tints(
 		var mname := sm.resource_name
 		if mname.contains("Skin"):
 			sm.albedo_color = skin_col
+			sm.roughness = 0.46
+			sm.metallic = 0.02
+		elif mname.contains("Lips"):
+			sm.albedo_color = (skin_col * 0.76) if is_male else Color("#d85c7a")
+			sm.albedo_color.a = 1.0
 		elif mname.contains("EyeIris"):
 			sm.albedo_color = eye_col
-		elif mname.contains("Hair") or mname.contains("Brow"):
+			sm.roughness = 0.08
+		elif mname.contains("Brow"):
+			sm.albedo_color = hair_col * 0.58
+			sm.albedo_color.a = 1.0
+		elif mname.contains("Hair"):
 			sm.albedo_color = hair_col
+			sm.roughness = 0.34
 		elif mname.contains("Top"):
 			sm.albedo_color = top_col
 			sm.roughness = rough
@@ -295,16 +386,30 @@ func _apply_wardrobe_surface_tints(
 			sm.albedo_color = bot_col
 			sm.roughness = rough
 			sm.metallic = metal
-		elif mname.contains("Shoe"):
+		elif mname.contains("Shoe") and not mname.contains("ShoeSole"):
 			sm.albedo_color = shoe_col
+			sm.roughness = 0.22 if metal > 0.4 else 0.34
 		elif mname.contains("Hat"):
 			sm.albedo_color = hat_col
-		elif mname.contains("Accent") or mname.contains("Wings"):
+			sm.roughness = 0.28
+			sm.metallic = 0.32
+		elif mname.contains("Accent"):
+			if slot_name.begins_with("Hair_"):
+				sm.albedo_color = acc_col if has_acc else top_col
+			elif slot_name.begins_with("Top_") or slot_name.begins_with("Bottom_"):
+				sm.albedo_color = acc_col if has_acc else hat_col
+				sm.roughness = rough
+				sm.metallic = metal
+			else:
+				sm.albedo_color = acc_col
+		elif mname.contains("Wings"):
 			sm.albedo_color = acc_col
 
 func set_companions(pet_id: String, mount_id: String) -> void:
 	equipped_pet_id = pet_id
 	equipped_mount_id = mount_id
+	pet_wing_l = null
+	pet_wing_r = null
 	if pet_pivot == null or mount_pivot == null:
 		return
 	for c in pet_pivot.get_children():
@@ -313,52 +418,68 @@ func set_companions(pet_id: String, mount_id: String) -> void:
 		c.queue_free()
 
 	if not pet_id.is_empty():
-		var pet_node := _clone_env_node(str(PET_NODE_MAP.get(pet_id, "")))
+		var pet_node: Node3D = null
+		if pet_id == "baby_crystal_dragon" or pet_id == "baby_dragon":
+			var body := clone_companion_template("Env_Pet_BabyDragon_Body")
+			if body != null:
+				var dragon_grp := Node3D.new()
+				dragon_grp.name = "ArticulatedBabyDragon"
+				dragon_grp.add_child(body)
+				pet_wing_l = clone_companion_template("Env_Pet_BabyDragon_WingL")
+				pet_wing_r = clone_companion_template("Env_Pet_BabyDragon_WingR")
+				if pet_wing_l != null:
+					dragon_grp.add_child(pet_wing_l)
+				if pet_wing_r != null:
+					dragon_grp.add_child(pet_wing_r)
+				pet_node = dragon_grp
+		else:
+			pet_node = clone_companion_template(str(PET_NODE_MAP.get(pet_id, "")))
 		if pet_node == null:
 			pet_node = _make_box(Vector3(0.38, 0.34, 0.46), Vector3.ZERO, "#f9a8d4")
 		pet_pivot.add_child(pet_node)
 
 	if not mount_id.is_empty():
-		var m_node := _clone_env_node(str(MOUNT_NODE_MAP.get(mount_id, "")))
+		var m_node := clone_companion_template(str(MOUNT_NODE_MAP.get(mount_id, "")))
 		if m_node == null:
 			m_node = _make_box(Vector3(0.85, 0.10, 1.65), Vector3(0, 0.08, 0), "#38bdf8")
 		mount_pivot.add_child(m_node)
-		visual_root.position.y = 0.18
-	else:
-		visual_root.position.y = 0.0
+	_apply_sleep_or_mount_pose()
 
-func _clone_env_node(target_name: String) -> Node3D:
-	if target_name.is_empty() or _env_packed == null:
-		return null
-	var root := _env_packed.instantiate() as Node3D
-	if root == null:
-		return null
-	var found := root.find_child(target_name, true, false) as Node3D
-	var dup: Node3D = null
-	if found != null:
-		dup = found.duplicate() as Node3D
-		dup.position = Vector3.ZERO
-	root.free()
-	return dup
+func _apply_sleep_or_mount_pose() -> void:
+	if visual_root == null:
+		return
+	if current_emote_key == "sleep":
+		visual_root.rotation.x = -PI * 0.47
+		visual_root.position = Vector3(0.0, 0.56, 0.36)
+	else:
+		visual_root.rotation.x = 0.0
+		visual_root.position = Vector3(0.0, 0.18 if not equipped_mount_id.is_empty() else 0.0, 0.0)
 
 func set_motion_and_emote(anim_key: String, emote_key: String) -> void:
 	if current_anim_key == anim_key and current_emote_key == emote_key:
 		return
 	current_anim_key = anim_key
 	current_emote_key = emote_key
+	_apply_sleep_or_mount_pose()
+
 	if anim_player == null:
 		return
 	var desired := "Idle_Glam"
 	if not emote_key.is_empty():
-		var cap := emote_key.substr(0, 1).to_upper() + emote_key.substr(1)
-		if anim_player.has_animation("Emote_" + cap):
-			desired = "Emote_" + cap
+		if emote_key == "sleep":
+			desired = "Idle_Glam"
+		else:
+			var cap := emote_key.substr(0, 1).to_upper() + emote_key.substr(1)
+			if anim_player.has_animation("Emote_" + cap):
+				desired = "Emote_" + cap
 	else:
 		match anim_key:
 			"walk":
 				desired = "Walk_Runway"
-			"run", "hover":
+			"run":
 				desired = "Run_Obby"
+			"hover":
+				desired = "Emote_Pose" if anim_player.has_animation("Emote_Pose") else "Idle_Glam"
 			"jump":
 				desired = "Jump_Air"
 			_:
@@ -371,5 +492,9 @@ func _process(delta: float) -> void:
 	if pet_pivot != null and pet_pivot.get_child_count() > 0:
 		pet_pivot.position.y = 0.95 + sin(_pet_bob_time * 3.1) * 0.12
 		pet_pivot.rotation.y = sin(_pet_bob_time * 1.4) * 0.25
+		if pet_wing_l != null:
+			pet_wing_l.rotation.z = sin(_pet_bob_time * 9.5) * 0.38
+		if pet_wing_r != null:
+			pet_wing_r.rotation.z = -sin(_pet_bob_time * 9.5) * 0.38
 	if mount_pivot != null and mount_pivot.get_child_count() > 0:
 		mount_pivot.position.y = 0.06 + sin(_pet_bob_time * 4.2) * 0.04

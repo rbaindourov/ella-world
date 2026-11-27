@@ -11,16 +11,16 @@
   "targetSdk": 34,
   "architectures": ["arm64-v8a", "x86_64"],
   "downloadUrl": "/download/ella-world.apk",
-  "apkBytes": 75621583,
-  "sizeBytes": 75621583,
-  "sha256": "3011797b459e4a77b3a5682c3c247bdff20c20f2a49baf5ca41e458a55d35266",
+  "apkBytes": 75654351,
+  "sizeBytes": 75654351,
+  "sha256": "209ff9a0e8f4dc172537e840d1a3bcafa36d34c61fe9023112171ae3783adb58",
   "aabConfigured": true,
   "playStoreBundle": {
     "format": "aab",
     "minSdk": 26,
     "targetSdk": 34,
-    "sizeBytes": 75292593,
-    "sha256": "53051175b2d00742d6ea0219418f9aac44626076406856e2809d866c210fb971"
+    "sizeBytes": 75324917,
+    "sha256": "7b3059144a68b656e78f21404c17474042e5e8b216d04e556fa40cdddc732c9d"
   },
-  "builtAt": "2026-11-27T22:10:37Z"
+  "builtAt": "2026-11-27T23:03:22Z"
 }

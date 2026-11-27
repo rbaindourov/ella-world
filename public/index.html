@@ -1343,7 +1343,7 @@
             <p class="small-note">
               Create active <code>STAR-...</code> Friend Invite codes with preset safety &amp; coin defaults, or approve/reject pending invites drafted by your Kid Host in 1 click!
             </p>
-            <form id="admin-create-invite-form" class="admin-form" method="post" action="/api/ella-world/admin/invites" aria-label="Create Friend Invite Code">
+            <form id="admin-create-invite-form" class="admin-form" method="post" action="/api/ella-world/admin/invites" aria-labelledby="admin-invites-heading">
               <div class="admin-form-grid-2">
                 <div class="field-group">
                   <label for="admin-invite-note">Friend Note (optional)</label>
@@ -1365,11 +1365,26 @@
                   <label for="admin-invite-max-uses">Max Redemptions</label>
                   <input type="number" id="admin-invite-max-uses" name="maxUses" min="1" max="50" step="1" value="1" inputmode="numeric" />
                 </div>
+                <div class="field-group">
+                  <label for="admin-invite-expires-hours">Expiry Window (Hours, 0 = Never)</label>
+                  <input type="number" id="admin-invite-expires-hours" name="expiresInHours" min="0" max="8760" step="24" value="168" inputmode="numeric" />
+                </div>
               </div>
-              <div class="admin-check-row">
-                <input type="checkbox" id="admin-invite-voice-muted" name="presetVoiceMuted" />
-                <label for="admin-invite-voice-muted">🔇 Start with Microphone Muted by Parent</label>
-              </div>
+              <fieldset class="admin-fieldset">
+                <legend>🛡️ Starter Voice, Build &amp; Trade Permissions</legend>
+                <div class="admin-check-row">
+                  <input type="checkbox" id="admin-invite-voice-muted" name="presetVoiceMuted" />
+                  <label for="admin-invite-voice-muted">🔇 Start with Microphone Muted by Parent</label>
+                </div>
+                <div class="admin-check-row">
+                  <input type="checkbox" id="admin-invite-can-build" name="presetCanBuild" checked />
+                  <label for="admin-invite-can-build">🧱 Allow Block &amp; Home Building</label>
+                </div>
+                <div class="admin-check-row">
+                  <input type="checkbox" id="admin-invite-can-trade" name="presetCanTrade" checked />
+                  <label for="admin-invite-can-trade">🤝 Allow Friend Item &amp; Coin Trading</label>
+                </div>
+              </fieldset>
               <p id="admin-invite-feedback" class="feedback-note" hidden role="status"></p>
               <button type="submit" class="primary-cta-btn">🎟️ Generate Active STAR-... Friend Invite</button>
             </form>
@@ -2176,8 +2191,7 @@
                 required
               />
             </div>
-            <div class="field-group">
-              <label>&nbsp;</label>
+            <div class="field-group" style="justify-content: flex-end;">
               <button type="submit" class="primary-cta-btn">✨ Redeem &amp; Visit Playground</button>
             </div>
           </div>

@@ -125,23 +125,28 @@ pub fn build_router(state: AppState) -> Router {
 
     let static_service = ServeDir::new(&public_dir).not_found_service(ServeFile::new(&index_file));
 
-    Router::new()
+    let compressed_routes = Router::new()
         .route("/health", get(health_handler))
+        .nest("/api/ella-world", api_routes.clone())
+        .nest("/api", api_routes)
+        .nest_service("/ella-world", static_service.clone())
+        .fallback_service(static_service)
+        .layer(CompressionLayer::new());
+
+    Router::new()
         .route("/download/ella-world.apk", get(download_apk_handler))
         .route(
             "/ella-world/download/ella-world.apk",
             get(download_apk_handler),
         )
-        .nest("/api/ella-world", api_routes.clone())
-        .nest("/api", api_routes)
-        .nest_service("/ella-world", static_service.clone())
-        .fallback_service(static_service)
-        .layer(CompressionLayer::new())
+        .merge(compressed_routes)
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
 async fn download_apk_handler(method: axum::http::Method, State(st): State<AppState>) -> Response {
+    use tokio::io::AsyncReadExt;
+
     let apk_path = st
         .world
         .config
@@ -168,15 +173,34 @@ async fn download_apk_handler(method: axum::http::Method, State(st): State<AppSt
         (header::CONTENT_LENGTH, len_str.as_str()),
     ];
     if method == axum::http::Method::HEAD {
-        return (StatusCode::OK, headers, Vec::<u8>::new()).into_response();
+        return (StatusCode::OK, headers, axum::body::Body::empty()).into_response();
     }
-    match tokio::fs::read(&apk_path).await {
-        Ok(bytes) => (StatusCode::OK, headers, bytes).into_response(),
-        Err(_) => json_err(
+    let Ok(file) = tokio::fs::File::open(&apk_path).await else {
+        return json_err(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to read APK file.",
-        ),
-    }
+            "Failed to open APK file.",
+        );
+    };
+    let chunk_stream = futures_util::stream::unfold(file, |mut f| async move {
+        let mut buf = vec![0u8; 65_536];
+        match f.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((
+                    Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::from(buf)),
+                    f,
+                ))
+            }
+            Err(e) => Some((Err(e), f)),
+        }
+    });
+    (
+        StatusCode::OK,
+        headers,
+        axum::body::Body::from_stream(chunk_stream),
+    )
+        .into_response()
 }
 
 fn json_err(status: StatusCode, msg: &str) -> Response {
@@ -218,8 +242,18 @@ async fn enrich_session_doc(st: &AppState, doc: &mut Value, username: &str, worl
     let my_playgrounds = st.registry.my_playgrounds_for_user(username).await;
     let webrtc_port = st.sfu.udp_port();
     let native_port = st.native_udp.local_addr().port();
+    let resolved_world_name = doc
+        .get("worldMeta")
+        .and_then(|wm| wm.get("worldName"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     if let Some(obj) = doc.as_object_mut() {
         obj.insert("worldSlug".into(), json!(world_slug));
+        if let Some(wname) = resolved_world_name {
+            obj.insert("worldName".into(), json!(wname));
+        }
+        obj.insert("webrtcUdpPort".into(), json!(webrtc_port));
+        obj.insert("nativeUdpPort".into(), json!(native_port));
         obj.insert("inviteOnly".into(), json!(true));
         obj.insert("myPlaygrounds".into(), json!(my_playgrounds));
         if let Some(wm) = obj.get_mut("worldMeta").and_then(Value::as_object_mut) {

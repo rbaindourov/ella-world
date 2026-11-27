@@ -53,6 +53,14 @@ var homes_list_vbox: VBoxContainer = null
 var admin_status_label: Label = null
 var admin_invites_vbox: VBoxContainer = null
 var admin_pw_edit: LineEdit = null
+var inv_note_edit: LineEdit = null
+var inv_chat_mode_opt: OptionButton = null
+var inv_voice_muted_chk: CheckBox = null
+var inv_can_build_chk: CheckBox = null
+var inv_can_trade_chk: CheckBox = null
+var inv_coins_spin: SpinBox = null
+var inv_max_uses_spin: SpinBox = null
+var inv_expires_spin: SpinBox = null
 
 var emote_cycle := ["wave", "dance", "spin", "cheer", "pose", "peace", "flip"]
 var emote_idx: int = 0
@@ -510,38 +518,45 @@ func _build_world_menu_modal() -> void:
 	menu_tabs.add_child(pg_tab)
 
 	# Tab 1: 👗 Glam Closet & Runway
+	var glam_scroll := ScrollContainer.new()
+	glam_scroll.name = "👗 Glam & Runway"
 	var glam_tab := VBoxContainer.new()
-	glam_tab.name = "👗 Glam & Runway"
+	glam_tab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	glam_tab.add_theme_constant_override("separation", 6)
 	_populate_glam_tab(glam_tab)
-	menu_tabs.add_child(glam_tab)
+	glam_scroll.add_child(glam_tab)
+	menu_tabs.add_child(glam_scroll)
 
 	# Tab 2: 🐾 Pets, Hoverboards & Sky
 	var comp_tab := VBoxContainer.new()
 	comp_tab.name = "🐾 Pets & Sky"
+	comp_tab.add_theme_constant_override("separation", 8)
 	_populate_companions_and_sky_tab(comp_tab)
 	menu_tabs.add_child(comp_tab)
 
 	# Tab 3: 🏡 Homes, Build & Workshop
 	var home_tab := VBoxContainer.new()
 	home_tab.name = "🏡 Homes & Craft"
+	home_tab.add_theme_constant_override("separation", 6)
 	_populate_homes_and_craft_tab(home_tab)
 	menu_tabs.add_child(home_tab)
 
 	# Tab 4: 🎟️ Invites & Parent Admin
 	var admin_tab := VBoxContainer.new()
 	admin_tab.name = "🛡️ Invites & Parent"
+	admin_tab.add_theme_constant_override("separation", 6)
 	_populate_invites_and_admin_tab(admin_tab)
 	menu_tabs.add_child(admin_tab)
 
 func _populate_glam_tab(tab: VBoxContainer) -> void:
 	var row1 := HBoxContainer.new()
 	for preset in [
-		["👑 Glam Starlight", {"avatarMode": "stylized", "bodyType": "female", "hairStyle": "long_glam", "topStyle": "cropped_puff", "topColor": "#f472b6", "bottomStyle": "pleated_skirt", "bottomColor": "#60a5fa", "shoeStyle": "platform_boots", "fabricFinish": "glitter"}],
-		["🩰 Velvet Gown", {"avatarMode": "stylized", "bodyType": "female", "hairStyle": "twin_buns", "topStyle": "velvet_corset", "topColor": "#a855f7", "bottomStyle": "mermaid_gown", "bottomColor": "#ec4899", "fabricFinish": "satin"}],
-		["✈️ Tech-49 Hero", {"avatarMode": "stylized", "bodyType": "male", "hairStyle": "tech_crop", "topStyle": "tech_jacket", "topColor": "#e2e8f0", "bottomStyle": "tech_pants", "bottomColor": "#475569", "shoeStyle": "flight_boots", "accessory": "aviators", "fabricFinish": "matte"}],
+		["👑 Ella Idol", {"avatarMode": "stylized", "characterPreset": "ella_idol", "bodyType": "female", "hairStyle": "twin_pigtails", "topStyle": "glam_gown", "topColor": "#f472b6", "shoeStyle": "runway_heels", "hat": "crown", "accessory": "star_purse", "fabricFinish": "glitter"}],
+		["🌸 Katey Chic", {"avatarMode": "stylized", "characterPreset": "katey", "bodyType": "female", "hairStyle": "katey_long", "topStyle": "puff_blouse", "topColor": "#a855f7", "bottomStyle": "pleated_skirt", "bottomColor": "#60a5fa", "shoeStyle": "platform_boots", "hat": "hair_bow", "fabricFinish": "satin"}],
+		["✈️ Tech-49 Hero", {"avatarMode": "stylized", "characterPreset": "jack_tech49", "bodyType": "male", "hairStyle": "tech_crop", "topStyle": "tech_jacket", "topColor": "#e2e8f0", "bottomStyle": "tech_pants", "bottomColor": "#475569", "shoeStyle": "flight_boots", "hat": "none", "accessory": "aviators", "fabricFinish": "matte"}],
 		["🧱 Classic Blocky", {"avatarMode": "blocky", "topColor": "#38bdf8", "bottomColor": "#fbbf24"}]
 	]:
-		var b := _make_btn(str(preset[0]), "#4f46e5", "#ffffff", Vector2(180, 42))
+		var b := _make_btn(str(preset[0]), "#4f46e5", "#ffffff", Vector2(180, 40))
 		var patch: Dictionary = preset[1]
 		b.pressed.connect(func() -> void:
 			net.send_game_command({"type": "avatar", "avatar": patch})
@@ -550,9 +565,55 @@ func _populate_glam_tab(tab: VBoxContainer) -> void:
 		row1.add_child(b)
 	tab.add_child(row1)
 
+	var hair_row := HBoxContainer.new()
+	for hpair in [["Twin Pigtails", "twin_pigtails"], ["Katey Long", "katey_long"], ["Amy Waves", "amy_waves"], ["Ponytail", "glam_ponytail"], ["Tech Crop", "tech_crop"], ["Quiff", "maverick_quiff"]]:
+		var hb := _make_btn("💇 " + str(hpair[0]), "#334155", "#f8fafc", Vector2(124, 34))
+		var hid := str(hpair[1])
+		hb.pressed.connect(func() -> void:
+			net.send_game_command({"type": "avatar", "avatar": {"avatarMode": "stylized", "hairStyle": hid}})
+		)
+		hair_row.add_child(hb)
+	tab.add_child(hair_row)
+
+	var outfit_row := HBoxContainer.new()
+	for opair in [
+		["👗 Ballgown", {"topStyle": "glam_gown"}],
+		["👚 Puff + Skirt", {"topStyle": "puff_blouse", "bottomStyle": "pleated_skirt"}],
+		["👕 Crop + Mini", {"topStyle": "crop_top", "bottomStyle": "ruffle_mini"}],
+		["🧶 Sweater + Jeans", {"topStyle": "sweater", "bottomStyle": "jeans"}],
+		["🧥 Jacket + Pants", {"topStyle": "tech_jacket", "bottomStyle": "tech_pants"}]
+	]:
+		var ob := _make_btn(str(opair[0]), "#0f766e", "#ffffff", Vector2(148, 34))
+		var opatch: Dictionary = opair[1]
+		ob.pressed.connect(func() -> void:
+			var merged := opatch.duplicate(true)
+			merged["avatarMode"] = "stylized"
+			net.send_game_command({"type": "avatar", "avatar": merged})
+		)
+		outfit_row.add_child(ob)
+	tab.add_child(outfit_row)
+
+	var gear_row := HBoxContainer.new()
+	for gpair in [
+		["👑 Crown", {"hat": "crown"}],
+		["🐱 Cat Ears", {"hat": "catears"}],
+		["🦋 Wings", {"accessory": "wings"}],
+		["⚔️ Blade", {"accessory": "crystal_blade"}],
+		["🪄 Wand", {"accessory": "starlight_wand"}],
+		["🔫 Ray Gun", {"accessory": "ray_gun"}],
+		["✕ Clear Gear", {"hat": "none", "accessory": "none"}]
+	]:
+		var gb := _make_btn(str(gpair[0]), "#6d28d9", "#ffffff", Vector2(106, 34))
+		var gpatch: Dictionary = gpair[1]
+		gb.pressed.connect(func() -> void:
+			net.send_game_command({"type": "avatar", "avatar": gpatch})
+		)
+		gear_row.add_child(gb)
+	tab.add_child(gear_row)
+
 	var color_row := HBoxContainer.new()
 	for col_pair in [["Pink", "#f472b6"], ["Sky", "#38bdf8"], ["Emerald", "#34d399"], ["Gold", "#fbbf24"], ["Violet", "#a855f7"], ["Snow", "#f8fafc"]]:
-		var cb := _make_btn("🎨 " + str(col_pair[0]), str(col_pair[1]), "#0f172a", Vector2(118, 38))
+		var cb := _make_btn("🎨 " + str(col_pair[0]), str(col_pair[1]), "#0f172a", Vector2(118, 36))
 		var hex := str(col_pair[1])
 		cb.pressed.connect(func() -> void:
 			net.send_game_command({"type": "avatar", "avatar": {"topColor": hex, "torsoColor": hex}})
@@ -562,7 +623,7 @@ func _populate_glam_tab(tab: VBoxContainer) -> void:
 
 	var finish_row := HBoxContainer.new()
 	for fin in ["matte", "satin", "glitter"]:
-		var fb := _make_btn("✨ Finish: " + fin.capitalize(), "#0284c7", "#ffffff", Vector2(160, 38))
+		var fb := _make_btn("✨ Finish: " + fin.capitalize(), "#0284c7", "#ffffff", Vector2(160, 36))
 		fb.pressed.connect(func() -> void:
 			net.send_game_command({"type": "avatar", "avatar": {"fabricFinish": fin}})
 		)
@@ -575,14 +636,14 @@ func _populate_glam_tab(tab: VBoxContainer) -> void:
 	tab.add_child(rw_hdr)
 
 	var rw_row := HBoxContainer.new()
-	var btn_start_rw := _make_btn("🎬 Start / Join Show", "#db2777", "#ffffff", Vector2(185, 40))
+	var btn_start_rw := _make_btn("🎬 Start / Join Show", "#db2777", "#ffffff", Vector2(185, 38))
 	btn_start_rw.pressed.connect(func() -> void: net.send_game_command({"type": "runway", "action": "start_show"}))
-	var btn_ready_rw := _make_btn("✅ Outfit Ready", "#38bdf8", "#0f172a", Vector2(145, 40))
+	var btn_ready_rw := _make_btn("✅ Outfit Ready", "#38bdf8", "#0f172a", Vector2(145, 38))
 	btn_ready_rw.pressed.connect(func() -> void: net.send_game_command({"type": "runway", "action": "ready_show"}))
 	rw_row.add_child(btn_start_rw)
 	rw_row.add_child(btn_ready_rw)
 	for stars in [3, 4, 5]:
-		var vb := _make_btn("⭐ %d★" % stars, "#fbbf24", "#0f172a", Vector2(84, 40))
+		var vb := _make_btn("⭐ %d★" % stars, "#fbbf24", "#0f172a", Vector2(84, 38))
 		vb.pressed.connect(func() -> void:
 			var target_u := str(world.runway_state.get("show", {}).get("spotlightUsername", net.username))
 			net.send_game_command({"type": "runway", "action": "vote", "targetUsername": target_u, "stars": stars})
@@ -593,7 +654,7 @@ func _populate_glam_tab(tab: VBoxContainer) -> void:
 func _populate_companions_and_sky_tab(tab: VBoxContainer) -> void:
 	var pet_row := HBoxContainer.new()
 	for p in [["🐶 Cloud Puppy", "cloud_puppy"], ["🦊 Kitsune", "starlight_kitsune"], ["🐱 Shadow Kitty", "shadow_kitty"], ["🐲 Crystal Dragon", "baby_crystal_dragon"]]:
-		var pb := _make_btn(str(p[0]), "#0284c7", "#ffffff", Vector2(180, 42))
+		var pb := _make_btn(str(p[0]), "#0284c7", "#ffffff", Vector2(180, 40))
 		var pid := str(p[1])
 		pb.pressed.connect(func() -> void:
 			net.send_game_command({"type": "companions", "action": "adopt_pet", "petId": pid})
@@ -601,9 +662,25 @@ func _populate_companions_and_sky_tab(tab: VBoxContainer) -> void:
 		pet_row.add_child(pb)
 	tab.add_child(pet_row)
 
+	var egg_row := HBoxContainer.new()
+	var btn_buy_egg := _make_btn("🥚 Buy Egg (120🪙)", "#f59e0b", "#0f172a", Vector2(165, 38))
+	btn_buy_egg.pressed.connect(func() -> void: net.send_game_command({"type": "companions", "action": "buy_egg"}))
+	var btn_hatch_egg := _make_btn("🐣 Hatch Egg", "#34d399", "#0f172a", Vector2(140, 38))
+	btn_hatch_egg.pressed.connect(func() -> void: net.send_game_command({"type": "companions", "action": "hatch_egg"}))
+	egg_row.add_child(btn_buy_egg)
+	egg_row.add_child(btn_hatch_egg)
+	for pot in [["✨ Starlight Elixir", "starlight_potion"], ["⚡ Speed Fizz", "speed_potion"], ["🪽 Leap Elixir", "jump_potion"]]:
+		var pot_btn := _make_btn(str(pot[0]), "#7c3aed", "#ffffff", Vector2(150, 38))
+		var item_id := str(pot[1])
+		pot_btn.pressed.connect(func() -> void:
+			net.send_game_command({"type": "use_item", "itemId": item_id})
+		)
+		egg_row.add_child(pot_btn)
+	tab.add_child(egg_row)
+
 	var mnt_row := HBoxContainer.new()
 	for m in [["🛹 Hoverboard", "starlight_board"], ["🛼 Sunset Skates", "sunset_skates"], ["☄️ Comet Surfer", "comet_surfer"]]:
-		var mb := _make_btn(str(m[0]), "#4f46e5", "#ffffff", Vector2(190, 42))
+		var mb := _make_btn(str(m[0]), "#4f46e5", "#ffffff", Vector2(190, 40))
 		var mid := str(m[1])
 		mb.pressed.connect(func() -> void:
 			net.send_game_command({"type": "companions", "action": "buy_mount", "mountId": mid})
@@ -613,7 +690,7 @@ func _populate_companions_and_sky_tab(tab: VBoxContainer) -> void:
 
 	var sky_row := HBoxContainer.new()
 	for mode in [["Auto", "auto"], ["Sunny Day", "day"], ["Sunset", "sunset"], ["Aurora Night", "aurora_night"]]:
-		var sb := _make_btn("🌤️ " + str(mode[0]), "#334155", "#f8fafc", Vector2(160, 40))
+		var sb := _make_btn("🌤️ " + str(mode[0]), "#334155", "#f8fafc", Vector2(160, 38))
 		var mval := str(mode[1])
 		sb.pressed.connect(func() -> void:
 			net.send_game_command({"type": "sky", "action": "set_sky", "mode": mval})
@@ -622,10 +699,19 @@ func _populate_companions_and_sky_tab(tab: VBoxContainer) -> void:
 	tab.add_child(sky_row)
 
 func _populate_homes_and_craft_tab(tab: VBoxContainer) -> void:
-	var build_row := HBoxContainer.new()
-	for k in ["block", "glass", "stairs", "bed", "sofa", "dining_table", "chair", "crystal_lamp", "Erase"]:
-		var kb := _make_btn(k.capitalize(), "#059669" if k != "Erase" else "#be123c", "#ffffff", Vector2(86, 36))
+	var build_row1 := HBoxContainer.new()
+	for k in ["block", "slab", "glass", "stairs", "door", "double_door", "Rotate 90°", "Erase"]:
+		var fill := "#059669"
+		if k == "Erase":
+			fill = "#be123c"
+		elif k == "Rotate 90°":
+			fill = "#0284c7"
+		var kb := _make_btn(k.replace("_", " ").capitalize() if k != "Rotate 90°" else "🔄 Rot 90°", fill, "#ffffff", Vector2(92, 34))
 		kb.pressed.connect(func() -> void:
+			if k == "Rotate 90°":
+				world.selected_block_rot = (world.selected_block_rot + 1) % 4
+				show_toast("🔄 Rotation: %d°" % (world.selected_block_rot * 90))
+				return
 			world.build_mode = true
 			if k == "Erase":
 				world.build_tool = "remove"
@@ -634,8 +720,20 @@ func _populate_homes_and_craft_tab(tab: VBoxContainer) -> void:
 				world.selected_block_kind = k
 			show_toast("🧱 Selected: " + k)
 		)
-		build_row.add_child(kb)
-	tab.add_child(build_row)
+		build_row1.add_child(kb)
+	tab.add_child(build_row1)
+
+	var build_row2 := HBoxContainer.new()
+	for k2 in ["bed", "sofa", "dining_table", "chair", "crystal_lamp", "wardrobe", "rug"]:
+		var fb := _make_btn(k2.replace("_", " ").capitalize(), "#0f766e", "#ffffff", Vector2(106, 32))
+		fb.pressed.connect(func() -> void:
+			world.build_mode = true
+			world.build_tool = "place"
+			world.selected_block_kind = k2
+			show_toast("🛋️ Furniture: " + k2)
+		)
+		build_row2.add_child(fb)
+	tab.add_child(build_row2)
 
 	var hscroll := ScrollContainer.new()
 	hscroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -645,8 +743,15 @@ func _populate_homes_and_craft_tab(tab: VBoxContainer) -> void:
 	tab.add_child(hscroll)
 
 	var craft_row := HBoxContainer.new()
-	for rec in [["⚔️ Crystal Blade", "crystal_blade"], ["🪄 Starlight Wand", "starlight_wand"], ["✨ Starlight Elixir", "starlight_potion"], ["🔮 Rift Beacon", "rift_beacon"]]:
-		var rb := _make_btn("🔨 " + str(rec[0]), "#fbbf24", "#0f172a", Vector2(185, 38))
+	for rec in [
+		["⚔️ Blade", "crystal_blade"],
+		["🪄 Wand", "starlight_wand"],
+		["💖 Aegis", "craft_aegis_charm"],
+		["✨ Elixir", "starlight_potion"],
+		["🔮 Beacon", "rift_beacon"],
+		["🌟 Lamp", "craft_aurora_lamp"]
+	]:
+		var rb := _make_btn("🔨 " + str(rec[0]), "#fbbf24", "#0f172a", Vector2(126, 36))
 		var rid := str(rec[1])
 		rb.pressed.connect(func() -> void:
 			net.send_game_command({"type": "craft", "recipeId": rid})
@@ -659,7 +764,7 @@ func _populate_invites_and_admin_tab(tab: VBoxContainer) -> void:
 	var host_note := LineEdit.new()
 	host_note.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	host_note.placeholder_text = "Kid Host: Draft Friend Invite (e.g. For Bestie Sophia — awaits 1-click Parent Approval)"
-	var btn_draft := _make_btn("🎟️ Draft Host Invite", "#f472b6", "#0f172a", Vector2(185, 40))
+	var btn_draft := _make_btn("🎟️ Draft Host Invite", "#f472b6", "#0f172a", Vector2(185, 38))
 	btn_draft.pressed.connect(func() -> void:
 		net.request_json("/api/ella-world/invites/host-draft", HTTPClient.METHOD_POST, {
 			"token": net.auth_token,
@@ -681,31 +786,70 @@ func _populate_invites_and_admin_tab(tab: VBoxContainer) -> void:
 	admin_pw_edit.secret = true
 	admin_pw_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	admin_pw_edit.placeholder_text = "Parent Master Password for this Playground"
-	var btn_adm_login := _make_btn("🔐 Parent Unlock", "#38bdf8", "#0f172a", Vector2(155, 40))
+	var btn_adm_login := _make_btn("🔐 Parent Unlock", "#38bdf8", "#0f172a", Vector2(155, 38))
 	btn_adm_login.pressed.connect(_admin_unlock_and_load)
-	var btn_adm_new_inv := _make_btn("➕ Active STAR Invite", "#34d399", "#0f172a", Vector2(180, 40))
-	btn_adm_new_inv.pressed.connect(func() -> void:
-		if net.admin_token.is_empty():
-			admin_status_label.text = "Unlock Parent Admin first."
-			return
-		net.request_json("/api/ella-world/admin/invites", HTTPClient.METHOD_POST, {
-			"action": "create",
-			"labelNote": "Android Parent Invite",
-			"maxUses": 1,
-			"expiresInHours": 168,
-			"starterCoins": 120
-		}, net.admin_token, func(_st: int, d: Dictionary) -> void:
-			if d.get("invite") is Dictionary:
-				var c := str(d["invite"].get("code", ""))
-				DisplayServer.clipboard_set(c)
-				admin_status_label.text = "✅ Active Invite Created & Copied: " + c
-				_refresh_admin_invites()
-		)
-	)
+	var btn_adm_new_inv := _make_btn("➕ Create STAR Invite", "#34d399", "#0f172a", Vector2(185, 38))
+	btn_adm_new_inv.pressed.connect(_create_parent_admin_invite)
 	adm_hb.add_child(admin_pw_edit)
 	adm_hb.add_child(btn_adm_login)
 	adm_hb.add_child(btn_adm_new_inv)
 	tab.add_child(adm_hb)
+
+	var preset_hb := HBoxContainer.new()
+	preset_hb.add_theme_constant_override("separation", 6)
+	inv_note_edit = LineEdit.new()
+	inv_note_edit.placeholder_text = "Friend note"
+	inv_note_edit.custom_minimum_size = Vector2(130, 34)
+	preset_hb.add_child(inv_note_edit)
+
+	inv_chat_mode_opt = OptionButton.new()
+	inv_chat_mode_opt.add_item("💬 Full Chat", 0)
+	inv_chat_mode_opt.set_item_metadata(0, "normal")
+	inv_chat_mode_opt.add_item("⚡ Quick-Chat", 1)
+	inv_chat_mode_opt.set_item_metadata(1, "quick_only")
+	inv_chat_mode_opt.add_item("🔇 Muted Chat", 2)
+	inv_chat_mode_opt.set_item_metadata(2, "muted")
+	inv_chat_mode_opt.selected = 0
+	preset_hb.add_child(inv_chat_mode_opt)
+
+	inv_voice_muted_chk = CheckBox.new()
+	inv_voice_muted_chk.text = "Mute Mic"
+	inv_voice_muted_chk.button_pressed = false
+	preset_hb.add_child(inv_voice_muted_chk)
+
+	inv_can_build_chk = CheckBox.new()
+	inv_can_build_chk.text = "Build"
+	inv_can_build_chk.button_pressed = true
+	preset_hb.add_child(inv_can_build_chk)
+
+	inv_can_trade_chk = CheckBox.new()
+	inv_can_trade_chk.text = "Trade"
+	inv_can_trade_chk.button_pressed = true
+	preset_hb.add_child(inv_can_trade_chk)
+
+	inv_coins_spin = SpinBox.new()
+	inv_coins_spin.min_value = 0
+	inv_coins_spin.max_value = 5000
+	inv_coins_spin.step = 20
+	inv_coins_spin.value = 120
+	inv_coins_spin.prefix = "🪙"
+	preset_hb.add_child(inv_coins_spin)
+
+	inv_max_uses_spin = SpinBox.new()
+	inv_max_uses_spin.min_value = 1
+	inv_max_uses_spin.max_value = 50
+	inv_max_uses_spin.value = 1
+	inv_max_uses_spin.suffix = "use"
+	preset_hb.add_child(inv_max_uses_spin)
+
+	inv_expires_spin = SpinBox.new()
+	inv_expires_spin.min_value = 0
+	inv_expires_spin.max_value = 8760
+	inv_expires_spin.step = 24
+	inv_expires_spin.value = 168
+	inv_expires_spin.suffix = "h"
+	preset_hb.add_child(inv_expires_spin)
+	tab.add_child(preset_hb)
 
 	admin_status_label = Label.new()
 	admin_status_label.text = "Parents manage each Playground with a single Master Password."
@@ -718,6 +862,40 @@ func _populate_invites_and_admin_tab(tab: VBoxContainer) -> void:
 	admin_invites_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	inv_scroll.add_child(admin_invites_vbox)
 	tab.add_child(inv_scroll)
+
+func _create_parent_admin_invite() -> void:
+	if net.admin_token.is_empty():
+		admin_status_label.text = "Unlock Parent Admin first."
+		return
+	var note_txt := inv_note_edit.text.strip_edges() if inv_note_edit != null else ""
+	if note_txt.is_empty():
+		note_txt = "Android Parent Invite"
+	var chat_mode := "normal"
+	if inv_chat_mode_opt != null and inv_chat_mode_opt.selected >= 0:
+		chat_mode = str(inv_chat_mode_opt.get_item_metadata(inv_chat_mode_opt.selected))
+	var payload := {
+		"action": "create",
+		"labelNote": note_txt,
+		"maxUses": int(inv_max_uses_spin.value) if inv_max_uses_spin != null else 1,
+		"starterCoins": int(inv_coins_spin.value) if inv_coins_spin != null else 120,
+		"presetChatMode": chat_mode,
+		"presetVoiceMuted": inv_voice_muted_chk.button_pressed if inv_voice_muted_chk != null else false,
+		"presetCanBuild": inv_can_build_chk.button_pressed if inv_can_build_chk != null else true,
+		"presetCanTrade": inv_can_trade_chk.button_pressed if inv_can_trade_chk != null else true
+	}
+	if inv_expires_spin != null and int(inv_expires_spin.value) > 0:
+		payload["expiresInHours"] = int(inv_expires_spin.value)
+
+	net.request_json("/api/ella-world/admin/invites", HTTPClient.METHOD_POST, payload, net.admin_token, func(_st: int, d: Dictionary) -> void:
+		if d.get("invite") is Dictionary:
+			var c := str(d["invite"].get("code", ""))
+			if not DisplayServer.get_name().contains("headless"):
+				DisplayServer.clipboard_set(c)
+			admin_status_label.text = "✅ Active Invite Created & Copied: " + c
+			_refresh_admin_invites()
+		else:
+			admin_status_label.text = str(d.get("error", "Failed to create invite."))
+	)
 
 func _admin_unlock_and_load() -> void:
 	net.request_json("/api/ella-world/admin/login", HTTPClient.METHOD_POST, {
@@ -747,26 +925,46 @@ func _refresh_admin_invites() -> void:
 			var row := HBoxContainer.new()
 			var code := str(inv.get("code", ""))
 			var status := str(inv.get("status", ""))
+			var cmode := str(inv.get("presetChatMode", "normal"))
+			var can_b := "🧱" if bool(inv.get("presetCanBuild", true)) else "🚫🧱"
+			var can_t := "🤝" if bool(inv.get("presetCanTrade", true)) else "🚫🤝"
 			var lbl := Label.new()
 			lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			lbl.text = "%s [%s] — %s (%d/%d uses)" % [code, status, str(inv.get("labelNote", "")), int(inv.get("uses", 0)), int(inv.get("maxUses", 1))]
+			lbl.text = "%s [%s] — %s (%d/%d • %s %s %s)" % [
+				code,
+				status,
+				str(inv.get("labelNote", "")),
+				int(inv.get("uses", 0)),
+				int(inv.get("maxUses", 1)),
+				cmode,
+				can_b,
+				can_t
+			]
 			row.add_child(lbl)
-			var copy_b := _make_btn("Copy", "#334155", "#ffffff", Vector2(72, 34))
+			var copy_b := _make_btn("Copy", "#334155", "#ffffff", Vector2(70, 34))
 			copy_b.pressed.connect(func() -> void:
-				DisplayServer.clipboard_set(code)
+				if not DisplayServer.get_name().contains("headless"):
+					DisplayServer.clipboard_set(code)
 				show_toast("📋 Copied " + code)
 			)
 			row.add_child(copy_b)
 			if status == "pending_parent_approval":
-				var app_b := _make_btn("✅ Approve", "#34d399", "#0f172a", Vector2(106, 34))
+				var app_b := _make_btn("✅ Approve", "#34d399", "#0f172a", Vector2(102, 34))
 				app_b.pressed.connect(func() -> void:
 					net.request_json("/api/ella-world/admin/invites", HTTPClient.METHOD_POST, {"action": "approve", "code": code}, net.admin_token, func(_s: int, _r: Dictionary) -> void:
 						_refresh_admin_invites()
 					)
 				)
 				row.add_child(app_b)
+				var rej_b := _make_btn("✕ Reject", "#be123c", "#ffffff", Vector2(88, 34))
+				rej_b.pressed.connect(func() -> void:
+					net.request_json("/api/ella-world/admin/invites", HTTPClient.METHOD_POST, {"action": "reject", "code": code}, net.admin_token, func(_s: int, _r: Dictionary) -> void:
+						_refresh_admin_invites()
+					)
+				)
+				row.add_child(rej_b)
 			elif status == "active":
-				var rev_b := _make_btn("Revoke", "#be123c", "#ffffff", Vector2(84, 34))
+				var rev_b := _make_btn("Revoke", "#be123c", "#ffffff", Vector2(82, 34))
 				rev_b.pressed.connect(func() -> void:
 					net.request_json("/api/ella-world/admin/invites", HTTPClient.METHOD_POST, {"action": "revoke", "code": code}, net.admin_token, func(_s: int, _r: Dictionary) -> void:
 						_refresh_admin_invites()
@@ -790,6 +988,8 @@ func _close_menu() -> void:
 	touch_ctrl.modal_blocking = false
 
 func _rebuild_homes_list() -> void:
+	if homes_list_vbox == null:
+		return
 	for c in homes_list_vbox.get_children():
 		c.queue_free()
 	for p in world.home_plots_state:
@@ -798,12 +998,14 @@ func _rebuild_homes_list() -> void:
 		var row := HBoxContainer.new()
 		var pid := str(p.get("plotId", ""))
 		var owner_u := str(p.get("ownerUsername", "")) if p.get("ownerUsername") != null else ""
-		var title := str(p.get("customTitle", "")) if p.get("customTitle") != null else str(p.get("defaultName", pid))
+		var title := str(p.get("customTitle", "")) if p.get("customTitle") != null and not str(p.get("customTitle", "")).is_empty() else str(p.get("defaultName", pid))
+		var is_locked := bool(p.get("doorLocked", false))
 		var lbl := Label.new()
 		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		lbl.text = "%s — %s" % [title, "Unclaimed" if owner_u.is_empty() else ("Owned by " + str(p.get("ownerDisplayName", owner_u)))]
+		var lock_badge := " 🔒" if is_locked and not owner_u.is_empty() else ""
+		lbl.text = "%s%s — %s" % [title, lock_badge, "Unclaimed" if owner_u.is_empty() else ("Owned by " + str(p.get("ownerDisplayName", owner_u)))]
 		row.add_child(lbl)
-		var tp_b := _make_btn("🚶 Visit", "#0284c7", "#ffffff", Vector2(88, 34))
+		var tp_b := _make_btn("🚶 Visit", "#0284c7", "#ffffff", Vector2(84, 34))
 		var mbox: Array = p.get("mailboxPos", [0.0, 0.0, 0.0]) if p.get("mailboxPos") is Array else [0.0, 0.0, 0.0]
 		tp_b.pressed.connect(func() -> void:
 			if mbox.size() >= 3:
@@ -812,15 +1014,20 @@ func _rebuild_homes_list() -> void:
 		)
 		row.add_child(tp_b)
 		if owner_u.is_empty():
-			var cl_b := _make_btn("🏡 Claim", "#34d399", "#0f172a", Vector2(96, 34))
+			var cl_b := _make_btn("🏡 Claim", "#34d399", "#0f172a", Vector2(92, 34))
 			cl_b.pressed.connect(func() -> void:
 				net.send_game_command({"type": "homes", "action": "claim", "plotId": pid})
 			)
 			row.add_child(cl_b)
 		elif owner_u.to_lower() == net.username.to_lower():
-			var un_b := _make_btn("Release", "#be123c", "#ffffff", Vector2(88, 34))
+			var lk_b := _make_btn("🔓 Unlock" if is_locked else "🔒 Lock", "#475569", "#ffffff", Vector2(92, 34))
+			lk_b.pressed.connect(func() -> void:
+				net.send_game_command({"type": "homes", "action": "update_settings", "plotId": pid, "doorLocked": not is_locked})
+			)
+			row.add_child(lk_b)
+			var un_b := _make_btn("Release", "#be123c", "#ffffff", Vector2(84, 34))
 			un_b.pressed.connect(func() -> void:
-				net.send_game_command({"type": "homes", "action": "unclaim", "plotId": pid})
+				net.send_game_command({"type": "homes", "action": "release", "plotId": pid})
 			)
 			row.add_child(un_b)
 		homes_list_vbox.add_child(row)
@@ -831,8 +1038,19 @@ func _on_auth_succeeded(data: Dictionary) -> void:
 	touch_ctrl.enabled_gameplay = true
 	touch_ctrl.modal_blocking = false
 	touch_ctrl.reset_default_joy_origin()
-	playground_btn.text = "🌟 %s ▾" % str(data.get("worldName", net.current_world_name))
-	show_toast("✨ Welcome to %s!" % str(data.get("worldName", net.current_world_name)))
+	var wname := str(data.get("worldName", net.current_world_name))
+	playground_btn.text = "🌟 %s ▾" % wname
+	if net.admin_token.is_empty():
+		if admin_pw_edit != null:
+			admin_pw_edit.text = ""
+		if admin_invites_vbox != null:
+			for c in admin_invites_vbox.get_children():
+				c.queue_free()
+		if admin_status_label != null:
+			admin_status_label.text = "Parents manage %s with its Master Password." % wname
+	else:
+		_refresh_admin_invites()
+	show_toast("✨ Welcome to %s!" % wname)
 
 func _on_auth_failed(err_msg: String) -> void:
 	_show_auth_screen(err_msg)
@@ -849,11 +1067,13 @@ func _on_session_revoked(reason: String) -> void:
 func _on_welcome_snapshot(snap: Dictionary) -> void:
 	if snap.has("worldName"):
 		playground_btn.text = "🌟 %s ▾" % str(snap["worldName"])
-	if snap.get("chat") is Array and chat_log_rich != null:
+	var chat_arr: Variant = snap.get("chatHistory", snap.get("chat", []))
+	if chat_arr is Array and chat_log_rich != null:
 		chat_log_rich.clear()
-		for c in snap["chat"]:
+		for c in chat_arr:
 			if c is Dictionary:
 				_append_chat_entry(c)
+	_rebuild_homes_list()
 
 func _on_world_event(ev: Dictionary) -> void:
 	var t := str(ev.get("type", ""))
@@ -862,7 +1082,7 @@ func _on_world_event(ev: Dictionary) -> void:
 			_append_chat_entry(ev["chat"])
 		elif ev.get("entry") is Dictionary:
 			_append_chat_entry(ev["entry"])
-	elif t == "homes_sync":
+	elif t == "homes_sync" or t == "homes_ack":
 		_rebuild_homes_list()
 
 func _append_chat_entry(entry: Dictionary) -> void:

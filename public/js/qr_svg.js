@@ -5,15 +5,15 @@
  *   - Shareable `STAR-...` & `FAMILY-...` deep-link URLs (`https://robertscreations.com:4444/?invite=...`)
  */
 
-// Version 1..6 capacities for EC Level L (single Reed-Solomon block for V1..V6 EC-L!)
+// Version 1..6 capacities for EC Level L (ISO/IEC 18004 Table 9; V1..V5 = 1 block, V6 = 2 blocks)
 const QR_VERSIONS_L = [
   null,
-  { v: 1, size: 21, totalCodewords: 26, ecCodewords: 7, align: [] },
-  { v: 2, size: 25, totalCodewords: 44, ecCodewords: 10, align: [6, 18] },
-  { v: 3, size: 29, totalCodewords: 70, ecCodewords: 15, align: [6, 22] },
-  { v: 4, size: 33, totalCodewords: 100, ecCodewords: 20, align: [6, 26] },
-  { v: 5, size: 37, totalCodewords: 134, ecCodewords: 26, align: [6, 30] },
-  { v: 6, size: 41, totalCodewords: 172, ecCodewords: 36, align: [] } // V6 uses 2 blocks; cap at V5 (106 UTF-8 bytes)
+  { v: 1, size: 21, totalCodewords: 26, ecPerBlock: 7, blocks: 1, align: [] },
+  { v: 2, size: 25, totalCodewords: 44, ecPerBlock: 10, blocks: 1, align: [6, 18] },
+  { v: 3, size: 29, totalCodewords: 70, ecPerBlock: 15, blocks: 1, align: [6, 22] },
+  { v: 4, size: 33, totalCodewords: 100, ecPerBlock: 20, blocks: 1, align: [6, 26] },
+  { v: 5, size: 37, totalCodewords: 134, ecPerBlock: 26, blocks: 1, align: [6, 30] },
+  { v: 6, size: 41, totalCodewords: 172, ecPerBlock: 18, blocks: 2, align: [6, 34] }
 ];
 
 const GF_EXP = new Uint8Array(512);
@@ -104,9 +104,9 @@ export function encodeQrMatrix(text) {
     throw new Error('QR payload cannot be empty.');
   }
   let spec = null;
-  for (let v = 1; v <= 5; v++) {
+  for (let v = 1; v <= 6; v++) {
     const candidate = QR_VERSIONS_L[v];
-    const dataCap = candidate.totalCodewords - candidate.ecCodewords;
+    const dataCap = candidate.totalCodewords - candidate.ecPerBlock * candidate.blocks;
     // 4-bit mode + 8-bit length + 8*N + 4-bit terminator -> bytes + 2 <= dataCap
     if (bytes.length + 2 <= dataCap) {
       spec = candidate;
@@ -114,10 +114,11 @@ export function encodeQrMatrix(text) {
     }
   }
   if (!spec) {
-    throw new Error('QR payload exceeds Version 5 EC-L capacity (106 bytes).');
+    throw new Error('QR payload exceeds Version 6 EC-L capacity (134 bytes).');
   }
 
-  const dataCodewordsLen = spec.totalCodewords - spec.ecCodewords;
+  const totalEc = spec.ecPerBlock * spec.blocks;
+  const dataCodewordsLen = spec.totalCodewords - totalEc;
   const bits = [];
   const pushBits = (val, count) => {
     for (let i = count - 1; i >= 0; i--) {
@@ -149,10 +150,26 @@ export function encodeQrMatrix(text) {
     dataCodewords[i] = padBytes[p % 2];
   }
 
-  const ecCodewords = computeRsRemainder(dataCodewords, spec.ecCodewords);
   const allCodewords = new Uint8Array(spec.totalCodewords);
-  allCodewords.set(dataCodewords, 0);
-  allCodewords.set(ecCodewords, dataCodewordsLen);
+  const dataPerBlock = dataCodewordsLen / spec.blocks;
+  const dataBlocks = [];
+  const ecBlocks = [];
+  for (let b = 0; b < spec.blocks; b++) {
+    const slice = dataCodewords.subarray(b * dataPerBlock, (b + 1) * dataPerBlock);
+    dataBlocks.push(slice);
+    ecBlocks.push(computeRsRemainder(slice, spec.ecPerBlock));
+  }
+  let outIdx = 0;
+  for (let i = 0; i < dataPerBlock; i++) {
+    for (let b = 0; b < spec.blocks; b++) {
+      allCodewords[outIdx++] = dataBlocks[b][i];
+    }
+  }
+  for (let i = 0; i < spec.ecPerBlock; i++) {
+    for (let b = 0; b < spec.blocks; b++) {
+      allCodewords[outIdx++] = ecBlocks[b][i];
+    }
+  }
 
   const n = spec.size;
   const grid = Array.from({ length: n }, () => new Uint8Array(n));

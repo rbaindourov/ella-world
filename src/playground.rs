@@ -54,6 +54,8 @@ pub struct GlobalUserIdentity {
     pub avatar: AvatarAppearance,
     #[serde(default)]
     pub member_worlds: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_world: Option<String>,
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invited_by_code: Option<String>,
@@ -494,9 +496,17 @@ impl PlaygroundRegistry {
                         .entry(uname_lc.clone())
                         .and_modify(|gu| {
                             gu.member_worlds.insert(slug.clone());
-                            if slug == DEFAULT_WORLD_SLUG || gu.member_worlds.len() <= 1 {
+                            if u.is_host() && gu.home_world.is_none() {
+                                gu.home_world = Some(slug.clone());
+                            }
+                            let is_home = gu.home_world.as_deref() == Some(slug.as_str())
+                                || (gu.home_world.is_none() && gu.member_worlds.len() <= 1);
+                            if is_home {
                                 gu.password = u.password.clone();
                                 gu.display_name = disp.clone();
+                                if gu.home_world.is_none() {
+                                    gu.home_world = Some(slug.clone());
+                                }
                             }
                         })
                         .or_insert_with(|| {
@@ -508,6 +518,7 @@ impl PlaygroundRegistry {
                                 password: u.password.clone(),
                                 avatar: u.avatar.clone(),
                                 member_worlds: set,
+                                home_world: Some(slug.clone()),
                                 created_at_ms: now,
                                 invited_by_code: None,
                             }
@@ -530,15 +541,31 @@ impl PlaygroundRegistry {
         if uname_lc.is_empty() {
             return;
         }
+        let is_host_in_this_world = if let Some(w) = self.resolve_world(world_slug).await {
+            let cfg = w.users_cfg.read().await;
+            cfg.users
+                .iter()
+                .find(|u| u.username.eq_ignore_ascii_case(&uname_lc))
+                .map(|u| u.is_host())
+                .unwrap_or(false)
+        } else {
+            false
+        };
         {
             let mut reg = self.data.write().await;
             reg.users
                 .entry(uname_lc.clone())
                 .and_modify(|gu| {
                     gu.member_worlds.insert(world_slug.to_string());
-                    if gu.member_worlds.len() <= 1 || world_slug == DEFAULT_WORLD_SLUG {
+                    let is_home = gu.home_world.as_deref() == Some(world_slug)
+                        || is_host_in_this_world
+                        || (gu.home_world.is_none() && gu.member_worlds.len() <= 1);
+                    if is_home {
                         gu.password = password.to_string();
                         gu.display_name = display_name.to_string();
+                        if gu.home_world.is_none() || is_host_in_this_world {
+                            gu.home_world = Some(world_slug.to_string());
+                        }
                     }
                 })
                 .or_insert_with(|| {
@@ -550,6 +577,7 @@ impl PlaygroundRegistry {
                         password: password.to_string(),
                         avatar: avatar.clone(),
                         member_worlds: set,
+                        home_world: Some(world_slug.to_string()),
                         created_at_ms: now_ms(),
                         invited_by_code: None,
                     }
@@ -738,15 +766,16 @@ impl PlaygroundRegistry {
         }
 
         // Self-heal in case `world_users.json` was updated on disk or via admin endpoint
-        let (global_hit, member_worlds) = {
+        let (global_hit, home_world, member_worlds) = {
             let reg = self.data.read().await;
             if let Some(gu) = reg.users.get(&uname) {
                 (
                     Some((gu.password.clone(), gu.avatar.clone())),
+                    gu.home_world.clone(),
                     gu.member_worlds.clone(),
                 )
             } else {
-                (None, BTreeSet::new())
+                (None, None, BTreeSet::new())
             }
         };
 
@@ -756,6 +785,8 @@ impl PlaygroundRegistry {
             .map(str::to_lowercase)
         {
             req
+        } else if let Some(ref hw) = home_world.filter(|s| member_worlds.contains(s)) {
+            hw.clone()
         } else if member_worlds.contains(DEFAULT_WORLD_SLUG) || member_worlds.is_empty() {
             DEFAULT_WORLD_SLUG.to_string()
         } else {
@@ -781,12 +812,11 @@ impl PlaygroundRegistry {
                 .cloned()
         };
 
-        // Verify password against local world account OR global identity (when switching/logging into a secondary world)
-        let password_ok = match (&local_user, &global_hit) {
-            (Some(lu), _) if constant_time_str_eq(&lu.password, password) => true,
-            (Some(_), Some((gpw, _))) if constant_time_str_eq(gpw, password) => true,
-            _ => false,
-        };
+        // Verify password strictly against the target Playground's authoritative UserAccount
+        // so per-Playground password rotation or foreign Admin edits never cross-contaminate!
+        let password_ok = local_user
+            .as_ref()
+            .is_some_and(|lu| constant_time_str_eq(&lu.password, password));
 
         if !password_ok {
             // Check if the user actually belongs to another playground when no requested_slug was passed
@@ -1388,6 +1418,7 @@ impl PlaygroundRegistry {
                         password: clean_pw.clone(),
                         avatar: av.clone(),
                         member_worlds: set,
+                        home_world: Some(target_slug.clone()),
                         created_at_ms: now,
                         invited_by_code: Some(code.clone()),
                     },
@@ -1667,6 +1698,9 @@ impl PlaygroundRegistry {
                     existing_gu.avatar.apply_patch(patch);
                 }
                 existing_gu.member_worlds.insert(slug.clone());
+                if existing_gu.home_world.is_none() {
+                    existing_gu.home_world = Some(slug.clone());
+                }
                 existing_gu.avatar.clone()
             } else {
                 let mut av = AvatarAppearance::default();
@@ -1683,6 +1717,7 @@ impl PlaygroundRegistry {
                         password: host_pw.clone(),
                         avatar: av.clone(),
                         member_worlds: set,
+                        home_world: Some(slug.clone()),
                         created_at_ms: now,
                         invited_by_code: Some(code.clone()),
                     },

@@ -6700,5 +6700,102 @@ async fn invite_only_multi_playground_and_cross_world_avatar_isolation_end_to_en
     assert_eq!(and_meta["applicationId"], "com.robertscreations.ellaworld");
     assert_eq!(and_meta["aabConfigured"], true);
 
+    // 11. Cross-Playground Password Rollover & Foreign Admin Isolation:
+    // Updating guest `leo`'s password inside `"ella"` must NEVER hijack `"leo-world"` (where `leo` is Host)!
+    let (up_guest_st, _) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/users",
+        &ella_admin_tok,
+        Some(json!({
+            "username": "leo",
+            "displayName": "Leo Guest",
+            "password": "ella-guest-override"
+        })),
+    )
+    .await;
+    assert_eq!(up_guest_st, 200);
+
+    let (hijack_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({
+            "username": "leo",
+            "password": "ella-guest-override",
+            "worldSlug": "leo-world",
+            "clientId": "hijack_probe"
+        })),
+    )
+    .await;
+    assert_eq!(
+        hijack_st, 401,
+        "Foreign playground admin password edit must NEVER grant login to Leo's home playground!"
+    );
+
+    let (old_ella_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({
+            "username": "leo",
+            "password": "leo-star-pw",
+            "worldSlug": "ella",
+            "clientId": "stale_ella_probe"
+        })),
+    )
+    .await;
+    assert_eq!(
+        old_ella_st, 401,
+        "Rotated per-playground password must not be bypassed by global password!"
+    );
+
+    // Rotating `leo`'s password in his own `"leo-world"` immediately invalidates `"leo-star-pw"` there too!
+    let (up_home_st, _) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/users",
+        &leo_admin_tok,
+        Some(json!({
+            "username": "leo",
+            "displayName": "Leo",
+            "password": "leo-cosmic-rotated-pw",
+            "role": "host"
+        })),
+    )
+    .await;
+    assert_eq!(up_home_st, 200);
+
+    let (old_home_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({
+            "username": "leo",
+            "password": "leo-star-pw",
+            "worldSlug": "leo-world",
+            "clientId": "stale_home_probe"
+        })),
+    )
+    .await;
+    assert_eq!(
+        old_home_st, 401,
+        "Old password must be rejected after parent rotates host password in family playground!"
+    );
+
+    let (new_home_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({
+            "username": "leo",
+            "password": "leo-cosmic-rotated-pw",
+            "worldSlug": "leo-world",
+            "clientId": "valid_home_probe"
+        })),
+    )
+    .await;
+    assert_eq!(new_home_st, 200);
+
     running.http_task.abort();
 }

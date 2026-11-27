@@ -8945,6 +8945,19 @@ async function refreshMyPlaygrounds() {
   renderMyPlaygroundsGrid();
 }
 
+function resetPerPlaygroundAdminUi(nextWorldSlug) {
+  adminToken = '';
+  if (adminAuthForm) adminAuthForm.hidden = false;
+  if (adminDashboardContent) adminDashboardContent.hidden = true;
+  const adminPgSel = document.getElementById('admin-world-slug-select');
+  if (adminPgSel && nextWorldSlug) {
+    adminPgSel.value = nextWorldSlug;
+  }
+  activeTrade = null;
+  const tradeDlg = document.getElementById('trade-dialog');
+  if (tradeDlg?.open) tradeDlg.close();
+}
+
 async function switchPlaygroundSession(targetSlug) {
   if (!sessionToken || !targetSlug) return;
   try {
@@ -8966,7 +8979,7 @@ async function switchPlaygroundSession(targetSlug) {
       showToast(`⚠️ ${data.error || 'Could not switch Playground.'}`);
       return;
     }
-    adminToken = '';
+    resetPerPlaygroundAdminUi(data.worldSlug || targetSlug);
     sessionToken = data.token;
     selfId = data.selfId;
     selfUser = data.user;
@@ -9011,7 +9024,7 @@ joinWorldInviteForm?.addEventListener('submit', async (e) => {
       return;
     }
     if (input) input.value = '';
-    adminToken = '';
+    resetPerPlaygroundAdminUi(data.worldSlug);
     sessionToken = data.token;
     selfId = data.selfId;
     selfUser = data.user;
@@ -9120,18 +9133,21 @@ function renderAdminInvitesTable(invites, worldSlug) {
 
     const tdStatus = document.createElement('td');
     const pill = document.createElement('span');
+    const isExpired = typeof inv.expiresAtMs === 'number' && Date.now() > inv.expiresAtMs;
     const isPending = inv.status === 'pending_parent_approval';
-    const isActive = inv.status === 'active' && (inv.uses || 0) < (inv.maxUses || 1);
+    const isActive = inv.status === 'active' && !isExpired && (inv.uses || 0) < (inv.maxUses || 1);
     pill.className = `invite-status-pill ${isPending ? 'is-pending' : isActive ? 'is-active' : 'is-inactive'}`;
     pill.textContent = isPending
       ? '⏳ Pending Parent Approval'
       : isActive
         ? `✅ Active (${inv.uses || 0}/${inv.maxUses || 1})`
-        : `${inv.status} (${inv.uses || 0}/${inv.maxUses || 1})`;
+        : `${isExpired && inv.status === 'active' ? 'expired' : inv.status} (${inv.uses || 0}/${inv.maxUses || 1})`;
     tdStatus.appendChild(pill);
 
     const tdPresets = document.createElement('td');
-    tdPresets.textContent = `🪙 ${inv.starterCoins ?? 100} • 💬 ${inv.presetChatMode || 'normal'}${inv.presetVoiceMuted ? ' • 🔇 Mic Muted' : ''}`;
+    const buildBadge = inv.presetCanBuild === false ? ' • 🚫 No Build' : ' • 🧱 Build';
+    const tradeBadge = inv.presetCanTrade === false ? ' • 🚫 No Trade' : ' • 🤝 Trade';
+    tdPresets.textContent = `🪙 ${inv.starterCoins ?? 100} • 💬 ${inv.presetChatMode || 'normal'}${inv.presetVoiceMuted ? ' • 🔇 Mic Muted' : ''}${buildBadge}${tradeBadge}`;
 
     const tdActions = document.createElement('td');
     const btnGroup = document.createElement('div');
@@ -9222,14 +9238,23 @@ document.getElementById('admin-create-invite-form')?.addEventListener('submit', 
   const presetChatMode = document.getElementById('admin-invite-chat-mode')?.value || 'normal';
   const starterCoins = Number(document.getElementById('admin-invite-coins')?.value || 100);
   const maxUses = Number(document.getElementById('admin-invite-max-uses')?.value || 1);
+  const expiresRaw = Number(document.getElementById('admin-invite-expires-hours')?.value ?? 168);
+  const expiresInHours = Number.isFinite(expiresRaw) && expiresRaw > 0 ? Math.floor(expiresRaw) : undefined;
   const presetVoiceMuted = Boolean(document.getElementById('admin-invite-voice-muted')?.checked);
+  const canBuildEl = document.getElementById('admin-invite-can-build');
+  const canTradeEl = document.getElementById('admin-invite-can-trade');
+  const presetCanBuild = canBuildEl ? Boolean(canBuildEl.checked) : true;
+  const presetCanTrade = canTradeEl ? Boolean(canTradeEl.checked) : true;
   await postAdminInviteAction({
     action: 'create',
     labelNote: labelNote || undefined,
     presetChatMode,
     starterCoins,
     maxUses,
-    presetVoiceMuted
+    expiresInHours,
+    presetVoiceMuted,
+    presetCanBuild,
+    presetCanTrade
   });
   const noteEl = document.getElementById('admin-invite-note');
   if (noteEl) noteEl.value = '';

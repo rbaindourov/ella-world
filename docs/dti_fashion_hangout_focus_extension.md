@@ -47,5 +47,5 @@ While the Ella's World **Godot 4 Android App (`com.robertscreations.ellaworld`)*
 ## 4. Rollout Path as an In-App Mode Toggle
 
 Because `MainApp.gd` and `WorldController.gd` already share the full `AvatarRig` and `NetworkClient` stack:
-1. Add a **`👠 Runway Hangout Mode`** toggle pill on the Godot 4 Android home/top bar that hides combat/builder shortcuts, pins the **Glam Closet**, **Emote Wheel**, **Judge Stickers**, and **Runway Timer** into single-tap studio pills, andwarps the player directly to the Starlight Plaza Runway Lounge (`(-19.5, 0.3, 1.5)`).
+1. Add a **`👠 Runway Hangout Mode`** toggle pill on the Godot 4 Android home/top bar that hides combat/builder shortcuts, pins the **Glam Closet**, **Emote Wheel**, **Judge Stickers**, and **Runway Timer** into single-tap studio pills, and warps the player directly to the Starlight Plaza Runway Lounge (`(-19.5, 0.3, 1.5)`).
 2. Add `lookbook: Vec<SavedOutfitSlot>` onto `GlobalUserIdentity` in `src/playground.rs` so saved outfits roam across every Playground alongside the active `AvatarAppearance`.
