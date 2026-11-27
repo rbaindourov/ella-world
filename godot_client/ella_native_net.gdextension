@@ -1,0 +1,12 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = "4.3"
+reloadable = false
+
+[libraries]
+linux.debug.x86_64 = "res://bin/libella_native_net.linux.x86_64.so"
+linux.release.x86_64 = "res://bin/libella_native_net.linux.x86_64.so"
+android.debug.arm64 = "res://bin/libella_native_net.android.arm64.so"
+android.release.arm64 = "res://bin/libella_native_net.android.arm64.so"
+android.debug.x86_64 = "res://bin/libella_native_net.android.x86_64.so"
+android.release.x86_64 = "res://bin/libella_native_net.android.x86_64.so"

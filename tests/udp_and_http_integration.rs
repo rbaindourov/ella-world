@@ -6220,3 +6220,485 @@ async fn expansion_reviewer_edge_cases_shop_egg_mount_toggle_plot_boundary_and_a
 
     running.http_task.abort();
 }
+
+#[tokio::test]
+async fn invite_only_multi_playground_and_cross_world_avatar_isolation_end_to_end() {
+    let cfg = make_test_config("multi_playground_invites");
+    let running = start_all_servers(cfg).await.expect("start servers");
+
+    // 1. Uninvited open registration and bogus invite codes are strictly rejected (403)
+    let (reg_st, reg_err) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/register",
+        Some(json!({ "username": "stranger", "password": "pw1234" })),
+    )
+    .await;
+    assert_eq!(reg_st, 403, "uninvited /register must be 403: {reg_err}");
+
+    let (bad_inv_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/invites/redeem",
+        Some(json!({
+            "code": "STAR-FAKE-0000",
+            "username": "stranger",
+            "password": "pw1234"
+        })),
+    )
+    .await;
+    assert_eq!(bad_inv_st, 403, "invalid STAR invite must be 403");
+
+    // 2. Non-host friend (`maya`) cannot draft host invites (403), while host (`ella`) can!
+    let (_, maya_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "maya", "password": "changeme-puppy", "clientId": "m1" })),
+    )
+    .await;
+    let maya_tok = maya_login["token"].as_str().unwrap();
+    let (m_draft_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/invites/host-draft",
+        Some(json!({ "token": maya_tok, "labelNote": "Unauthorized draft" })),
+    )
+    .await;
+    assert_eq!(m_draft_st, 403);
+
+    let (_, ella_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/login",
+        Some(json!({ "username": "ella", "password": "changeme-starlight", "clientId": "e1" })),
+    )
+    .await;
+    assert_eq!(ella_login["worldSlug"], "ella");
+    let ella_tok = ella_login["token"].as_str().unwrap();
+
+    let (draft_st, draft_res) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/invites/host-draft",
+        Some(json!({ "token": ella_tok, "labelNote": "For Sophie from dance class" })),
+    )
+    .await;
+    assert_eq!(draft_st, 200);
+    let draft_code = draft_res["invite"]["code"].as_str().unwrap().to_string();
+    assert!(draft_code.starts_with("STAR-"));
+    assert_eq!(draft_res["invite"]["status"], "pending_parent_approval");
+
+    // 3. Pending host draft cannot be redeemed before Parent Admin 1-click approval!
+    let (insp_st, insp_pending) = http_json_request(
+        running.http_addr,
+        "GET",
+        &format!("/api/ella-world/invites/inspect?code={draft_code}"),
+        None,
+    )
+    .await;
+    assert_eq!(insp_st, 200);
+    assert_eq!(insp_pending["redeemable"], false);
+    assert_eq!(insp_pending["status"], "pending_parent_approval");
+
+    let (premature_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/invites/redeem",
+        Some(json!({
+            "code": draft_code,
+            "username": "sophie",
+            "displayName": "Sophie",
+            "password": "sophie-secret"
+        })),
+    )
+    .await;
+    assert_eq!(
+        premature_st, 403,
+        "PendingParentApproval invite must not be redeemable before parent approval"
+    );
+
+    // 4. Parent Admin of `"ella"` logs in, sees pending draft, and approves with safety presets
+    let (adm_st, adm_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/login",
+        Some(json!({ "password": "changeme-parent-admin" })),
+    )
+    .await;
+    assert_eq!(adm_st, 200);
+    assert_eq!(adm_login["worldSlug"], "ella");
+    let ella_admin_tok = adm_login["adminToken"].as_str().unwrap().to_string();
+    assert!(adm_login["dashboard"]["invites"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i["code"] == draft_code && i["status"] == "pending_parent_approval"));
+
+    let (app_st, app_res) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/invites",
+        &ella_admin_tok,
+        Some(json!({
+            "action": "approve",
+            "code": draft_code,
+            "presetChatMode": "quick_only",
+            "starterCoins": 175
+        })),
+    )
+    .await;
+    assert_eq!(app_st, 200);
+    assert_eq!(app_res["invite"]["status"], "active");
+
+    // 5. Sophie redeems approved STAR-... code -> receives starterCoins & quick_only preset!
+    let (red_st, sophie_sess) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/invites/redeem",
+        Some(json!({
+            "code": draft_code,
+            "username": "sophie",
+            "displayName": "Sophie",
+            "password": "sophie-secret",
+            "clientId": "s1"
+        })),
+    )
+    .await;
+    assert_eq!(red_st, 200);
+    assert_eq!(sophie_sess["worldSlug"], "ella");
+    assert_eq!(sophie_sess["economy"]["coins"], 175);
+    assert_eq!(sophie_sess["moderation"]["chatMode"], "quick_only");
+    let sophie_tok = sophie_sess["token"].as_str().unwrap().to_string();
+
+    // Single-use invite is now exhausted
+    let (reuse_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/invites/redeem",
+        Some(json!({
+            "code": draft_code,
+            "username": "sophie2",
+            "password": "sophie-secret"
+        })),
+    )
+    .await;
+    assert_eq!(reuse_st, 403, "Exhausted invite must reject second use");
+
+    // 6. Super-Admin issues a FAMILY-... Founder Invite -> Parent creates isolated `"leo-world"`
+    let (sa_st, sa_login) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/superadmin/login",
+        Some(json!({ "password": "changeme-platform-superadmin" })),
+    )
+    .await;
+    assert_eq!(sa_st, 200);
+    let super_tok = sa_login["superadminToken"].as_str().unwrap().to_string();
+
+    let (fam_inv_st, fam_inv_res) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/superadmin/invites",
+        &super_tok,
+        Some(json!({
+            "action": "create",
+            "labelNote": "Leo Family Playground",
+            "maxUses": 1
+        })),
+    )
+    .await;
+    assert_eq!(fam_inv_st, 200);
+    let family_code = fam_inv_res["invite"]["code"].as_str().unwrap().to_string();
+    assert!(family_code.starts_with("FAMILY-"));
+
+    let (fam_red_st, leo_family_sess) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/invites/redeem-family",
+        Some(json!({
+            "code": family_code,
+            "worldName": "Leo's Cosmic World",
+            "worldSlug": "leo-world",
+            "adminPassword": "leo-parent-secret-99",
+            "hostUsername": "leo",
+            "hostDisplayName": "Leo",
+            "hostPassword": "leo-star-pw",
+            "clientId": "l1"
+        })),
+    )
+    .await;
+    assert_eq!(fam_red_st, 200, "redeem-family failed: {leo_family_sess}");
+    assert_eq!(leo_family_sess["worldSlug"], "leo-world");
+    assert_eq!(leo_family_sess["user"]["role"], "host");
+    assert_eq!(leo_family_sess["economy"]["coins"], 250);
+    let leo_world_tok = leo_family_sess["token"].as_str().unwrap().to_string();
+    let leo_admin_tok = leo_family_sess["adminToken"].as_str().unwrap().to_string();
+
+    // Verify per-playground Parent Admin isolation: Ella's admin password cannot unlock leo-world!
+    let (cross_adm_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/login",
+        Some(json!({ "worldSlug": "leo-world", "password": "changeme-parent-admin" })),
+    )
+    .await;
+    assert_eq!(cross_adm_st, 401);
+
+    let (leo_adm_st, leo_adm_state) = http_json_auth_request(
+        running.http_addr,
+        "GET",
+        "/api/ella-world/admin/state",
+        &leo_admin_tok,
+        None,
+    )
+    .await;
+    assert_eq!(leo_adm_st, 200);
+    assert_eq!(leo_adm_state["worldSlug"], "leo-world");
+    assert_eq!(
+        leo_adm_state["dashboard"]["worldName"],
+        "Leo's Cosmic World"
+    );
+
+    // 7. Ella's Parent Admin creates an active STAR-... invite so Leo can ALSO visit `"ella"`!
+    let (star2_st, star2_res) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/invites",
+        &ella_admin_tok,
+        Some(json!({
+            "action": "create",
+            "labelNote": "Invite Leo to Ella's World",
+            "starterCoins": 90
+        })),
+    )
+    .await;
+    assert_eq!(star2_st, 200);
+    let star2_code = star2_res["invite"]["code"].as_str().unwrap().to_string();
+
+    // Before redeeming STAR code, Leo cannot switch to `"ella"` (403)
+    let (unauth_sw_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/playgrounds/switch",
+        Some(json!({ "token": leo_world_tok, "worldSlug": "ella", "clientId": "l1" })),
+    )
+    .await;
+    assert_eq!(unauth_sw_st, 403);
+
+    // Leo redeems STAR-... via `/invites/join-world` -> enters `"ella"` with 90 coins!
+    let (join_st, leo_in_ella) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/invites/join-world",
+        Some(json!({ "token": leo_world_tok, "code": star2_code, "clientId": "l1" })),
+    )
+    .await;
+    assert_eq!(join_st, 200);
+    assert_eq!(leo_in_ella["worldSlug"], "ella");
+    assert_eq!(leo_in_ella["economy"]["coins"], 90);
+    assert_eq!(leo_in_ella["myPlaygrounds"].as_array().unwrap().len(), 2);
+    let leo_ella_tok = leo_in_ella["token"].as_str().unwrap().to_string();
+
+    // 8. Leo customizes his 3D Avatar & places a block in `"ella"`, then switches back to `"leo-world"`
+    let (av_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/avatar",
+        Some(json!({
+            "token": leo_ella_tok,
+            "avatar": {
+                "bodyType": "male",
+                "hairStyle": "maverick_quiff",
+                "topStyle": "tech_jacket",
+                "topColor": "#38bdf8",
+                "bottomStyle": "tech_pants",
+                "shoeStyle": "flight_boots"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(av_st, 200);
+
+    let (blk_st, _) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/block",
+        Some(json!({
+            "token": leo_ella_tok,
+            "action": "place",
+            "x": 11,
+            "y": 4,
+            "z": -11,
+            "color": "#fb7185"
+        })),
+    )
+    .await;
+    assert_eq!(blk_st, 200);
+
+    let (sw_back_st, leo_back_home) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/playgrounds/switch",
+        Some(json!({ "token": leo_ella_tok, "worldSlug": "leo-world", "clientId": "l1" })),
+    )
+    .await;
+    assert_eq!(sw_back_st, 200);
+    assert_eq!(leo_back_home["worldSlug"], "leo-world");
+    // Avatar look carried across playgrounds!
+    assert_eq!(
+        leo_back_home["user"]["avatar"]["hairStyle"],
+        "maverick_quiff"
+    );
+    assert_eq!(leo_back_home["user"]["avatar"]["topStyle"], "tech_jacket");
+    assert_eq!(leo_back_home["user"]["avatar"]["topColor"], "#38bdf8");
+    // Coins and placed blocks remained 100% isolated per Playground!
+    assert_eq!(leo_back_home["economy"]["coins"], 250);
+    let leo_blocks = leo_back_home["blocks"].as_array().unwrap();
+    assert!(
+        !leo_blocks
+            .iter()
+            .any(|b| b["x"] == 11 && b["y"] == 4 && b["z"] == -11),
+        "Blocks placed in 'ella' must NOT leak into 'leo-world'"
+    );
+    let leo_home_tok = leo_back_home["token"].as_str().unwrap().to_string();
+
+    // 9. Native Raw UDP (`:44445/udp` EWLD v1) multiplexes both Playgrounds on ONE port with zero leakage!
+    // Create a second friend in `leo-world` so we verify positive intra-world UDP state AND zero cross-world leakage
+    let (_, leo_friend_inv) = http_json_auth_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/admin/invites",
+        &leo_admin_tok,
+        Some(json!({ "action": "create", "labelNote": "Max" })),
+    )
+    .await;
+    let (_, max_sess) = http_json_request(
+        running.http_addr,
+        "POST",
+        "/api/ella-world/invites/redeem",
+        Some(json!({
+            "code": leo_friend_inv["invite"]["code"],
+            "username": "max",
+            "displayName": "Max",
+            "password": "max-secret",
+            "clientId": "mx1"
+        })),
+    )
+    .await;
+    let max_leo_tok = max_sess["token"].as_str().unwrap().to_string();
+
+    let sock_sophie_ella = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let sock_leo_world = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let sock_max_leo_world = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    sock_sophie_ella
+        .connect(running.native_udp_addr)
+        .await
+        .unwrap();
+    sock_leo_world
+        .connect(running.native_udp_addr)
+        .await
+        .unwrap();
+    sock_max_leo_world
+        .connect(running.native_udp_addr)
+        .await
+        .unwrap();
+
+    sock_sophie_ella
+        .send(&encode_native_hello(&sophie_tok))
+        .await
+        .unwrap();
+    sock_leo_world
+        .send(&encode_native_hello(&leo_home_tok))
+        .await
+        .unwrap();
+    sock_max_leo_world
+        .send(&encode_native_hello(&max_leo_tok))
+        .await
+        .unwrap();
+
+    let mut ubuf = [0u8; 2048];
+    for s in [&sock_sophie_ella, &sock_leo_world, &sock_max_leo_world] {
+        let n = tokio::time::timeout(Duration::from_secs(2), s.recv(&mut ubuf))
+            .await
+            .unwrap()
+            .unwrap();
+        let (op, _) = unwrap_native_packet(&ubuf[..n]).unwrap();
+        assert_eq!(op, OP_WELCOME);
+    }
+
+    let leo_state_pkt = wrap_native_packet(
+        OP_C2S_STATE,
+        &encode_c2s_state(&DecodedC2SState {
+            seq: 7,
+            client_time_ms: 500,
+            x: 24.0,
+            y: 1.5,
+            z: -18.0,
+            ry: 0.75,
+            anim: "run".into(),
+            emote: None,
+            muted: false,
+            speaking: false,
+            zone: 0,
+        }),
+    );
+    sock_leo_world.send(&leo_state_pkt).await.unwrap();
+
+    // Max (in `leo-world`) MUST receive Leo's 20 Hz state, while Sophie (in `ella`) MUST NOT!
+    let mut max_saw_leo = false;
+    for _ in 0..12 {
+        let Ok(Ok(n)) = tokio::time::timeout(
+            Duration::from_millis(200),
+            sock_max_leo_world.recv(&mut ubuf),
+        )
+        .await
+        else {
+            continue;
+        };
+        if let Some((OP_S2C_WORLD_STATE, body)) = unwrap_native_packet(&ubuf[..n]) {
+            if let Some(decoded) = decode_s2c_world_state(body) {
+                if decoded.players.iter().any(|p| p.id.contains("peer_leo")) {
+                    max_saw_leo = true;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(
+        max_saw_leo,
+        "Peer in same family playground ('leo-world') must receive Leo's EWLD UDP state"
+    );
+
+    for _ in 0..6 {
+        if let Ok(Ok(n)) =
+            tokio::time::timeout(Duration::from_millis(120), sock_sophie_ella.recv(&mut ubuf)).await
+        {
+            if let Some((OP_S2C_WORLD_STATE, body)) = unwrap_native_packet(&ubuf[..n]) {
+                if let Some(decoded) = decode_s2c_world_state(body) {
+                    assert!(
+                        !decoded
+                            .players
+                            .iter()
+                            .any(|p| p.id.contains("peer_leo") || p.id.contains("peer_max")),
+                        "EWLD UDP snapshot in 'ella' must NEVER leak players from 'leo-world'!"
+                    );
+                }
+            }
+        }
+    }
+
+    // 10. Android release metadata endpoint contract
+    let (and_st, and_meta) = http_json_request(
+        running.http_addr,
+        "GET",
+        "/api/ella-world/android/release",
+        None,
+    )
+    .await;
+    assert_eq!(and_st, 200);
+    assert_eq!(and_meta["applicationId"], "com.robertscreations.ellaworld");
+    assert_eq!(and_meta["aabConfigured"], true);
+
+    running.http_task.abort();
+}

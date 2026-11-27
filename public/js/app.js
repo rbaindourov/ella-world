@@ -1,5 +1,6 @@
 import { VoiceChatManager } from '/ella-world/js/voice.js';
 import { WorldSpineClient } from '/ella-world/js/ws_spine.js';
+import { renderQrSvgString } from '/ella-world/js/qr_svg.js';
 import {
   collectMachineTelemetry,
   loadStoredMachineSeal,
@@ -238,6 +239,10 @@ if (!clientId) {
   }
 }
 let adminToken = '';
+let superadminToken = '';
+let currentWorldSlug = 'ella';
+let myPlaygroundsState = [];
+let publicPlaygroundsState = [];
 let selfId = null;
 let selfUser = null;
 let draftAvatar = null;
@@ -1209,6 +1214,10 @@ async function loadPublicMeta() {
     });
     const data = await res.json();
     applyWorldMeta(data);
+    if (Array.isArray(data.playgrounds)) {
+      publicPlaygroundsState = data.playgrounds;
+      syncPlaygroundDropdowns(data.playgrounds);
+    }
     if (data.runway) applyRunwaySummary(data.runway);
     if (data.worldLocked) {
       loginOnlineCount.textContent = '⏸️ World paused by parent';
@@ -1353,6 +1362,10 @@ friendLoginForm.addEventListener('submit', async (e) => {
 
   const username = loginUsernameInput.value.trim();
   const password = loginPasswordInput.value;
+  const loginPgSelect = document.getElementById('login-playground-select');
+  const worldSlug = loginPgSelect && !loginPgSelect.closest('[hidden]') && loginPgSelect.value
+    ? loginPgSelect.value
+    : undefined;
 
   try {
     const machineFields = await buildMachineAuthFields();
@@ -1360,7 +1373,7 @@ friendLoginForm.addEventListener('submit', async (e) => {
       method: 'POST',
       credentials: 'same-origin',
       headers: JSON_HEADERS,
-      body: JSON.stringify({ username, password, clientId, ...machineFields })
+      body: JSON.stringify({ username, password, worldSlug, clientId, ...machineFields })
     });
     const data = await res.json();
     if (data && data.machineSeal) {
@@ -1384,12 +1397,30 @@ friendLoginForm.addEventListener('submit', async (e) => {
 });
 
 async function enterGameWorld(loginData) {
+  // Cleanly tear down any prior Playground's WebSocket, WebRTC, and 3D remote avatars on world switch
+  spineClient.disconnect();
+  voiceManager.disconnectSession();
+  for (const prevPeerId of playersMap.keys()) {
+    if (prevPeerId !== loginData.selfId) {
+      world3d.removeRemotePlayer(prevPeerId);
+    }
+  }
+
   loginScreen.hidden = true;
   gameHud.hidden = false;
   setHudFullscreenMode(true);
   sessionEnteredWallMs = Date.now();
   activeObbyRun = null;
   world3d.setActiveObbyRun(null);
+
+  currentWorldSlug = loginData.worldSlug || loginData.worldMeta?.worldSlug || 'ella';
+  if (Array.isArray(loginData.myPlaygrounds)) {
+    myPlaygroundsState = loginData.myPlaygrounds;
+  }
+  const hostInviteBtn = document.getElementById('open-host-invite-btn');
+  if (hostInviteBtn) {
+    hostInviteBtn.hidden = String(selfUser?.role || '').toLowerCase() !== 'host';
+  }
 
   if (typeof loginData.serverTimeMs === 'number') {
     world3d.setServerClockOffset(loginData.serverTimeMs - Date.now());
@@ -5833,11 +5864,18 @@ adminAuthForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   adminAuthError.hidden = true;
   const password = document.getElementById('admin-master-password').value;
+  const adminPgSel = document.getElementById('admin-world-slug-select');
+  const selectedSlug =
+    adminPgSel && !adminPgSel.closest('[hidden]') && adminPgSel.value
+      ? adminPgSel.value
+      : sessionToken
+        ? currentWorldSlug
+        : undefined;
 
   const res = await fetch('/api/ella-world/admin/login', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ password })
+    body: JSON.stringify({ password, worldSlug: selectedSlug })
   });
   const data = await res.json();
   if (!res.ok) {
@@ -5911,6 +5949,7 @@ async function adminModerateUser(payload, successMsg) {
 
 function renderAdminDashboard(dashboard) {
   if (!dashboard) return;
+  renderAdminInvitesTable(dashboard.invites || [], dashboard.worldSlug || 'ella');
   document.getElementById('admin-user-count').textContent = String((dashboard.users || []).length);
   document.getElementById('admin-block-count').textContent = String(dashboard.blockCount || 0);
   document.getElementById('admin-world-name').value = dashboard.worldName || '';
@@ -8501,3 +8540,834 @@ if (doorbellUnlockBtn) {
     }
   });
 }
+
+// ============================================================================
+// Invite-Only Onboarding, Multi-Playground Switcher, Host Drafts, Parent
+// Approvals, Platform Super-Admin & Scannable Android APK / Invite QR Cards
+// ============================================================================
+
+function syncPlaygroundDropdowns(playgrounds) {
+  const list = Array.isArray(playgrounds) ? playgrounds : [];
+  const showSelector = list.length > 1;
+  for (const [groupId, selectId] of [
+    ['login-playground-group', 'login-playground-select'],
+    ['admin-world-slug-group', 'admin-world-slug-select']
+  ]) {
+    const groupEl = document.getElementById(groupId);
+    const selectEl = document.getElementById(selectId);
+    if (!groupEl || !selectEl) continue;
+    const prevVal = selectEl.value;
+    selectEl.replaceChildren();
+    if (groupId === 'login-playground-group') {
+      const autoOpt = document.createElement('option');
+      autoOpt.value = '';
+      autoOpt.textContent = '✨ Auto-select My Playground';
+      selectEl.appendChild(autoOpt);
+    }
+    for (const pg of list) {
+      const opt = document.createElement('option');
+      opt.value = pg.slug;
+      opt.textContent = `${pg.worldName || pg.slug} (${pg.onlineCount || 0} online)`;
+      if (pg.slug === prevVal) opt.selected = true;
+      selectEl.appendChild(opt);
+    }
+    groupEl.hidden = !showSelector;
+  }
+}
+
+// 1. Login Screen Accessible Tablist (modern-web-guidance: tabs + beforematch)
+const loginTablistEl = document.getElementById('login-tablist');
+const loginTabMap = {
+  signin: {
+    tab: document.getElementById('login-tab-signin'),
+    panel: document.getElementById('login-panel-signin')
+  },
+  invite: {
+    tab: document.getElementById('login-tab-invite'),
+    panel: document.getElementById('login-panel-invite')
+  },
+  android: {
+    tab: document.getElementById('login-tab-android'),
+    panel: document.getElementById('login-panel-android')
+  }
+};
+
+function selectLoginTab(modeKey, moveFocus = false) {
+  const keys = Object.keys(loginTabMap);
+  if (!keys.includes(modeKey)) return;
+  for (const k of keys) {
+    const entry = loginTabMap[k];
+    if (!entry.tab || !entry.panel) continue;
+    const active = k === modeKey;
+    entry.tab.setAttribute('aria-selected', String(active));
+    entry.tab.tabIndex = active ? 0 : -1;
+    entry.tab.toggleAttribute('focusgroupstart', active);
+    if (active) {
+      entry.panel.removeAttribute('hidden');
+      entry.tab.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+      if (moveFocus) entry.tab.focus();
+    } else {
+      entry.panel.setAttribute('hidden', 'until-found');
+    }
+  }
+  if (modeKey === 'android') {
+    refreshAndroidReleaseCard();
+  }
+}
+
+if (loginTablistEl) {
+  loginTablistEl.addEventListener('click', (e) => {
+    const tabBtn = e.target instanceof Element ? e.target.closest('[data-login-tab]') : null;
+    if (tabBtn) {
+      selectLoginTab(tabBtn.getAttribute('data-login-tab'), false);
+    }
+  });
+  loginTablistEl.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    const keys = Object.keys(loginTabMap);
+    const curIdx = keys.findIndex(
+      (k) => loginTabMap[k]?.tab?.getAttribute('aria-selected') === 'true'
+    );
+    if (curIdx < 0) return;
+    e.preventDefault();
+    const nextIdx =
+      e.key === 'ArrowRight'
+        ? (curIdx + 1) % keys.length
+        : (curIdx - 1 + keys.length) % keys.length;
+    selectLoginTab(keys[nextIdx], true);
+  });
+  for (const [k, entry] of Object.entries(loginTabMap)) {
+    entry.panel?.addEventListener('beforematch', () => selectLoginTab(k, false));
+  }
+}
+
+// 2. Invite Code Inspection (`STAR-...` vs `FAMILY-...`) & Deep-Link `?invite=...`
+const inviteCodeInput = document.getElementById('invite-code-input');
+const inviteInspectBanner = document.getElementById('invite-inspect-banner');
+const inviteFriendForm = document.getElementById('invite-friend-form');
+const inviteFamilyForm = document.getElementById('invite-family-form');
+
+function toggleInviteSubformByPrefix(rawCode) {
+  const norm = String(rawCode || '').trim().toUpperCase();
+  const isFamily = norm.startsWith('FAMILY');
+  if (inviteFriendForm) inviteFriendForm.hidden = isFamily;
+  if (inviteFamilyForm) inviteFamilyForm.hidden = !isFamily;
+}
+
+async function inspectInviteCodeUi(rawCode) {
+  const code = String(rawCode || '').trim();
+  toggleInviteSubformByPrefix(code);
+  if (!inviteInspectBanner) return;
+  if (!code) {
+    inviteInspectBanner.hidden = true;
+    return;
+  }
+  try {
+    const res = await fetch(`/api/ella-world/invites/inspect?code=${encodeURIComponent(code)}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      inviteInspectBanner.textContent = `⚠️ ${data.error || 'Invite code not found.'}`;
+      inviteInspectBanner.hidden = false;
+      return;
+    }
+    toggleInviteSubformByPrefix(data.code);
+    if (inviteCodeInput && data.code) inviteCodeInput.value = data.code;
+    if (data.inviteType === 'family_founder') {
+      inviteInspectBanner.textContent = data.redeemable
+        ? `🏰 Valid Parent Founder Invite (${data.remainingUses} use left)! Create your family's Playground below.`
+        : `⏳ Status: ${data.status} (cannot be redeemed right now).`;
+    } else {
+      inviteInspectBanner.textContent = data.redeemable
+        ? `✨ Invited to ${data.worldName || data.worldSlug}! Starter bonus: 🪙 ${data.starterCoins ?? 100} coins.`
+        : `⏳ Invite status: ${data.status === 'pending_parent_approval' ? 'Waiting for Parent 1-click approval!' : data.status}`;
+    }
+    inviteInspectBanner.hidden = false;
+  } catch {
+    // ignore transient network check error
+  }
+}
+
+inviteCodeInput?.addEventListener('input', () => {
+  toggleInviteSubformByPrefix(inviteCodeInput.value);
+});
+inviteCodeInput?.addEventListener('blur', () => {
+  if (inviteCodeInput.value.trim().length >= 6) {
+    inspectInviteCodeUi(inviteCodeInput.value);
+  }
+});
+document.getElementById('inspect-invite-btn')?.addEventListener('click', () => {
+  inspectInviteCodeUi(inviteCodeInput?.value || '');
+});
+
+// Auto-fill `?invite=STAR-...` or `?invite=FAMILY-...` URL deep link on page load
+(() => {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const urlInvite = params.get('invite');
+    if (urlInvite && inviteCodeInput) {
+      inviteCodeInput.value = urlInvite.trim().toUpperCase();
+      selectLoginTab('invite', false);
+      inspectInviteCodeUi(inviteCodeInput.value);
+    }
+  } catch {
+    // ignore malformed URL
+  }
+})();
+
+// Redeem STAR-... Friend Invite
+inviteFriendForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById('invite-friend-error');
+  const submitBtn = document.getElementById('invite-friend-submit-btn');
+  if (errEl) errEl.hidden = true;
+  const code = (inviteCodeInput?.value || '').trim();
+  const username = (document.getElementById('invite-friend-username')?.value || '').trim();
+  const displayName = (document.getElementById('invite-friend-display')?.value || '').trim();
+  const password = document.getElementById('invite-friend-password')?.value || '';
+  if (!code) {
+    if (errEl) {
+      errEl.textContent = 'Please enter your STAR-... Friend Invite code above.';
+      errEl.hidden = false;
+    }
+    inviteCodeInput?.focus();
+    return;
+  }
+  if (submitBtn) submitBtn.disabled = true;
+  try {
+    const machineFields = await buildMachineAuthFields();
+    const res = await fetch('/api/ella-world/invites/redeem', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        code,
+        username,
+        displayName,
+        password,
+        clientId,
+        ...machineFields
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data?.machineSeal) await persistMachineSeal(data.machineSeal);
+    if (!res.ok) {
+      if (errEl) {
+        errEl.textContent = data.error || 'Could not redeem invite.';
+        errEl.hidden = false;
+      }
+      return;
+    }
+    sessionToken = data.token;
+    selfId = data.selfId;
+    selfUser = data.user;
+    localStorage.setItem('ella_world_token', sessionToken);
+    await enterGameWorld(data);
+    showToast(`🎉 Welcome to ${data.worldMeta?.worldName || "Ella's World"}!`, 4200);
+  } catch {
+    if (errEl) {
+      errEl.textContent = 'Could not reach server. Please try again.';
+      errEl.hidden = false;
+    }
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+});
+
+// Redeem FAMILY-... Parent Founder Invite
+inviteFamilyForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById('invite-family-error');
+  const submitBtn = document.getElementById('invite-family-submit-btn');
+  if (errEl) errEl.hidden = true;
+  const code = (inviteCodeInput?.value || '').trim();
+  const worldName = (document.getElementById('invite-family-world-name')?.value || '').trim();
+  const worldSlug = (document.getElementById('invite-family-slug')?.value || '').trim();
+  const adminPassword = document.getElementById('invite-family-admin-pw')?.value || '';
+  const hostUsername = (document.getElementById('invite-family-host-user')?.value || '').trim();
+  const hostDisplayName = (document.getElementById('invite-family-host-display')?.value || '').trim();
+  const hostPassword = document.getElementById('invite-family-host-pw')?.value || '';
+  if (!code) {
+    if (errEl) {
+      errEl.textContent = 'Please enter your FAMILY-... Founder Invite code above.';
+      errEl.hidden = false;
+    }
+    inviteCodeInput?.focus();
+    return;
+  }
+  if (submitBtn) submitBtn.disabled = true;
+  try {
+    const machineFields = await buildMachineAuthFields();
+    const res = await fetch('/api/ella-world/invites/redeem-family', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        code,
+        worldName,
+        worldSlug: worldSlug || undefined,
+        adminPassword,
+        hostUsername,
+        hostDisplayName,
+        hostPassword,
+        clientId,
+        ...machineFields
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data?.machineSeal) await persistMachineSeal(data.machineSeal);
+    if (!res.ok) {
+      if (errEl) {
+        errEl.textContent = data.error || 'Could not create Family Playground.';
+        errEl.hidden = false;
+      }
+      return;
+    }
+    if (data.adminToken) adminToken = data.adminToken;
+    sessionToken = data.token;
+    selfId = data.selfId;
+    selfUser = data.user;
+    localStorage.setItem('ella_world_token', sessionToken);
+    await enterGameWorld(data);
+    showToast(`🏰 Created ${worldName}! You are signed in as Host @${selfUser.username}.`, 5000);
+  } catch {
+    if (errEl) {
+      errEl.textContent = 'Could not reach server. Please try again.';
+      errEl.hidden = false;
+    }
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+});
+
+// 3. Scannable Android APK QR Card + Release Metadata
+function canonicalOriginUrl(path) {
+  const origin = window.location?.origin || 'https://robertscreations.com:4444';
+  return `${origin}${path}`;
+}
+
+async function refreshAndroidReleaseCard() {
+  const qrBox = document.getElementById('login-apk-qr-box');
+  const metaPill = document.getElementById('android-release-meta');
+  const dlLink = document.getElementById('download-apk-btn');
+  const apkUrl = canonicalOriginUrl('/download/ella-world.apk');
+  if (qrBox && !qrBox.hasChildNodes()) {
+    try {
+      qrBox.innerHTML = renderQrSvgString(apkUrl, "Ella's World Android APK QR Code");
+    } catch {
+      qrBox.textContent = 'QR';
+    }
+  }
+  try {
+    const res = await fetch('/api/ella-world/android/release');
+    const data = await res.json().catch(() => ({}));
+    if (metaPill) {
+      if (data.available && typeof data.apkBytes === 'number') {
+        const mb = (data.apkBytes / (1024 * 1024)).toFixed(1);
+        const shaShort = String(data.sha256 || '').slice(0, 10);
+        metaPill.textContent = `✅ v${data.versionName || '0.4.0'} Signed APK (${mb} MB • SHA-256 ${shaShort}…)`;
+      } else {
+        metaPill.textContent = `📦 Package ID: ${data.applicationId || 'com.robertscreations.ellaworld'} (Android 8.0+)`;
+      }
+    }
+    if (dlLink && data.downloadUrl) {
+      dlLink.href = data.downloadUrl;
+    }
+  } catch {
+    if (metaPill) metaPill.textContent = '📱 Scan QR on Android phone or tablet to install!';
+  }
+}
+refreshAndroidReleaseCard();
+
+// 4. "My Playgrounds" Switcher & In-Game Friend Invite Unlock
+const playgroundsDialog = document.getElementById('playgrounds-dialog');
+const myPlaygroundsGrid = document.getElementById('my-playgrounds-grid');
+const joinWorldInviteForm = document.getElementById('join-world-invite-form');
+const joinWorldFeedback = document.getElementById('join-world-feedback');
+
+function renderMyPlaygroundsGrid() {
+  if (!myPlaygroundsGrid) return;
+  myPlaygroundsGrid.replaceChildren();
+  const list =
+    myPlaygroundsState.length > 0
+      ? myPlaygroundsState
+      : [
+          {
+            slug: currentWorldSlug,
+            worldName: hudWorldTitle?.textContent || "Ella's Starlight Glam Plaza",
+            role: selfUser?.role || 'friend',
+            coins: playerEconomy?.coins || 0,
+            onlineCount: playersMap.size
+          }
+        ];
+  for (const pg of list) {
+    const isCurrent = pg.slug === currentWorldSlug;
+    const card = document.createElement('article');
+    card.className = `admin-card${isCurrent ? ' playground-card-active' : ''}`;
+    const title = document.createElement('h3');
+    title.textContent = `${pg.isDefault ? '👑 ' : '🏰 '}${pg.worldName || pg.slug}`;
+    const meta = document.createElement('p');
+    meta.className = 'small-note';
+    meta.textContent = `Slug: ${pg.slug} • Role: ${pg.role || 'friend'} • 🪙 ${pg.coins ?? 0} • 🟢 ${pg.onlineCount ?? 0} online`;
+    card.append(title, meta);
+
+    if (isCurrent) {
+      const badge = document.createElement('span');
+      badge.className = 'invite-status-pill is-active';
+      badge.textContent = '📍 Playing Here Now';
+      card.appendChild(badge);
+    } else {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'primary-cta-btn';
+      btn.textContent = `🚀 Switch to ${pg.worldName || pg.slug}`;
+      btn.addEventListener('click', () => switchPlaygroundSession(pg.slug));
+      card.appendChild(btn);
+    }
+    myPlaygroundsGrid.appendChild(card);
+  }
+}
+
+async function refreshMyPlaygrounds() {
+  if (!sessionToken) return;
+  try {
+    const res = await fetch('/api/ella-world/playgrounds/mine', {
+      headers: { Authorization: `Bearer ${sessionToken}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.myPlaygrounds)) {
+        myPlaygroundsState = data.myPlaygrounds;
+      }
+    }
+  } catch {
+    // keep cached list
+  }
+  renderMyPlaygroundsGrid();
+}
+
+async function switchPlaygroundSession(targetSlug) {
+  if (!sessionToken || !targetSlug) return;
+  try {
+    const machineFields = await buildMachineAuthFields();
+    const res = await fetch('/api/ella-world/playgrounds/switch', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        token: sessionToken,
+        worldSlug: targetSlug,
+        clientId,
+        ...machineFields
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data?.machineSeal) await persistMachineSeal(data.machineSeal);
+    if (!res.ok) {
+      showToast(`⚠️ ${data.error || 'Could not switch Playground.'}`);
+      return;
+    }
+    adminToken = '';
+    sessionToken = data.token;
+    selfId = data.selfId;
+    selfUser = data.user;
+    localStorage.setItem('ella_world_token', sessionToken);
+    if (playgroundsDialog?.open) playgroundsDialog.close();
+    await enterGameWorld(data);
+    showToast(`🌍 Switched to ${data.worldMeta?.worldName || targetSlug}! Your 3D outfit came with you.`, 4200);
+  } catch {
+    showToast('⚠️ Could not reach server to switch Playground.');
+  }
+}
+
+document.getElementById('open-playgrounds-btn')?.addEventListener('click', () => {
+  if (joinWorldFeedback) joinWorldFeedback.hidden = true;
+  renderMyPlaygroundsGrid();
+  playgroundsDialog?.showModal();
+  refreshMyPlaygrounds();
+});
+
+joinWorldInviteForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!sessionToken) return;
+  const input = document.getElementById('join-world-code-input');
+  const code = (input?.value || '').trim();
+  if (!code) return;
+  if (joinWorldFeedback) joinWorldFeedback.hidden = true;
+  try {
+    const machineFields = await buildMachineAuthFields();
+    const res = await fetch('/api/ella-world/invites/join-world', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: sessionToken, code, clientId, ...machineFields })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data?.machineSeal) await persistMachineSeal(data.machineSeal);
+    if (!res.ok) {
+      if (joinWorldFeedback) {
+        joinWorldFeedback.textContent = `❌ ${data.error || 'Could not redeem invite.'}`;
+        joinWorldFeedback.hidden = false;
+      }
+      return;
+    }
+    if (input) input.value = '';
+    adminToken = '';
+    sessionToken = data.token;
+    selfId = data.selfId;
+    selfUser = data.user;
+    localStorage.setItem('ella_world_token', sessionToken);
+    if (playgroundsDialog?.open) playgroundsDialog.close();
+    await enterGameWorld(data);
+    showToast(`🎉 Unlocked & joined ${data.worldMeta?.worldName || data.worldSlug}!`, 4500);
+  } catch {
+    if (joinWorldFeedback) {
+      joinWorldFeedback.textContent = '❌ Network error while redeeming invite.';
+      joinWorldFeedback.hidden = false;
+    }
+  }
+});
+
+// 5. Kid Host Friend Invite Draft ("Pending Parent Approval")
+const hostInviteDialog = document.getElementById('host-invite-dialog');
+const hostDraftForm = document.getElementById('host-draft-invite-form');
+const hostInviteFeedback = document.getElementById('host-invite-feedback');
+
+document.getElementById('open-host-invite-btn')?.addEventListener('click', () => {
+  if (hostInviteFeedback) hostInviteFeedback.hidden = true;
+  hostInviteDialog?.showModal();
+});
+
+hostDraftForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!sessionToken) return;
+  const noteInput = document.getElementById('host-invite-note-input');
+  const labelNote = (noteInput?.value || '').trim();
+  const res = await fetch('/api/ella-world/invites/host-draft', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ token: sessionToken, labelNote })
+  }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  if (!hostInviteFeedback) return;
+  if (res && res.ok) {
+    hostInviteFeedback.textContent = `⏳ Drafted ${data.invite?.code}! Ask a parent to click ✅ Approve in the Parent Admin Panel so your friend can use it.`;
+    hostInviteFeedback.hidden = false;
+    if (noteInput) noteInput.value = '';
+  } else {
+    hostInviteFeedback.textContent = `❌ ${data.error || 'Could not draft invite.'}`;
+    hostInviteFeedback.hidden = false;
+  }
+});
+
+// 6. Parent Admin Invites & 1-Click Host Draft Approvals + QR Share Dialog
+const inviteQrDialog = document.getElementById('invite-qr-dialog');
+let activeShareInviteUrl = '';
+
+function openInviteShareQrModal(code) {
+  activeShareInviteUrl = canonicalOriginUrl(`/?invite=${encodeURIComponent(code)}`);
+  const svgTarget = document.getElementById('invite-qr-svg-target');
+  const labelEl = document.getElementById('invite-qr-url-label');
+  if (svgTarget) {
+    try {
+      svgTarget.innerHTML = renderQrSvgString(activeShareInviteUrl, `Invite QR for ${code}`);
+    } catch {
+      svgTarget.textContent = code;
+    }
+  }
+  if (labelEl) labelEl.textContent = activeShareInviteUrl;
+  inviteQrDialog?.showModal();
+}
+
+document.getElementById('invite-qr-copy-btn')?.addEventListener('click', async () => {
+  if (!activeShareInviteUrl) return;
+  try {
+    await navigator.clipboard.writeText(activeShareInviteUrl);
+    showToast('📋 Copied Invite Link to clipboard!');
+  } catch {
+    // ignore clipboard permission fallback
+  }
+});
+
+function renderAdminInvitesTable(invites, worldSlug) {
+  const countEl = document.getElementById('admin-invite-count');
+  const slugBadge = document.getElementById('admin-world-slug-badge');
+  const tbody = document.getElementById('admin-invites-tbody');
+  if (countEl) countEl.textContent = String(invites.length);
+  if (slugBadge) slugBadge.textContent = `Playground: ${worldSlug}`;
+  if (!tbody) return;
+  tbody.replaceChildren();
+
+  if (invites.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 5;
+    td.textContent = 'No friend invites yet — generate a STAR-... code above or approve a Kid Host draft!';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+
+  for (const inv of invites) {
+    const tr = document.createElement('tr');
+
+    const tdCode = document.createElement('td');
+    const codeStrong = document.createElement('code');
+    codeStrong.textContent = inv.code;
+    tdCode.appendChild(codeStrong);
+
+    const tdNote = document.createElement('td');
+    tdNote.textContent = `${inv.labelNote || 'Friend Playdate'} (by @${inv.createdBy || 'parent'})`;
+
+    const tdStatus = document.createElement('td');
+    const pill = document.createElement('span');
+    const isPending = inv.status === 'pending_parent_approval';
+    const isActive = inv.status === 'active' && (inv.uses || 0) < (inv.maxUses || 1);
+    pill.className = `invite-status-pill ${isPending ? 'is-pending' : isActive ? 'is-active' : 'is-inactive'}`;
+    pill.textContent = isPending
+      ? '⏳ Pending Parent Approval'
+      : isActive
+        ? `✅ Active (${inv.uses || 0}/${inv.maxUses || 1})`
+        : `${inv.status} (${inv.uses || 0}/${inv.maxUses || 1})`;
+    tdStatus.appendChild(pill);
+
+    const tdPresets = document.createElement('td');
+    tdPresets.textContent = `🪙 ${inv.starterCoins ?? 100} • 💬 ${inv.presetChatMode || 'normal'}${inv.presetVoiceMuted ? ' • 🔇 Mic Muted' : ''}`;
+
+    const tdActions = document.createElement('td');
+    const btnGroup = document.createElement('div');
+    btnGroup.className = 'btn-group';
+
+    if (isPending) {
+      const approveBtn = document.createElement('button');
+      approveBtn.type = 'button';
+      approveBtn.className = 'small-action-btn';
+      approveBtn.textContent = '✅ Approve';
+      approveBtn.addEventListener('click', () =>
+        postAdminInviteAction({ action: 'approve', code: inv.code }, `✅ Approved ${inv.code}!`)
+      );
+      const rejectBtn = document.createElement('button');
+      rejectBtn.type = 'button';
+      rejectBtn.className = 'small-action-btn danger-action';
+      rejectBtn.textContent = '✕ Reject';
+      rejectBtn.addEventListener('click', () =>
+        postAdminInviteAction({ action: 'reject', code: inv.code }, `🚫 Rejected ${inv.code}.`)
+      );
+      btnGroup.append(approveBtn, rejectBtn);
+    } else if (isActive) {
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'small-action-btn';
+      copyBtn.textContent = '📋 Copy Link';
+      copyBtn.addEventListener('click', async () => {
+        const url = canonicalOriginUrl(`/?invite=${encodeURIComponent(inv.code)}`);
+        try {
+          await navigator.clipboard.writeText(url);
+          showAdminInviteFeedback(`📋 Copied share link: ${url}`);
+        } catch {
+          showAdminInviteFeedback(`Share link: ${url}`);
+        }
+      });
+      const qrBtn = document.createElement('button');
+      qrBtn.type = 'button';
+      qrBtn.className = 'small-action-btn';
+      qrBtn.textContent = '📱 QR';
+      qrBtn.addEventListener('click', () => openInviteShareQrModal(inv.code));
+
+      const revokeBtn = document.createElement('button');
+      revokeBtn.type = 'button';
+      revokeBtn.className = 'small-action-btn danger-action';
+      revokeBtn.textContent = '🚫 Revoke';
+      revokeBtn.addEventListener('click', () =>
+        postAdminInviteAction({ action: 'revoke', code: inv.code }, `🚫 Revoked ${inv.code}.`)
+      );
+      btnGroup.append(copyBtn, qrBtn, revokeBtn);
+    }
+
+    tdActions.appendChild(btnGroup);
+    tr.append(tdCode, tdNote, tdStatus, tdPresets, tdActions);
+    tbody.appendChild(tr);
+  }
+}
+
+function showAdminInviteFeedback(msg) {
+  const fb = document.getElementById('admin-invite-feedback');
+  if (!fb) return;
+  fb.textContent = msg;
+  fb.hidden = false;
+}
+
+async function postAdminInviteAction(payload, okMsg) {
+  if (!adminToken) return;
+  const res = await fetch('/api/ella-world/admin/invites', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`
+    },
+    body: JSON.stringify(payload)
+  }).catch(() => null);
+  const out = res ? await res.json().catch(() => ({})) : {};
+  if (res && res.ok) {
+    if (out.dashboard) renderAdminDashboard(out.dashboard);
+    const code = out.invite?.code || payload.code || '';
+    showAdminInviteFeedback(okMsg || `✅ Invite ready: ${code}`);
+  } else {
+    showAdminInviteFeedback(`❌ ${out.error || 'Invite action failed.'}`);
+  }
+}
+
+document.getElementById('admin-create-invite-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const labelNote = (document.getElementById('admin-invite-note')?.value || '').trim();
+  const presetChatMode = document.getElementById('admin-invite-chat-mode')?.value || 'normal';
+  const starterCoins = Number(document.getElementById('admin-invite-coins')?.value || 100);
+  const maxUses = Number(document.getElementById('admin-invite-max-uses')?.value || 1);
+  const presetVoiceMuted = Boolean(document.getElementById('admin-invite-voice-muted')?.checked);
+  await postAdminInviteAction({
+    action: 'create',
+    labelNote: labelNote || undefined,
+    presetChatMode,
+    starterCoins,
+    maxUses,
+    presetVoiceMuted
+  });
+  const noteEl = document.getElementById('admin-invite-note');
+  if (noteEl) noteEl.value = '';
+});
+
+// 7. Platform Super-Admin Modal (`FAMILY-...` Founder Codes)
+const superadminDialog = document.getElementById('superadmin-dialog');
+const superadminAuthForm = document.getElementById('superadmin-auth-form');
+const superadminDashboardContent = document.getElementById('superadmin-dashboard-content');
+
+document.getElementById('open-superadmin-from-login')?.addEventListener('click', () => {
+  superadminDialog?.showModal();
+});
+
+function renderSuperadminPlatform(platform) {
+  if (!platform) return;
+  const pgs = platform.playgrounds || [];
+  const invs = platform.familyInvites || [];
+  const countEl = document.getElementById('superadmin-pg-count');
+  if (countEl) countEl.textContent = String(pgs.length);
+
+  const pgTbody = document.getElementById('superadmin-playgrounds-tbody');
+  if (pgTbody) {
+    pgTbody.replaceChildren();
+    for (const pg of pgs) {
+      const tr = document.createElement('tr');
+      for (const txt of [
+        `${pg.worldName} (${pg.slug})`,
+        `@${pg.hostUsername || 'host'}`,
+        `${pg.userCount || 0} users / ${pg.onlineCount || 0} online`,
+        String(pg.blockCount || 0)
+      ]) {
+        const td = document.createElement('td');
+        td.textContent = txt;
+        tr.appendChild(td);
+      }
+      pgTbody.appendChild(tr);
+    }
+  }
+
+  const invTbody = document.getElementById('superadmin-invites-tbody');
+  if (invTbody) {
+    invTbody.replaceChildren();
+    for (const inv of invs) {
+      const tr = document.createElement('tr');
+      const tdCode = document.createElement('td');
+      const codeEl = document.createElement('code');
+      codeEl.textContent = inv.code;
+      tdCode.appendChild(codeEl);
+
+      const tdNote = document.createElement('td');
+      tdNote.textContent = inv.labelNote || 'Family Founder';
+
+      const tdStatus = document.createElement('td');
+      tdStatus.textContent = `${inv.status} (${inv.uses || 0}/${inv.maxUses || 1})`;
+
+      const tdAct = document.createElement('td');
+      const grp = document.createElement('div');
+      grp.className = 'btn-group';
+      if (inv.status === 'active' && (inv.uses || 0) < (inv.maxUses || 1)) {
+        const qrBtn = document.createElement('button');
+        qrBtn.type = 'button';
+        qrBtn.className = 'small-action-btn';
+        qrBtn.textContent = '📱 QR / Link';
+        qrBtn.addEventListener('click', () => openInviteShareQrModal(inv.code));
+
+        const revBtn = document.createElement('button');
+        revBtn.type = 'button';
+        revBtn.className = 'small-action-btn danger-action';
+        revBtn.textContent = '🚫 Revoke';
+        revBtn.addEventListener('click', async () => {
+          const res = await fetch('/api/ella-world/superadmin/invites', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${superadminToken}`
+            },
+            body: JSON.stringify({ action: 'revoke', code: inv.code })
+          }).catch(() => null);
+          const out = res ? await res.json().catch(() => ({})) : {};
+          if (out.platform) renderSuperadminPlatform(out.platform);
+        });
+        grp.append(qrBtn, revBtn);
+      }
+      tdAct.appendChild(grp);
+      tr.append(tdCode, tdNote, tdStatus, tdAct);
+      invTbody.appendChild(tr);
+    }
+  }
+}
+
+superadminAuthForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById('superadmin-auth-error');
+  if (errEl) errEl.hidden = true;
+  const password = document.getElementById('superadmin-password-input')?.value || '';
+  const res = await fetch('/api/ella-world/superadmin/login', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ password })
+  }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) {
+    if (errEl) {
+      errEl.textContent = data.error || 'Incorrect Super-Admin password.';
+      errEl.hidden = false;
+    }
+    return;
+  }
+  superadminToken = data.superadminToken;
+  superadminAuthForm.hidden = true;
+  if (superadminDashboardContent) superadminDashboardContent.hidden = false;
+  renderSuperadminPlatform(data.platform);
+});
+
+document.getElementById('superadmin-create-invite-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!superadminToken) return;
+  const fb = document.getElementById('superadmin-invite-feedback');
+  const labelNote = (document.getElementById('superadmin-invite-note')?.value || '').trim();
+  const maxUses = Number(document.getElementById('superadmin-invite-uses')?.value || 1);
+  const res = await fetch('/api/ella-world/superadmin/invites', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${superadminToken}`
+    },
+    body: JSON.stringify({ action: 'create', labelNote: labelNote || undefined, maxUses })
+  }).catch(() => null);
+  const out = res ? await res.json().catch(() => ({})) : {};
+  if (res && res.ok) {
+    if (out.platform) renderSuperadminPlatform(out.platform);
+    if (fb) {
+      fb.textContent = `✅ Issued ${out.invite?.code}! Share /?invite=${out.invite?.code} with the invited family.`;
+      fb.hidden = false;
+    }
+  } else if (fb) {
+    fb.textContent = `❌ ${out.error || 'Could not create founder invite.'}`;
+    fb.hidden = false;
+  }
+});

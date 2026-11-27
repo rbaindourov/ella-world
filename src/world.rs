@@ -1,5 +1,6 @@
 use crate::auth::{
-    constant_time_str_eq, password_token_sig, sign_token, verify_token, TokenClaims,
+    constant_time_str_eq, password_token_sig, sign_world_token, verify_token, verify_world_token,
+    TokenClaims, DEFAULT_WORLD_SLUG,
 };
 use crate::config::ServerConfig;
 use crate::device_sig::{
@@ -26,12 +27,12 @@ use crate::models::{
     block_occupied_cells, default_block_kind, default_starter_blocks, find_home_plot_def,
     find_home_plot_for_cell, find_obby_course, format_obby_time_ms, is_toggleable_block_kind,
     is_two_tall_block_kind, is_valid_block_kind, is_valid_hex_color, normalize_chat_mode, now_ms,
-    prebuilt_village_blocks, BlockedChatEntry, BlocksDataFile, ChatMessage, DeviceEvasionEntry,
-    FallingStarNode, FashionPodiumEntry, FashionShowContestant, HomePlotClaim, HomePlotPublicView,
-    HomePlotsFile, MachineDeviceRecord, ObbyLeaderboardsFile, ObbyRecord, PlayerEconomySnapshot,
-    PlayerModerationSnapshot, PlayerRuntimeState, RunwayPublicSummary, RunwayState, SanitizedUser,
-    SavedPosition, SkyWeatherPublicState, SkyWeatherState, UserAccount, UsersConfigFile,
-    VoxelBlock, RUNWAY_THEMES, SAFE_QUICK_CHAT_PHRASES, SKY_CYCLE_DURATION_MS,
+    prebuilt_village_blocks, AvatarAppearance, BlockedChatEntry, BlocksDataFile, ChatMessage,
+    DeviceEvasionEntry, FallingStarNode, FashionPodiumEntry, FashionShowContestant, HomePlotClaim,
+    HomePlotPublicView, HomePlotsFile, MachineDeviceRecord, ObbyLeaderboardsFile, ObbyRecord,
+    PlayerEconomySnapshot, PlayerModerationSnapshot, PlayerRuntimeState, RunwayPublicSummary,
+    RunwayState, SanitizedUser, SavedPosition, SkyWeatherPublicState, SkyWeatherState, UserAccount,
+    UsersConfigFile, VoxelBlock, RUNWAY_THEMES, SAFE_QUICK_CHAT_PHRASES, SKY_CYCLE_DURATION_MS,
 };
 use crate::persistence::PersistenceStore;
 use crate::udp_wire::{
@@ -362,6 +363,7 @@ pub struct PreEncodedWorldTick {
 }
 
 pub struct WorldEngine {
+    pub world_slug: String,
     pub config: ServerConfig,
     pub store: Arc<PersistenceStore>,
     pub users_cfg: RwLock<UsersConfigFile>,
@@ -395,6 +397,7 @@ pub struct WorldEngine {
     pub pre_encoded_tick_tx: watch::Sender<Arc<PreEncodedWorldTick>>,
     pub cached_digest: RwLock<(u64, Arc<String>)>,
     pub peer_json_txs: RwLock<HashMap<String, mpsc::UnboundedSender<String>>>,
+    pub avatar_sync_tx: RwLock<Option<mpsc::UnboundedSender<(String, String, AvatarAppearance)>>>,
     pub udp_event_tx: broadcast::Sender<UdpWorldEvent>,
     pub opus_bridge_tx: broadcast::Sender<BridgedOpusFrame>,
     pub session_revoke_tx: broadcast::Sender<SessionRevokeSignal>,
@@ -402,6 +405,10 @@ pub struct WorldEngine {
 
 impl WorldEngine {
     pub fn new(config: ServerConfig) -> anyhow::Result<Arc<Self>> {
+        Self::new_with_slug(config, DEFAULT_WORLD_SLUG.to_string())
+    }
+
+    pub fn new_with_slug(config: ServerConfig, world_slug: String) -> anyhow::Result<Arc<Self>> {
         let store = Arc::new(PersistenceStore::new(
             &config.data_dir,
             &config.seed_users_file,
@@ -448,6 +455,7 @@ impl WorldEngine {
 
         let initial_global_voice = users_cfg.global_voice_enabled;
         let engine = Arc::new(Self {
+            world_slug,
             config,
             store,
             users_cfg: RwLock::new(users_cfg),
@@ -481,6 +489,7 @@ impl WorldEngine {
             pre_encoded_tick_tx,
             cached_digest: RwLock::new((0, Arc::new(String::new()))),
             peer_json_txs: RwLock::new(HashMap::new()),
+            avatar_sync_tx: RwLock::new(None),
             udp_event_tx,
             opus_bridge_tx,
             session_revoke_tx,
@@ -550,7 +559,7 @@ impl WorldEngine {
     }
 
     pub fn sign_session_token(&self, claims: &TokenClaims) -> String {
-        sign_token(claims, &self.config.hmac_secret)
+        sign_world_token(claims, Some(&self.world_slug), &self.config.hmac_secret)
     }
 
     pub fn player_password_sig(&self, user: &UserAccount) -> String {
@@ -558,7 +567,12 @@ impl WorldEngine {
     }
 
     pub fn admin_password_sig(&self, admin_password: &str) -> String {
-        password_token_sig("__admin__", admin_password, &self.config.hmac_secret)
+        if self.world_slug == DEFAULT_WORLD_SLUG {
+            password_token_sig("__admin__", admin_password, &self.config.hmac_secret)
+        } else {
+            let subj = format!("__admin__|{}", self.world_slug);
+            password_token_sig(&subj, admin_password, &self.config.hmac_secret)
+        }
     }
 
     pub fn mint_player_token(
@@ -609,7 +623,11 @@ impl WorldEngine {
         &self,
         token: &str,
     ) -> Option<(String, String, UserAccount, u64, String, Option<String>)> {
-        let claims = self.verify_session_token(token.trim())?;
+        let (claims, claim_world_slug) =
+            verify_world_token(token.trim(), &self.config.hmac_secret)?;
+        if claim_world_slug != self.world_slug {
+            return None;
+        }
         let exp = claims.exp?;
         if now_ms() > exp {
             return None;
@@ -749,10 +767,15 @@ impl WorldEngine {
     }
 
     pub async fn verify_active_admin_token(&self, token: &str) -> bool {
-        let Some(claims) = self.verify_session_token(token.trim()) else {
+        let Some((claims, claim_world_slug)) =
+            verify_world_token(token.trim(), &self.config.hmac_secret)
+        else {
             return false;
         };
         if claims.role.as_deref() != Some("admin") {
+            return false;
+        }
+        if claim_world_slug != self.world_slug {
             return false;
         }
         let Some(exp) = claims.exp else {
@@ -1646,6 +1669,7 @@ impl WorldEngine {
 
         let mut resp_json = serde_json::json!({
             "token": token,
+            "worldSlug": self.world_slug,
             "selfId": self_id,
             "self": player_doc,
             "user": sanitized,
@@ -1681,6 +1705,7 @@ impl WorldEngine {
                 "enforceMachineSignatures": cfg.enforce_machine_signatures,
             },
             "worldMeta": {
+                "worldSlug": self.world_slug,
                 "worldName": cfg.world_name,
                 "voiceDefaultMode": cfg.voice_default_mode,
                 "iceServers": cfg.ice_servers,
@@ -1736,7 +1761,13 @@ impl WorldEngine {
             (ar.snapshot(), ar.status_for(self_id))
         };
         let prison_snapshot = self.prison.read().await.snapshot();
-        let (economy_snapshot, companions_snapshot, moderation_snapshot, parental_world) = {
+        let (
+            world_name,
+            economy_snapshot,
+            companions_snapshot,
+            moderation_snapshot,
+            parental_world,
+        ) = {
             let cfg = self.users_cfg.read().await;
             let (econ, comp, mod_snap) = cfg
                 .users
@@ -1758,11 +1789,13 @@ impl WorldEngine {
                 "debtPrisonThreshold": cfg.debt_prison_threshold,
                 "prisonStrikeThreshold": cfg.prison_strike_threshold,
             });
-            (econ, comp, mod_snap, pw)
+            (cfg.world_name.clone(), econ, comp, mod_snap, pw)
         };
 
         Some(serde_json::json!({
             "type": "welcome_snapshot",
+            "worldSlug": self.world_slug,
+            "worldName": world_name,
             "stateSeq": self.current_state_seq(),
             "serverTimeMs": now,
             "selfId": self_id,
@@ -2570,6 +2603,13 @@ impl WorldEngine {
             user.sanitized()
         };
         self.persist_users_async().await;
+        if let Some(tx) = self.avatar_sync_tx.read().await.as_ref() {
+            let _ = tx.send((
+                self.world_slug.clone(),
+                sanitized.username.clone(),
+                sanitized.avatar.clone(),
+            ));
+        }
         let avatar_hash = sanitized.visual_hash();
 
         {

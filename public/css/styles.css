@@ -4323,3 +4323,229 @@ dialog::backdrop {
   gap: 0.6rem;
 }
 
+
+/* ============================================================================
+   Invite-Only Onboarding, Multi-Playground Switcher & Android APK QR Card
+   (modern-web-guidance: dialog, tabs, forms + ux-color-schemes Bundle A)
+   ============================================================================ */
+
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.login-card {
+  max-width: 500px;
+  max-height: 92vh;
+  overflow-y: auto;
+}
+
+.login-status-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+}
+
+.invite-only-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #bae6fd;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.login-tablist {
+  display: flex;
+  overflow-x: auto;
+  border-block-end: 1px solid rgba(148, 163, 184, 0.28);
+  margin-block-end: 1rem;
+  scrollbar-width: none;
+}
+
+.login-tablist::-webkit-scrollbar {
+  display: none;
+}
+
+.login-tablist [role="tab"] {
+  flex: 1 0 auto;
+  position: relative;
+  padding: 0.62rem 0.75rem;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.login-tablist [role="tab"][aria-selected="true"] {
+  color: #ffffff;
+}
+
+.login-tablist [role="tab"][aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  border-block-end: 3px solid var(--accent-cyan);
+}
+
+/* Zero outer padding/border/margin on [role="tabpanel"] so hidden="until-found" leaves no empty strip */
+.login-panels-stack {
+  display: grid;
+}
+
+.login-panels-stack > [role="tabpanel"] {
+  grid-area: 1 / 1;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: none;
+}
+
+.login-panel-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.login-footer {
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.android-qr-layout {
+  display: grid;
+  grid-template-columns: 148px minmax(0, 1fr);
+  gap: 1rem;
+  align-items: center;
+  padding: 0.85rem;
+  border-radius: 16px;
+  background: rgba(30, 41, 59, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+@media (max-width: 520px) {
+  .android-qr-layout {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+  }
+}
+
+.qr-svg-box {
+  width: 148px;
+  height: 148px;
+  padding: 6px;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.qr-svg-box svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.qr-svg-large {
+  width: 220px;
+  height: 220px;
+}
+
+.android-qr-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.android-meta-pill {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #cbd5e1;
+  padding: 0.35rem 0.6rem;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.apk-download-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.admin-invites-card {
+  margin-bottom: 1rem;
+}
+
+.invite-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.invite-status-pill.is-pending {
+  background: rgba(251, 191, 36, 0.2);
+  border: 1px solid rgba(251, 191, 36, 0.6);
+  color: #fde68a;
+}
+
+.invite-status-pill.is-active {
+  background: rgba(34, 197, 94, 0.2);
+  border: 1px solid rgba(34, 197, 94, 0.55);
+  color: #86efac;
+}
+
+.invite-status-pill.is-inactive {
+  background: rgba(148, 163, 184, 0.16);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #cbd5e1;
+}
+
+.playground-card-active {
+  border-color: rgba(56, 189, 248, 0.8) !important;
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.25);
+}
+
+.qr-share-modal-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+  text-align: center;
+}
+
+.qr-url-code {
+  display: block;
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  color: #f1f5f9;
+  font-size: 0.82rem;
+  word-break: break-all;
+  user-select: all;
+}

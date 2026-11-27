@@ -29,6 +29,14 @@ impl ServerConfig {
         secs.saturating_mul(1_000)
     }
 
+    pub fn superadmin_password(&self) -> String {
+        env::var("ELLA_SUPERADMIN_PASSWORD")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "changeme-platform-superadmin".to_string())
+    }
+
     pub fn from_env() -> Self {
         let http_addr: SocketAddr = env::var("ELLA_HTTP_ADDR")
             .unwrap_or_else(|_| "0.0.0.0:8097".to_string())

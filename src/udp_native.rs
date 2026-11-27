@@ -7,6 +7,7 @@
 //! - Reliable acknowledged discrete events (`OP_EVENT_JSON` + `OP_EVENT_ACK`) for blocks, chat, outfits & runway
 
 use crate::models::now_ms;
+use crate::playground::PlaygroundRegistry;
 use crate::udp_wire::{
     decode_c2s_state, encode_native_voice_opus, encode_native_welcome, encode_pong,
     unwrap_native_packet, wrap_native_packet, OP_C2S_PING, OP_C2S_STATE, OP_EVENT_ACK,
@@ -15,7 +16,7 @@ use crate::udp_wire::{
 };
 use crate::world::{BridgedOpusFrame, WorldEngine};
 use bytes::{BufMut, Bytes, BytesMut};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -25,6 +26,7 @@ use tracing::{info, warn};
 
 #[derive(Clone, Debug)]
 struct NativePeerSession {
+    world_slug: String,
     self_id: String,
     username: String,
     device_id: Option<String>,
@@ -35,44 +37,44 @@ struct NativePeerSession {
 pub struct NativeUdpServer {
     socket: Arc<UdpSocket>,
     local_addr: SocketAddr,
+    registry: Arc<PlaygroundRegistry>,
     sessions_by_addr: RwLock<HashMap<SocketAddr, NativePeerSession>>,
+    attached_worlds: RwLock<HashSet<String>>,
     active_count: AtomicUsize,
 }
 
 impl NativeUdpServer {
-    pub async fn bind_and_start(world: Arc<WorldEngine>) -> anyhow::Result<Arc<Self>> {
-        let socket = Arc::new(UdpSocket::bind(world.config.native_udp_addr).await?);
+    pub async fn bind_and_start(registry: Arc<PlaygroundRegistry>) -> anyhow::Result<Arc<Self>> {
+        let socket = Arc::new(UdpSocket::bind(registry.base_config.native_udp_addr).await?);
         let local_addr = socket.local_addr()?;
         info!(
-            "🚀 [Native UDP] Listening for binary EWLD voice + game-state datagrams on {}/udp",
+            "🚀 [Native UDP] Listening for multi-playground binary EWLD voice + game-state datagrams on {}/udp",
             local_addr
         );
 
         let srv = Arc::new(Self {
             socket,
             local_addr,
+            registry: Arc::clone(&registry),
             sessions_by_addr: RwLock::new(HashMap::new()),
+            attached_worlds: RwLock::new(HashSet::new()),
             active_count: AtomicUsize::new(0),
         });
 
         // 1. Inbound UDP datagram receive loop
         let rx_srv = Arc::clone(&srv);
-        let rx_world = Arc::clone(&world);
         tokio::spawn(async move {
             let mut buf = vec![0u8; 4096];
             loop {
                 let Ok((len, peer_addr)) = rx_srv.socket.recv_from(&mut buf).await else {
                     continue;
                 };
-                rx_srv
-                    .handle_datagram(&rx_world, peer_addr, &buf[..len])
-                    .await;
+                rx_srv.handle_datagram(peer_addr, &buf[..len]).await;
             }
         });
 
         // 2. 20Hz Outbound S2C_WORLD_STATE UDP broadcast tick + stale session reaper
         let tx_srv = Arc::clone(&srv);
-        let tx_world = Arc::clone(&world);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
             let mut tick_idx = 0u32;
@@ -85,13 +87,24 @@ impl NativeUdpServer {
                     map.values().cloned().collect()
                 };
 
-                for sess in &peers {
-                    let chunks = tx_world
-                        .encode_world_snapshot_chunks_for(&sess.self_id)
-                        .await;
-                    for snap in chunks {
-                        let framed = wrap_native_packet(OP_S2C_WORLD_STATE, &snap);
-                        let _ = tx_srv.socket.send_to(&framed, sess.addr).await;
+                if !peers.is_empty() {
+                    let mut worlds_cache: HashMap<String, Arc<WorldEngine>> = HashMap::new();
+                    for sess in &peers {
+                        let world = if let Some(w) = worlds_cache.get(&sess.world_slug) {
+                            Arc::clone(w)
+                        } else if let Some(w) =
+                            tx_srv.registry.resolve_world(&sess.world_slug).await
+                        {
+                            worlds_cache.insert(sess.world_slug.clone(), Arc::clone(&w));
+                            w
+                        } else {
+                            continue;
+                        };
+                        let chunks = world.encode_world_snapshot_chunks_for(&sess.self_id).await;
+                        for snap in chunks {
+                            let framed = wrap_native_packet(OP_S2C_WORLD_STATE, &snap);
+                            let _ = tx_srv.socket.send_to(&framed, sess.addr).await;
+                        }
                     }
                 }
 
@@ -104,9 +117,28 @@ impl NativeUdpServer {
             }
         });
 
-        // 3. Discrete World Event Push over UDP (`OP_EVENT_JSON`)
-        let ev_srv = Arc::clone(&srv);
+        // Attach event, Opus bridge, and session-revoke forwarders for all initial playgrounds
+        for (slug, world) in registry.all_worlds().await {
+            srv.attach_world(slug, world).await;
+        }
+
+        Ok(srv)
+    }
+
+    /// Subscribes per-Playground event, Opus voice bridge, and session revocation streams
+    /// onto this multiplexed `:44445/udp` server (idempotent per `world_slug`).
+    pub async fn attach_world(self: &Arc<Self>, world_slug: String, world: Arc<WorldEngine>) {
+        {
+            let mut attached = self.attached_worlds.write().await;
+            if !attached.insert(world_slug.clone()) {
+                return;
+            }
+        }
+
+        // Discrete World Event Push over UDP (`OP_EVENT_JSON`) scoped to `world_slug`
+        let ev_srv = Arc::clone(self);
         let ev_world = Arc::clone(&world);
+        let ev_slug = world_slug.clone();
         let mut ev_rx = world.udp_event_tx.subscribe();
         let mut out_event_seq = 1u32;
         tokio::spawn(async move {
@@ -140,7 +172,10 @@ impl NativeUdpServer {
 
                 let peers: Vec<NativePeerSession> = {
                     let map = ev_srv.sessions_by_addr.read().await;
-                    map.values().cloned().collect()
+                    map.values()
+                        .filter(|s| s.world_slug == ev_slug)
+                        .cloned()
+                        .collect()
                 };
                 for sess in peers {
                     if dungeon_only && ev_world.get_peer_zone(&sess.self_id).await != ZONE_DUNGEON {
@@ -162,12 +197,12 @@ impl NativeUdpServer {
             }
         });
 
-        // 4. Forward WebRTC SFU Opus frames down to Native UDP listeners (`OP_VOICE_OPUS`)
-        let voice_srv = Arc::clone(&srv);
+        // Forward WebRTC SFU Opus frames down to Native UDP listeners in the SAME Playground
+        let voice_srv = Arc::clone(self);
+        let voice_slug = world_slug.clone();
         let mut opus_rx = world.opus_bridge_tx.subscribe();
         tokio::spawn(async move {
             while let Ok(frame) = opus_rx.recv().await {
-                // Native->Native already fanned out directly; here we also deliver WebRTC->Native!
                 if frame.from_native_udp {
                     continue;
                 }
@@ -180,7 +215,7 @@ impl NativeUdpServer {
                 let targets: Vec<SocketAddr> = {
                     let map = voice_srv.sessions_by_addr.read().await;
                     map.values()
-                        .filter(|s| s.self_id != frame.from_id)
+                        .filter(|s| s.world_slug == voice_slug && s.self_id != frame.from_id)
                         .map(|s| s.addr)
                         .collect()
                 };
@@ -190,18 +225,20 @@ impl NativeUdpServer {
             }
         });
 
-        // 5. Evict Native UDP sessions immediately on password rollover or session revocation
-        let revoke_srv = Arc::clone(&srv);
+        // Evict Native UDP sessions immediately on password rollover or session revocation in `world_slug`
+        let revoke_srv = Arc::clone(self);
+        let revoke_slug = world_slug;
         let mut revoke_rx = world.session_revoke_tx.subscribe();
         tokio::spawn(async move {
             while let Ok(sig) = revoke_rx.recv().await {
                 let mut map = revoke_srv.sessions_by_addr.write().await;
-                map.retain(|_, s| !sig.matches(&s.self_id, &s.username, s.device_id.as_deref()));
+                map.retain(|_, s| {
+                    s.world_slug != revoke_slug
+                        || !sig.matches(&s.self_id, &s.username, s.device_id.as_deref())
+                });
                 revoke_srv.active_count.store(map.len(), Ordering::Relaxed);
             }
         });
-
-        Ok(srv)
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -212,34 +249,37 @@ impl NativeUdpServer {
         self.active_count.load(Ordering::Relaxed)
     }
 
-    pub async fn evict_sessions_for_peer(&self, self_id: &str) -> usize {
+    pub async fn evict_sessions_for_peer(&self, world_slug: &str, self_id: &str) -> usize {
         let mut map = self.sessions_by_addr.write().await;
         let before = map.len();
-        map.retain(|_, s| s.self_id != self_id);
+        map.retain(|_, s| !(s.world_slug == world_slug && s.self_id == self_id));
         let after = map.len();
         self.active_count.store(after, Ordering::Relaxed);
         before.saturating_sub(after)
     }
 
-    pub async fn evict_sessions_for_username(&self, username: &str) -> usize {
+    pub async fn evict_sessions_for_username(&self, world_slug: &str, username: &str) -> usize {
         let target = username.trim().to_lowercase();
         let mut map = self.sessions_by_addr.write().await;
         let before = map.len();
-        map.retain(|_, s| !s.username.eq_ignore_ascii_case(&target));
+        map.retain(|_, s| {
+            !(s.world_slug == world_slug && s.username.eq_ignore_ascii_case(&target))
+        });
         let after = map.len();
         self.active_count.store(after, Ordering::Relaxed);
         before.saturating_sub(after)
     }
 
-    pub async fn evict_all_sessions(&self) -> usize {
+    pub async fn evict_all_sessions(&self, world_slug: &str) -> usize {
         let mut map = self.sessions_by_addr.write().await;
-        let count = map.len();
-        map.clear();
-        self.active_count.store(0, Ordering::Relaxed);
-        count
+        let before = map.len();
+        map.retain(|_, s| s.world_slug != world_slug);
+        let after = map.len();
+        self.active_count.store(after, Ordering::Relaxed);
+        before.saturating_sub(after)
     }
 
-    async fn handle_datagram(&self, world: &WorldEngine, peer_addr: SocketAddr, raw: &[u8]) {
+    async fn handle_datagram(&self, peer_addr: SocketAddr, raw: &[u8]) {
         let Some((pkt_type, body)) = unwrap_native_packet(raw) else {
             return;
         };
@@ -255,12 +295,20 @@ impl NativeUdpServer {
             let Ok(token_str) = std::str::from_utf8(&body[2..2 + tok_len]) else {
                 return;
             };
+            let Some((world_slug, world)) = self.registry.resolve_world_for_token(token_str).await
+            else {
+                warn!(
+                    "Rejected Native UDP HELLO with unknown playground or invalid signature from {}",
+                    peer_addr
+                );
+                return;
+            };
             let Some((self_id, username, _, _, _, device_id)) =
                 world.verify_active_player_token(token_str).await
             else {
                 warn!(
-                    "Rejected invalid or expired Native UDP HELLO token from {}",
-                    peer_addr
+                    "Rejected invalid or expired Native UDP HELLO token from {} (world={})",
+                    peer_addr, world_slug
                 );
                 return;
             };
@@ -270,6 +318,7 @@ impl NativeUdpServer {
                 map.insert(
                     peer_addr,
                     NativePeerSession {
+                        world_slug,
                         self_id: self_id.clone(),
                         username: username.clone(),
                         device_id,
@@ -297,9 +346,12 @@ impl NativeUdpServer {
             s.clone()
         };
 
+        let Some(world) = self.registry.resolve_world(&session.world_slug).await else {
+            return;
+        };
+
         match pkt_type {
             OP_C2S_STATE => {
-                // `body` may either start with `OP_C2S_STATE` (28 bytes) or be the 27-byte body
                 let decoded = if body.first() == Some(&OP_C2S_STATE) {
                     decode_c2s_state(body)
                 } else {
@@ -326,7 +378,6 @@ impl NativeUdpServer {
                 let _ = self.socket.send_to(&framed, peer_addr).await;
             }
             OP_VOICE_OPUS => {
-                // Incoming Native UDP Voice: [seq: u16 LE][timestamp: u32 LE][opus_bytes...]
                 if body.len() <= 6 {
                     return;
                 }
@@ -337,13 +388,15 @@ impl NativeUdpServer {
                 let timestamp = u32::from_le_bytes([body[2], body[3], body[4], body[5]]);
                 let opus_slice = &body[6..];
 
-                // 1. Relay over UDP directly to all other Native UDP peers
+                // 1. Relay over UDP directly ONLY to Native UDP peers in the SAME Playground
                 let out_pkt =
                     encode_native_voice_opus(seq, timestamp, &session.self_id, opus_slice);
                 let other_addrs: Vec<SocketAddr> = {
                     let map = self.sessions_by_addr.read().await;
                     map.values()
-                        .filter(|s| s.self_id != session.self_id)
+                        .filter(|s| {
+                            s.world_slug == session.world_slug && s.self_id != session.self_id
+                        })
                         .map(|s| s.addr)
                         .collect()
                 };
@@ -351,7 +404,7 @@ impl NativeUdpServer {
                     let _ = self.socket.send_to(&out_pkt, addr).await;
                 }
 
-                // 2. Publish onto Opus bridge so WebRTC SFU browser peers also hear Native UDP voice!
+                // 2. Publish onto Opus bridge so WebRTC SFU browser peers in the SAME Playground hear Native UDP voice!
                 let _ = world.opus_bridge_tx.send(BridgedOpusFrame {
                     from_id: session.self_id,
                     from_native_udp: true,
@@ -366,7 +419,7 @@ impl NativeUdpServer {
                 }
                 let event_seq = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
                 if let Ok(cmd) = serde_json::from_slice::<serde_json::Value>(&body[4..]) {
-                    handle_client_event_command(world, &session.self_id, &session.username, &cmd)
+                    handle_client_event_command(&world, &session.self_id, &session.username, &cmd)
                         .await;
                 }
                 let ack = wrap_native_packet(OP_EVENT_ACK, &event_seq.to_le_bytes());

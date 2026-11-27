@@ -52,10 +52,16 @@ pub async fn ws_upgrade_handler(
     Query(query): Query<WsAuthQuery>,
     State(st): State<AppState>,
 ) -> Response {
-    let Some((self_id, username, user_acc, session_epoch, pwd_sig, device_id)) = st
-        .world
-        .verify_active_player_token(query.token.trim())
-        .await
+    let raw_tok = query.token.trim();
+    let Some((_world_slug, world)) = st.registry.resolve_world_for_token(raw_tok).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "ok": false, "error": "Invalid or expired session token for WebSocket spine." })),
+        )
+            .into_response();
+    };
+    let Some((self_id, username, user_acc, session_epoch, pwd_sig, device_id)) =
+        world.verify_active_player_token(raw_tok).await
     else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -65,7 +71,6 @@ pub async fn ws_upgrade_handler(
     };
     let user_token_epoch = user_acc.token_epoch;
 
-    let world = Arc::clone(&st.world);
     let hub = Arc::clone(&st.ws_hub);
 
     ws.max_message_size(64 * 1024).on_upgrade(move |socket| {

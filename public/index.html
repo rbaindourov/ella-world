@@ -19,64 +19,269 @@
   <!-- 3D WebGL Canvas Container -->
   <div id="canvas-container" aria-label="3D Starlight Glam Virtual World"></div>
 
-  <!-- Sign-In Overlay Screen (Shown before joining world) -->
+  <!-- Sign-In, Invite Redemption & Android App Overlay Screen -->
   <section id="login-screen" class="login-screen" aria-labelledby="world-welcome-title">
     <div class="login-card">
       <div class="login-header">
         <div class="brand-badge" aria-hidden="true">👑👗🎤</div>
         <h1 id="world-welcome-title">Ella's Starlight Glam Plaza</h1>
-        <p class="login-subtitle">3D Stylized Characters, Dress-to-Impress Runway, Sky Obby &amp; Voice Party</p>
-        <div class="online-pill">
-          <span class="status-dot"></span>
-          <span id="login-online-count">0 friends in world right now</span>
+        <p class="login-subtitle">Invite-Only 3D Glam Hangout, Dress-to-Impress Runway, Sky Obby &amp; Cross-Play Android App</p>
+        <div class="login-status-pills">
+          <div class="online-pill">
+            <span class="status-dot"></span>
+            <span id="login-online-count">0 friends in world right now</span>
+          </div>
+          <span class="invite-only-pill" title="Invite-only private family &amp; friends platform">🎟️ Invite-Only</span>
         </div>
       </div>
 
-      <form id="friend-login-form" class="auth-form">
-        <div class="field-group">
-          <label for="login-username">Friend Username</label>
-          <input
-            type="text"
-            id="login-username"
-            name="username"
-            autocomplete="username"
-            spellcheck="false"
-            autocorrect="off"
-            autocapitalize="none"
-            enterkeyhint="next"
-            placeholder="e.g. ella, maya, chloe, zoe, lily..."
-            required
-          />
-        </div>
+      <!-- Accessible Single-Row Mode Switcher (modern-web-guidance: tabs + focusgroup) -->
+      <div class="login-tablist" id="login-tablist" role="tablist" focusgroup="tablist nomemory" aria-label="Sign In, Redeem Invite, or Download Android App">
+        <button type="button" role="tab" id="login-tab-signin" data-login-tab="signin" aria-selected="true" focusgroupstart>✨ Sign In</button>
+        <button type="button" role="tab" id="login-tab-invite" data-login-tab="invite" aria-selected="false" tabindex="-1">🎟️ Invite Code</button>
+        <button type="button" role="tab" id="login-tab-android" data-login-tab="android" aria-selected="false" tabindex="-1">📱 Android App</button>
+      </div>
 
-        <div class="field-group">
-          <div class="label-row">
-            <label for="login-password">Secret Password</label>
-            <button type="button" id="toggle-login-password" class="text-btn" aria-controls="login-password" aria-pressed="false">
-              Show password
-            </button>
+      <div class="login-panels-stack">
+        <!-- TAB PANEL 1: Sign In -->
+        <div role="tabpanel" id="login-panel-signin" aria-labelledby="login-tab-signin">
+          <div class="login-panel-inner">
+            <form id="friend-login-form" class="auth-form" method="post" action="/api/ella-world/login" aria-labelledby="login-tab-signin">
+              <div class="field-group" id="login-playground-group" hidden>
+                <label for="login-playground-select">Playground to Enter</label>
+                <select id="login-playground-select" name="worldSlug"></select>
+              </div>
+
+              <div class="field-group">
+                <label for="login-username">Friend Username</label>
+                <input
+                  type="text"
+                  id="login-username"
+                  name="username"
+                  autocomplete="username"
+                  spellcheck="false"
+                  autocorrect="off"
+                  autocapitalize="none"
+                  enterkeyhint="next"
+                  placeholder="e.g. ella, maya, chloe, leo..."
+                  required
+                />
+              </div>
+
+              <div class="field-group">
+                <div class="label-row">
+                  <label for="login-password">Secret Password</label>
+                  <button type="button" id="toggle-login-password" class="text-btn" aria-controls="login-password" aria-pressed="false">
+                    Show password
+                  </button>
+                </div>
+                <input
+                  type="password"
+                  id="login-password"
+                  name="password"
+                  autocomplete="current-password"
+                  enterkeyhint="done"
+                  placeholder="Enter your password"
+                  required
+                />
+              </div>
+
+              <p id="login-error" class="error-banner" hidden role="alert"></p>
+
+              <button type="submit" id="login-submit-btn" class="primary-cta-btn">
+                ✨ Join 3D Glam World &amp; Voice Party
+              </button>
+            </form>
           </div>
-          <input
-            type="password"
-            id="login-password"
-            name="password"
-            autocomplete="current-password"
-            enterkeyhint="done"
-            placeholder="Enter the password your parent gave you"
-            required
-          />
         </div>
 
-        <p id="login-error" class="error-banner" hidden role="alert"></p>
+        <!-- TAB PANEL 2: Redeem Friend (STAR-...) or Family Founder (FAMILY-...) Invite -->
+        <div role="tabpanel" id="login-panel-invite" aria-labelledby="login-tab-invite" hidden="until-found">
+          <div class="login-panel-inner">
+            <div class="field-group">
+              <div class="label-row">
+                <label for="invite-code-input">Invite Code (<code>STAR-...</code> or <code>FAMILY-...</code>)</label>
+                <button type="button" id="inspect-invite-btn" class="text-btn">Check code</button>
+              </div>
+              <input
+                type="text"
+                id="invite-code-input"
+                name="inviteCode"
+                autocomplete="off"
+                spellcheck="false"
+                autocorrect="off"
+                autocapitalize="characters"
+                enterkeyhint="next"
+                placeholder="STAR-XXXX-XXXX or FAMILY-XXXX-XXXX"
+              />
+            </div>
 
-        <button type="submit" id="login-submit-btn" class="primary-cta-btn">
-          ✨ Join 3D Glam World &amp; Voice Party
-        </button>
-      </form>
+            <p id="invite-inspect-banner" class="feedback-note" hidden role="status" aria-live="polite"></p>
+
+            <!-- Friend Playdate Signup Form (STAR-...) -->
+            <form id="invite-friend-form" class="auth-form" method="post" action="/api/ella-world/invites/redeem" aria-label="Redeem Friend Invite Code">
+              <div class="admin-inline-grid">
+                <div class="field-group">
+                  <label for="invite-friend-username">Choose Username</label>
+                  <input
+                    type="text"
+                    id="invite-friend-username"
+                    name="username"
+                    autocomplete="username"
+                    spellcheck="false"
+                    autocorrect="off"
+                    autocapitalize="none"
+                    minlength="2"
+                    maxlength="24"
+                    placeholder="e.g. lily"
+                    required
+                  />
+                </div>
+                <div class="field-group">
+                  <label for="invite-friend-display">Display Name</label>
+                  <input
+                    type="text"
+                    id="invite-friend-display"
+                    name="displayName"
+                    autocomplete="nickname"
+                    maxlength="32"
+                    placeholder="e.g. Lily"
+                    required
+                  />
+                </div>
+              </div>
+              <div class="field-group">
+                <label for="invite-friend-password">Create Secret Password (4+ chars)</label>
+                <input
+                  type="password"
+                  id="invite-friend-password"
+                  name="password"
+                  autocomplete="new-password"
+                  minlength="4"
+                  placeholder="Create your password (or existing password to link)"
+                  required
+                />
+              </div>
+              <p id="invite-friend-error" class="error-banner" hidden role="alert"></p>
+              <button type="submit" id="invite-friend-submit-btn" class="primary-cta-btn">
+                🎟️ Redeem Friend Invite &amp; Enter World
+              </button>
+            </form>
+
+            <!-- Family Playground Founder Wizard (Shown when FAMILY-... code is entered) -->
+            <form id="invite-family-form" class="auth-form" method="post" action="/api/ella-world/invites/redeem-family" hidden aria-label="Create Family Playground">
+              <div class="field-group">
+                <label for="invite-family-world-name">New Playground Name</label>
+                <input
+                  type="text"
+                  id="invite-family-world-name"
+                  name="worldName"
+                  minlength="3"
+                  maxlength="64"
+                  placeholder="e.g. Maya's Starlight World"
+                  required
+                />
+              </div>
+              <div class="admin-inline-grid">
+                <div class="field-group">
+                  <label for="invite-family-slug">World ID Slug (optional)</label>
+                  <input
+                    type="text"
+                    id="invite-family-slug"
+                    name="worldSlug"
+                    spellcheck="false"
+                    autocorrect="off"
+                    autocapitalize="none"
+                    placeholder="e.g. maya-world"
+                  />
+                </div>
+                <div class="field-group">
+                  <label for="invite-family-admin-pw">Parent Admin Password</label>
+                  <input
+                    type="password"
+                    id="invite-family-admin-pw"
+                    name="adminPassword"
+                    autocomplete="new-password"
+                    minlength="4"
+                    placeholder="Parent master password"
+                    required
+                  />
+                </div>
+              </div>
+              <div class="admin-inline-grid">
+                <div class="field-group">
+                  <label for="invite-family-host-user">Kid Host Username</label>
+                  <input
+                    type="text"
+                    id="invite-family-host-user"
+                    name="hostUsername"
+                    spellcheck="false"
+                    autocorrect="off"
+                    autocapitalize="none"
+                    minlength="2"
+                    maxlength="24"
+                    placeholder="e.g. maya"
+                    required
+                  />
+                </div>
+                <div class="field-group">
+                  <label for="invite-family-host-display">Kid Host Display Name</label>
+                  <input
+                    type="text"
+                    id="invite-family-host-display"
+                    name="hostDisplayName"
+                    maxlength="32"
+                    placeholder="e.g. Maya"
+                    required
+                  />
+                </div>
+              </div>
+              <div class="field-group">
+                <label for="invite-family-host-pw">Kid Host Login Password</label>
+                <input
+                  type="password"
+                  id="invite-family-host-pw"
+                  name="hostPassword"
+                  autocomplete="new-password"
+                  minlength="4"
+                  placeholder="Kid host password"
+                  required
+                />
+              </div>
+              <p id="invite-family-error" class="error-banner" hidden role="alert"></p>
+              <button type="submit" id="invite-family-submit-btn" class="primary-cta-btn">
+                🏰 Launch Family Playground &amp; Enter as Host
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <!-- TAB PANEL 3: Native Godot 4 Android App Download & Scannable QR Card -->
+        <div role="tabpanel" id="login-panel-android" aria-labelledby="login-tab-android" tabindex="0" hidden="until-found">
+          <div class="login-panel-inner android-qr-panel">
+            <div class="android-qr-layout">
+              <div id="login-apk-qr-box" class="qr-svg-box" aria-label="Scan QR code to download Ella's World Android APK"></div>
+              <div class="android-qr-copy">
+                <strong>📱 Native Godot 4 Android App</strong>
+                <p class="small-note">
+                  Full 3D cross-play with browser friends: Starlight Plaza, Sky &amp; Pro Obbies, DTI Runway, Homes, Pets, Dragon Boss &amp; Live Voice!
+                </p>
+                <p id="android-release-meta" class="android-meta-pill">Checking latest signed APK...</p>
+                <a id="download-apk-btn" href="/download/ella-world.apk" class="primary-cta-btn apk-download-link" download="ella-world.apk">
+                  ⬇️ Download Signed Android APK
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div class="login-footer">
         <button type="button" id="open-admin-from-login" class="secondary-outline-btn">
-          🔐 Parent Admin Panel (Manage Friends &amp; Passwords)
+          🔐 Parent Admin Panel
+        </button>
+        <button type="button" id="open-superadmin-from-login" class="secondary-outline-btn" title="Platform Super-Admin (Issue FAMILY-... Playground Founder Codes)">
+          🏛️ Founder Admin
         </button>
       </div>
     </div>
@@ -163,6 +368,12 @@
 
         <!-- Action & Teleport Buttons -->
         <div class="hud-actions">
+          <button type="button" id="open-playgrounds-btn" class="hud-chip-btn accent-chip" title="Switch between Invited Playgrounds or Enter a Friend Invite Code">
+            🌍 Playgrounds
+          </button>
+          <button type="button" id="open-host-invite-btn" class="hud-chip-btn accent-chip" hidden title="Draft a STAR-... Friend Invite for Parent Approval">
+            💌 Invite Friend
+          </button>
           <button type="button" id="warp-plaza-btn" class="hud-chip-btn" title="Teleport back to Central Plaza (Shortcut: H)">
             ⛲ Plaza
           </button>
@@ -1095,8 +1306,12 @@
       <div class="modal-body">
         <form id="admin-auth-form" class="auth-form" method="post" action="/api/ella-world/admin/login">
           <p class="small-note">
-            Enter the <strong>Parent Master Password</strong> (stored in <code>data/world_users.json</code> on the standalone Rust server) to manage friend accounts, parental safety locks, coin fines, and Debtor's Prison sentences.
+            Enter your Playground's <strong>Parent Master Password</strong> to approve Kid Host friend invites, create <code>STAR-...</code> invite codes, and manage parental safety locks, coin fines, and Debtor's Prison sentences.
           </p>
+          <div class="field-group" id="admin-world-slug-group" hidden>
+            <label for="admin-world-slug-select">Playground</label>
+            <select id="admin-world-slug-select" name="worldSlug"></select>
+          </div>
           <div class="field-group">
             <div class="label-row">
               <label for="admin-master-password">Parent Master Password</label>
@@ -1120,6 +1335,61 @@
         </form>
 
         <div id="admin-dashboard-content" hidden>
+          <div class="admin-card admin-invites-card">
+            <div class="admin-card-header-row">
+              <h3 id="admin-invites-heading">🎟️ Friend Invites &amp; Host Approvals (<span id="admin-invite-count">0</span>)</h3>
+              <span id="admin-world-slug-badge" class="mode-badge">Playground: ella</span>
+            </div>
+            <p class="small-note">
+              Create active <code>STAR-...</code> Friend Invite codes with preset safety &amp; coin defaults, or approve/reject pending invites drafted by your Kid Host in 1 click!
+            </p>
+            <form id="admin-create-invite-form" class="admin-form" method="post" action="/api/ella-world/admin/invites" aria-label="Create Friend Invite Code">
+              <div class="admin-form-grid-2">
+                <div class="field-group">
+                  <label for="admin-invite-note">Friend Note (optional)</label>
+                  <input type="text" id="admin-invite-note" name="labelNote" maxlength="64" placeholder="e.g. For Lily from dance class" />
+                </div>
+                <div class="field-group">
+                  <label for="admin-invite-chat-mode">Starter Chat Safety Preset</label>
+                  <select id="admin-invite-chat-mode" name="presetChatMode">
+                    <option value="normal">💬 Normal Filtered Chat</option>
+                    <option value="quick_only">🛡️ Safe Quick-Chat Phrases Only</option>
+                    <option value="muted">🔇 Text Chat Muted</option>
+                  </select>
+                </div>
+                <div class="field-group">
+                  <label for="admin-invite-coins">Starter Coins (🪙)</label>
+                  <input type="number" id="admin-invite-coins" name="starterCoins" min="0" max="5000" step="10" value="100" inputmode="numeric" />
+                </div>
+                <div class="field-group">
+                  <label for="admin-invite-max-uses">Max Redemptions</label>
+                  <input type="number" id="admin-invite-max-uses" name="maxUses" min="1" max="50" step="1" value="1" inputmode="numeric" />
+                </div>
+              </div>
+              <div class="admin-check-row">
+                <input type="checkbox" id="admin-invite-voice-muted" name="presetVoiceMuted" />
+                <label for="admin-invite-voice-muted">🔇 Start with Microphone Muted by Parent</label>
+              </div>
+              <p id="admin-invite-feedback" class="feedback-note" hidden role="status"></p>
+              <button type="submit" class="primary-cta-btn">🎟️ Generate Active STAR-... Friend Invite</button>
+            </form>
+
+            <div class="table-scroll" tabindex="0" role="region" aria-labelledby="admin-invites-heading">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Invite Code</th>
+                    <th scope="col">Note &amp; Author</th>
+                    <th scope="col">Status &amp; Uses</th>
+                    <th scope="col">Safety Presets</th>
+                    <th scope="col">Parent Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="admin-invites-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
           <div class="admin-columns">
             <div class="admin-card">
               <div class="admin-card-header-row">
@@ -1869,6 +2139,184 @@
         </button>
         <div class="modal-footer">
           <button type="button" class="secondary-outline-btn" data-close-dialog="sky-dialog">Close</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- MODAL 12: "My Playgrounds" Cross-Playground Switcher & Friend Invite Unlock -->
+  <dialog id="playgrounds-dialog" closedby="any" aria-labelledby="playgrounds-dialog-title">
+    <div class="modal-shell modal-wide">
+      <header class="modal-header">
+        <div>
+          <h2 id="playgrounds-dialog-title">🌍 My Playgrounds — Visit Friends' Worlds</h2>
+          <p class="small-note">
+            Your customized 3D Avatar look travels with you automatically! Coins, Backpack items, Home plots, Chat &amp; Parent rules stay safely isolated inside each Playground.
+          </p>
+        </div>
+        <button type="button" class="modal-close-btn" data-close-dialog="playgrounds-dialog" aria-label="Close My Playgrounds">✕</button>
+      </header>
+      <div class="modal-body">
+        <div id="my-playgrounds-grid" class="backpack-items-grid" aria-live="polite"></div>
+
+        <form id="join-world-invite-form" class="admin-card" method="post" action="/api/ella-world/invites/join-world" aria-labelledby="join-world-heading">
+          <h3 id="join-world-heading">🎟️ Unlock Another Friend's Playground</h3>
+          <p class="small-note">Enter an active <code>STAR-...</code> Friend Invite code from a friend's parent to add their Playground to your switcher!</p>
+          <div class="admin-inline-grid">
+            <div class="field-group">
+              <label for="join-world-code-input">Friend Invite Code</label>
+              <input
+                type="text"
+                id="join-world-code-input"
+                name="code"
+                spellcheck="false"
+                autocorrect="off"
+                autocapitalize="characters"
+                placeholder="STAR-XXXX-XXXX"
+                required
+              />
+            </div>
+            <div class="field-group">
+              <label>&nbsp;</label>
+              <button type="submit" class="primary-cta-btn">✨ Redeem &amp; Visit Playground</button>
+            </div>
+          </div>
+          <p id="join-world-feedback" class="feedback-note" hidden role="status"></p>
+        </form>
+
+        <div class="modal-footer">
+          <button type="button" class="secondary-outline-btn" data-close-dialog="playgrounds-dialog">Close</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- MODAL 13: Kid Host Friend Invite Draft ("Pending Parent Approval") -->
+  <dialog id="host-invite-dialog" closedby="any" aria-labelledby="host-invite-dialog-title">
+    <div class="modal-shell">
+      <header class="modal-header">
+        <div>
+          <h2 id="host-invite-dialog-title">💌 Invite a Friend to Your Playground</h2>
+          <p class="small-note">
+            Create a <code>STAR-...</code> Friend Invite draft! Once a parent clicks <strong>✅ Approve</strong> in the Parent Admin Panel, your friend can redeem it to join!
+          </p>
+        </div>
+        <button type="button" class="modal-close-btn" data-close-dialog="host-invite-dialog" aria-label="Close Invite Friend">✕</button>
+      </header>
+      <div class="modal-body">
+        <form id="host-draft-invite-form" class="auth-form" method="post" action="/api/ella-world/invites/host-draft" aria-labelledby="host-invite-dialog-title">
+          <div class="field-group">
+            <label for="host-invite-note-input">Who is this invite for? (shown to Parent)</label>
+            <input
+              type="text"
+              id="host-invite-note-input"
+              name="labelNote"
+              maxlength="64"
+              placeholder="e.g. For Sophie from dance class"
+              required
+              autofocus
+            />
+          </div>
+          <p id="host-invite-feedback" class="feedback-note" hidden role="status" aria-live="polite"></p>
+          <button type="submit" class="primary-cta-btn">💌 Draft Friend Invite for Parent Approval</button>
+        </form>
+        <div class="modal-footer">
+          <button type="button" class="secondary-outline-btn" data-close-dialog="host-invite-dialog">Done</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- MODAL 14: Platform Super-Admin (Issue FAMILY-... Parent Founder Codes) -->
+  <dialog id="superadmin-dialog" closedby="any" aria-labelledby="superadmin-dialog-title">
+    <div class="modal-shell modal-wide">
+      <header class="modal-header">
+        <h2 id="superadmin-dialog-title">🏛️ Platform Founder Admin — Family Playgrounds &amp; <code>FAMILY-...</code> Invites</h2>
+        <button type="button" class="modal-close-btn" data-close-dialog="superadmin-dialog" aria-label="Close Platform Founder Admin">✕</button>
+      </header>
+      <div class="modal-body">
+        <form id="superadmin-auth-form" class="auth-form" method="post" action="/api/ella-world/superadmin/login" aria-labelledby="superadmin-dialog-title">
+          <p class="small-note">
+            Enter the <strong>Platform Super-Admin Password</strong> (<code>ELLA_SUPERADMIN_PASSWORD</code>) to issue <code>FAMILY-...</code> Founder Invite codes so invited families can spin up isolated Playgrounds.
+          </p>
+          <div class="field-group">
+            <label for="superadmin-password-input">Platform Super-Admin Password</label>
+            <input type="password" id="superadmin-password-input" name="password" autocomplete="current-password" required autofocus />
+          </div>
+          <p id="superadmin-auth-error" class="error-banner" hidden role="alert"></p>
+          <button type="submit" class="primary-cta-btn">Unlock Founder Admin</button>
+        </form>
+
+        <div id="superadmin-dashboard-content" hidden>
+          <div class="admin-columns">
+            <div class="admin-card">
+              <h3 id="superadmin-pg-heading">🏰 Hosted Family Playgrounds (<span id="superadmin-pg-count">0</span>)</h3>
+              <div class="table-scroll" tabindex="0" role="region" aria-labelledby="superadmin-pg-heading">
+                <table class="admin-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Playground</th>
+                      <th scope="col">Host</th>
+                      <th scope="col">Users / Online</th>
+                      <th scope="col">Blocks</th>
+                    </tr>
+                  </thead>
+                  <tbody id="superadmin-playgrounds-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="admin-card">
+              <h3 id="superadmin-create-heading">➕ Issue <code>FAMILY-...</code> Parent Founder Code</h3>
+              <form id="superadmin-create-invite-form" class="auth-form" method="post" action="/api/ella-world/superadmin/invites" aria-labelledby="superadmin-create-heading">
+                <div class="field-group">
+                  <label for="superadmin-invite-note">Family Note</label>
+                  <input type="text" id="superadmin-invite-note" name="labelNote" maxlength="64" placeholder="e.g. Maya's Family" />
+                </div>
+                <div class="field-group">
+                  <label for="superadmin-invite-uses">Max Playgrounds</label>
+                  <input type="number" id="superadmin-invite-uses" name="maxUses" min="1" max="25" value="1" inputmode="numeric" />
+                </div>
+                <p id="superadmin-invite-feedback" class="feedback-note" hidden role="status"></p>
+                <button type="submit" class="primary-cta-btn">🎟️ Issue FAMILY-... Founder Invite</button>
+              </form>
+            </div>
+          </div>
+
+          <div class="admin-card">
+            <h3 id="superadmin-invites-heading">📜 Issued <code>FAMILY-...</code> Founder Codes</h3>
+            <div class="table-scroll" tabindex="0" role="region" aria-labelledby="superadmin-invites-heading">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Founder Code</th>
+                    <th scope="col">Family Note</th>
+                    <th scope="col">Status &amp; Uses</th>
+                    <th scope="col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="superadmin-invites-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- MODAL 15: Scannable Invite Link / Android APK QR Share Card -->
+  <dialog id="invite-qr-dialog" closedby="any" aria-labelledby="invite-qr-dialog-title">
+    <div class="modal-shell">
+      <header class="modal-header">
+        <h2 id="invite-qr-dialog-title">📱 Scan Invite Link or Android App QR</h2>
+        <button type="button" class="modal-close-btn" data-close-dialog="invite-qr-dialog" aria-label="Close QR Card">✕</button>
+      </header>
+      <div class="modal-body qr-share-modal-body">
+        <div id="invite-qr-svg-target" class="qr-svg-box qr-svg-large"></div>
+        <code id="invite-qr-url-label" class="qr-url-code"></code>
+        <div class="modal-footer">
+          <button type="button" id="invite-qr-copy-btn" class="primary-cta-btn">📋 Copy Invite Link</button>
+          <button type="button" class="secondary-outline-btn" data-close-dialog="invite-qr-dialog">Close</button>
         </div>
       </div>
     </div>

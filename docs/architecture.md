@@ -315,11 +315,47 @@ To prevent penalized players from signing out, opening an Incognito window, or l
 
 ---
 
-## 15. Offloaded Rust Build & Verification Pipeline on `solidstate` (`192.168.11.25`)
+## 15. Offloaded Rust Build & Verification Pipeline on `water` (`192.168.11.7`) / `solidstate` (`192.168.11.25`)
 
-To keep the local workstation (`darter`) cool and responsive, heavy `cargo` compilations, Clippy checks, and integration test runs offload over LAN SSH to **`solidstate` (`robert@192.168.11.25:~/builds/ella-world`)**:
+To keep the local workstation (`darter`) cool and responsive, heavy `cargo` compilations, Clippy checks, Android NDK `gdext` builds, headless Godot 4 imports/tests, and APK/AAB exports offload over LAN SSH to **`water` (`robert@192.168.11.7:~/builds/ella-world`)** with automatic fallback to **`solidstate` (`robert@192.168.11.25:~/builds/ella-world`)**:
 - **`.cargo/config.toml`**: Caps any accidental local `cargo` invocation to `jobs = 2`.
-- **`scripts/remote_cargo_solidstate.sh`**: Syncs tracked sources (`Cargo.toml`, `Cargo.lock`, `src/`, `tests/`, `config/`, `public/`) via `rsync`, executes `cargo "$@"` against the warm remote `target/` cache on `solidstate`, and automatically pulls `target/release/ella-world-server` back to local `target/release/` on `--release` builds.
-- **`scripts/verify_native.sh`**: Runs browser ES module & CLI `node --check` syntax checks + zero-SSE audit locally, then runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and all **39 unit + integration tests** on `solidstate`.
+- **`scripts/remote_cargo_solidstate.sh`**: Auto-selects `water` (`192.168.11.7`) or `solidstate` (`192.168.11.25`), syncs tracked sources via `rsync`, executes `cargo "$@"` against the warm remote `target/` cache, and pulls `target/release/ella-world-server` back to local `target/release/` on `--release` builds.
+- **`scripts/verify_native.sh`**: Runs browser ES module & CLI `node --check` syntax checks + zero-SSE audit locally, then runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and all **40 unit + integration tests** remotely.
+
+---
+
+## 16. Invite-Only Multi-Playground Platform & Native Godot 4 Android App (`src/playground.rs`, `godot_client/`)
+
+### 16.1 Platform Registry & Zero-Migration Multi-Playground Multiplexing (`src/playground.rs`)
+- **Zero-Breakage Default Playground (`"ella"`)**: Ella's primary world remains stored directly in `ELLA_DATA_DIR` (`data/world_users.json`, `data/world_blocks.json`, `data/world_homes.json`, `data/world_leaderboards.json`, `data/world_chat.jsonl`).
+- **Isolated Additional Family Playgrounds (`data/playgrounds/<slug>/`)**: Each additional Playground spins up its own `Arc<WorldEngine>` backed by `data/playgrounds/<slug>/`, isolating:
+  - Per-Playground **Parent Master Password** (`adminPassword` — single-password Admin Panel workflow identical to Ella's World)
+  - Voxel blocks & neighborhood Home Plot claims (`world_blocks.json`, `world_homes.json`)
+  - Starlight Coin balances, 28-item Backpacks, Debtor's Prison state, Curfews & Chat logs (`world_users.json`, `world_chat.jsonl`)
+- **Single-Port Transport Multiplexing**:
+  - `src/auth.rs` embeds `worldSlug` inside signed HMAC-SHA256 `WireTokenPayload` tokens (`sign_world_token` / `verify_world_token`) while keeping `TokenClaims` backward-compatible (`default = "ella"`).
+  - `:4444` HTTPS/WSS (`src/http_api.rs`, `src/ws_spine.rs`), `:4444/udp` WebRTC SFU (`src/webrtc_sfu.rs`), and `:44445/udp` Native `EWLD` v1 (`src/udp_native.rs`) all route player state, discrete events, and Opus voice strictly within the session's `world_slug` (`attach_world`).
+
+### 16.2 Two-Tier Invite Governance (`data/platform_registry.json`)
+1. **Uninvited Signup Rejection**: Public account registration without a valid invite code is rejected (`403 Forbidden`).
+2. **Tier 1 — Friend Invites (`STAR-XXXX-XXXX`)**:
+   - **Parent Admin (`POST /api/ella-world/admin/invites`)**: Creates immediately `active` `STAR-...` codes with configurable `maxUses`, `expiresInHours`, `starterCoins`, and safety presets (`presetChatMode`, `presetVoiceMuted`, `presetCanBuild`, `presetCanTrade`), plus scannable SVG QR codes (`public/js/qr_svg.js`).
+   - **Kid Host Drafts (`POST /api/ella-world/invites/host-draft`)**: A Playground's Kid Host (`role == "host"`, e.g. Ella) can draft a Friend Invite in-game (`status: "pending_parent_approval"`). Attempting to redeem a pending code returns `403 Forbidden` until a Parent clicks **Approve** in the Admin Panel (`action: "approve"`).
+3. **Tier 2 — Parent Playground Founder Invites (`FAMILY-XXXX-XXXX`)**:
+   - Issued by the Platform Super-Admin (`ELLA_SUPERADMIN_PASSWORD`, `POST /api/ella-world/superadmin/invites`, `#superadmin-dialog`, or `scripts/ella_admin_user_cli.mjs --create-family-invite`).
+   - Redeemed via `POST /api/ella-world/playgrounds/create` to provision a brand-new `<Kid>'s World` Playground (`data/playgrounds/<slug>/`), register its independent Parent Master Password + initial Kid Host account, and attach live UDP/SFU loops without restarting `ella-world.service`.
+
+### 16.3 One Login + `"My Playgrounds"` Switcher & Cross-World Avatar Continuity
+- **Single Global Kid Identity (`GlobalUserIdentity`)**: Kids sign in once (`POST /api/ella-world/login`), inspect all invited Playgrounds (`GET /api/ella-world/playgrounds/mine`), redeem additional `STAR-...` invites (`POST /api/ella-world/invites/redeem-existing`), and hop across Playgrounds in 1 click/tap (`POST /api/ella-world/playgrounds/switch`).
+- **Roaming 3D `AvatarAppearance` with Local Exclusive Reconciliation**: Updating an outfit in any Playground (`WorldEngine::avatar_sync_tx`) updates `GlobalUserIdentity.avatar` and propagates to every Playground the player belongs to—automatically stripping Playground-exclusive dungeon/boss cosmetics in worlds where that item has not yet been earned (`reconcile_equipped_cosmetics`).
+
+### 16.4 Native Godot 4.3 Android App (`godot_client/`, `com.robertscreations.ellaworld`)
+- **Shared 3D Assets (`scripts/sync_godot_assets.sh`)**: Reuses the exact Blender 5.2 `.glb` packs (`ella_dti_wardrobe.glb`, `ella_world_environment.glb`, `ella_world_props_loot.glb`) and PBR Obby textures (`public/textures/obby/*`) for 1:1 visual and coordinate cross-play with browser players.
+- **Rust GDExtension (`godot_client/rust_opus`, `EllaNativeNet`)**: Built with `godot = "0.5"` (`api-4-3`) and pure-Rust `opus-pure = "0.2.5"` (RFC 6716 SILK/CELT/Hybrid 48 kHz stereo Opus encoder & decoder) for `aarch64-linux-android`, `x86_64-linux-android`, and `x86_64-unknown-linux-gnu`—speaking raw `EWLD` v1 UDP (`:44445/udp`) for 20 Hz movement + Push-to-Talk cross-play voice bridged directly into browser WebRTC SFU peers, paired with `WebSocketPeer` (`/api/ella-world/ws`) spine + binary fallback.
+- **Landscape Multi-Touch UX & Dual Packaging (`scripts/remote_build_android.sh`)**:
+  - Touch-index-isolated 360° left virtual joystick (`MultiTouchController.gd`), right-side 1-finger swipe-to-look + 2-finger pinch-zoom, and thumb-arc `Jump` / `Action` / `Board` / `Hold Mic` buttons.
+  - Exports both a **Signed Family Release APK** (`https://robertscreations.com:4444/download/ella-world.apk` + `/api/ella-world/android/release` + Web QR install modal) and a **Google Play Store Android App Bundle (`ella-world.aab`)** for Closed Testing.
+  - Highlighted fashion-spotlight extension documented in [`docs/dti_fashion_hangout_focus_extension.md`](dti_fashion_hangout_focus_extension.md).
+
 
 

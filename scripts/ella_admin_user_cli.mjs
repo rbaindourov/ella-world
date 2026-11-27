@@ -17,6 +17,16 @@
  *      - `node scripts/ella_admin_user_cli.mjs --trust-device <deviceId|shortSig> <true|false>`
  *      - `node scripts/ella_admin_user_cli.mjs --ban-device <deviceId|shortSig> <true|false>`
  *      - `node scripts/ella_admin_user_cli.mjs --unlink-device <deviceId|shortSig>`
+ *   7. Multi-Playground Friend Invites (`STAR-XXXX-XXXX`, scoped via `--world <slug>`):
+ *      - `node scripts/ella_admin_user_cli.mjs [--world ella] --invites`
+ *      - `node scripts/ella_admin_user_cli.mjs [--world ella] --create-friend-invite [--invite-label "For Leo"] [--max-uses 1] [--expires-hours 168] [--starter-coins 120]`
+ *      - `node scripts/ella_admin_user_cli.mjs [--world ella] --approve-invite <STAR-XXXX-XXXX>`
+ *      - `node scripts/ella_admin_user_cli.mjs [--world ella] --reject-invite <STAR-XXXX-XXXX>`
+ *      - `node scripts/ella_admin_user_cli.mjs [--world ella] --revoke-invite <STAR-XXXX-XXXX>`
+ *   8. Platform Super-Admin & Parent Founder Invites (`FAMILY-XXXX-XXXX`):
+ *      - `node scripts/ella_admin_user_cli.mjs --playgrounds [--superadmin-password <pw>]`
+ *      - `node scripts/ella_admin_user_cli.mjs --create-family-invite [--invite-label "Maya Family"] [--max-uses 1] [--expires-hours 336] [--superadmin-password <pw>]`
+ *      - `node scripts/ella_admin_user_cli.mjs --revoke-family-invite <FAMILY-XXXX-XXXX> [--superadmin-password <pw>]`
  */
 
 import { execFileSync } from 'node:child_process';
@@ -84,6 +94,20 @@ function parseArgs(argv) {
   const out = {
     baseUrl: 'https://192.168.11.24:4444',
     sshHost: 'robert@mail',
+    worldSlug: '',
+    superadminPassword: '',
+    playgroundsOnly: false,
+    createFamilyInvite: false,
+    revokeFamilyInvite: '',
+    invitesOnly: false,
+    createFriendInvite: false,
+    approveInvite: '',
+    rejectInvite: '',
+    revokeInvite: '',
+    inviteLabel: '',
+    maxUses: null,
+    expiresHours: null,
+    starterCoins: null,
     role: 'friend',
     preset: null,
     revokeAll: false,
@@ -116,7 +140,21 @@ function parseArgs(argv) {
     const v = argv[i + 1];
     if (k === '--base-url') { out.baseUrl = v; i++; }
     else if (k === '--ssh-host') { out.sshHost = v; i++; }
+    else if (k === '--world' || k === '--world-slug') { out.worldSlug = (v || '').trim().toLowerCase(); i++; }
     else if (k === '--admin-password') { out.adminPassword = v; i++; }
+    else if (k === '--superadmin-password') { out.superadminPassword = v || ''; i++; }
+    else if (k === '--playgrounds') { out.playgroundsOnly = true; }
+    else if (k === '--create-family-invite') { out.createFamilyInvite = true; }
+    else if (k === '--revoke-family-invite') { out.revokeFamilyInvite = (v || '').trim(); i++; }
+    else if (k === '--invites') { out.invitesOnly = true; }
+    else if (k === '--create-friend-invite') { out.createFriendInvite = true; }
+    else if (k === '--approve-invite') { out.approveInvite = (v || '').trim(); i++; }
+    else if (k === '--reject-invite') { out.rejectInvite = (v || '').trim(); i++; }
+    else if (k === '--revoke-invite') { out.revokeInvite = (v || '').trim(); i++; }
+    else if (k === '--invite-label') { out.inviteLabel = v || ''; i++; }
+    else if (k === '--max-uses') { out.maxUses = Math.max(1, Math.floor(Number(v) || 1)); i++; }
+    else if (k === '--expires-hours') { out.expiresHours = Math.max(0, Math.floor(Number(v) || 0)); i++; }
+    else if (k === '--starter-coins') { out.starterCoins = Math.max(0, Math.floor(Number(v) || 0)); i++; }
     else if (k === '--username') { out.username = v; i++; }
     else if (k === '--display-name') { out.displayName = v; i++; }
     else if (k === '--password') { out.password = v; i++; }
@@ -193,6 +231,21 @@ async function postAdminDevice(baseUrl, adminToken, payload) {
   return res.json();
 }
 
+async function postAdminInvites(baseUrl, adminToken, payload) {
+  const res = await fetch(`${baseUrl}/api/ella-world/admin/invites`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    throw new Error(`Admin invites action failed: HTTP ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
 function resolveDeviceIdFromDashboard(dashboard, queryId) {
   const q = String(queryId || '').trim();
   if (!q) return '';
@@ -205,8 +258,38 @@ function resolveDeviceIdFromDashboard(dashboard, queryId) {
   return exact ? exact.deviceId : q;
 }
 
+function resolveSuperadminPasswordFromRemote(sshHost) {
+  const rawOverride = execFileSync(
+    'ssh',
+    [
+      '-o',
+      'BatchMode=yes',
+      sshHost,
+      'grep -h "^Environment=ELLA_SUPERADMIN_PASSWORD=" /etc/systemd/system/ella-world.service.d/*.conf /etc/systemd/system/ella-world.service 2>/dev/null | tail -n 1 || true'
+    ],
+    { encoding: 'utf8' }
+  ).trim();
+  if (rawOverride) {
+    return rawOverride.replace(/^Environment=ELLA_SUPERADMIN_PASSWORD=/, '').replace(/^"|"$/g, '');
+  }
+  const rawJson = execFileSync(
+    'ssh',
+    ['-o', 'BatchMode=yes', sshHost, 'cat /var/lib/ella-world/world_users.json'],
+    { encoding: 'utf8' }
+  );
+  return JSON.parse(rawJson).adminPassword;
+}
+
 async function main() {
   const opts = parseArgs(process.argv);
+  const hasSuperadminAction =
+    opts.playgroundsOnly || opts.createFamilyInvite || Boolean(opts.revokeFamilyInvite);
+  const hasInviteAction =
+    opts.invitesOnly ||
+    opts.createFriendInvite ||
+    Boolean(opts.approveInvite) ||
+    Boolean(opts.rejectInvite) ||
+    Boolean(opts.revokeInvite);
   const hasDeviceAction =
     Boolean(opts.trustDeviceId) || Boolean(opts.banDeviceId) || Boolean(opts.unlinkDeviceId);
   const hasControlUpdates =
@@ -225,6 +308,8 @@ async function main() {
       hasControlUpdates);
 
   const hasAction =
+    hasSuperadminAction ||
+    hasInviteAction ||
     opts.revokeAll ||
     Boolean(opts.revokeUser) ||
     opts.listOnly ||
@@ -238,50 +323,188 @@ async function main() {
     console.error(
       [
         'Usage:',
-        '  node scripts/ella_admin_user_cli.mjs --revoke-all',
-        '  node scripts/ella_admin_user_cli.mjs --revoke-user <username>',
-        '  node scripts/ella_admin_user_cli.mjs --list',
-        '  node scripts/ella_admin_user_cli.mjs --devices',
-        '  node scripts/ella_admin_user_cli.mjs --trust-device <deviceId|shortSig> <true|false>',
-        '  node scripts/ella_admin_user_cli.mjs --ban-device <deviceId|shortSig> <true|false>',
-        '  node scripts/ella_admin_user_cli.mjs --unlink-device <deviceId|shortSig>',
-        '  node scripts/ella_admin_user_cli.mjs --username <u> --password <p> [--display-name <n>] [--preset jack_tech49]',
-        '  node scripts/ella_admin_user_cli.mjs --username <u> --coins <-50|+50>',
-        '  node scripts/ella_admin_user_cli.mjs --username <u> --sentence [tasks] [--reason "..."]',
-        '  node scripts/ella_admin_user_cli.mjs --username <u> --pardon',
-        '  node scripts/ella_admin_user_cli.mjs --username <u> --reset-strikes',
-        '  node scripts/ella_admin_user_cli.mjs --username <u> [--mute-voice true|false] [--chat-mode normal|quick_only|muted] [--can-build true|false] [--can-trade true|false] [--suspended true|false]'
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --revoke-all',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --revoke-user <username>',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --list',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --invites',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --create-friend-invite [--invite-label "..."] [--max-uses 1] [--expires-hours 168] [--starter-coins 120]',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --approve-invite <STAR-XXXX-XXXX>',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --reject-invite <STAR-XXXX-XXXX>',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --revoke-invite <STAR-XXXX-XXXX>',
+        '  node scripts/ella_admin_user_cli.mjs --playgrounds [--superadmin-password <pw>]',
+        '  node scripts/ella_admin_user_cli.mjs --create-family-invite [--invite-label "..."] [--max-uses 1] [--expires-hours 336]',
+        '  node scripts/ella_admin_user_cli.mjs --revoke-family-invite <FAMILY-XXXX-XXXX>',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --devices',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --trust-device <deviceId|shortSig> <true|false>',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --ban-device <deviceId|shortSig> <true|false>',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --unlink-device <deviceId|shortSig>',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --username <u> --password <p> [--display-name <n>] [--preset jack_tech49]',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --username <u> --coins <-50|+50>',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --username <u> --sentence [tasks] [--reason "..."]',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --username <u> --pardon',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --username <u> --reset-strikes',
+        '  node scripts/ella_admin_user_cli.mjs [--world <slug>] --username <u> [--mute-voice true|false] [--chat-mode normal|quick_only|muted] [--can-build true|false] [--can-trade true|false] [--suspended true|false]'
       ].join('\n')
     );
     process.exit(1);
   }
 
+  if (hasSuperadminAction) {
+    let superPw = opts.superadminPassword || process.env.ELLA_SUPERADMIN_PASSWORD || '';
+    if (!superPw) {
+      superPw = resolveSuperadminPasswordFromRemote(opts.sshHost);
+    }
+    const superLoginRes = await fetch(`${opts.baseUrl}/api/ella-world/superadmin/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: superPw })
+    });
+    if (!superLoginRes.ok) {
+      throw new Error(`Super-Admin login failed: HTTP ${superLoginRes.status} ${await superLoginRes.text()}`);
+    }
+    const { superadminToken, platform } = await superLoginRes.json();
+    if (opts.playgroundsOnly) {
+      console.log(JSON.stringify({ ok: true, platform }, null, 2));
+      return;
+    }
+    const payload = opts.createFamilyInvite
+      ? {
+          action: 'create',
+          labelNote: opts.inviteLabel || 'Family Playground Founder Invite',
+          maxUses: opts.maxUses ?? 1,
+          expiresInHours: opts.expiresHours ?? 336
+        }
+      : {
+          action: 'revoke',
+          code: opts.revokeFamilyInvite
+        };
+    const actRes = await fetch(`${opts.baseUrl}/api/ella-world/superadmin/invites`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${superadminToken}`
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!actRes.ok) {
+      throw new Error(`Super-Admin invite action failed: HTTP ${actRes.status} ${await actRes.text()}`);
+    }
+    const actOut = await actRes.json();
+    const shareUrl = actOut.invite?.code
+      ? `${opts.baseUrl.replace(/\/$/, '')}/?invite=${encodeURIComponent(actOut.invite.code)}`
+      : null;
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          invite: actOut.invite,
+          shareUrl,
+          playgroundCount: (actOut.platform?.playgrounds || []).length
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  const targetWorldSlug = opts.worldSlug || '';
   let adminPassword = opts.adminPassword || process.env.ELLA_ADMIN_PASSWORD || '';
   if (!adminPassword) {
+    const remoteUsersPath =
+      targetWorldSlug && targetWorldSlug !== 'ella'
+        ? `/var/lib/ella-world/playgrounds/${targetWorldSlug}/world_users.json`
+        : '/var/lib/ella-world/world_users.json';
     const rawJson = execFileSync(
       'ssh',
-      ['-o', 'BatchMode=yes', opts.sshHost, 'cat /var/lib/ella-world/world_users.json'],
+      ['-o', 'BatchMode=yes', opts.sshHost, `cat ${remoteUsersPath}`],
       { encoding: 'utf8' }
     );
     adminPassword = JSON.parse(rawJson).adminPassword;
   }
 
-  // 1. Authenticate to ELLA World Admin API
+  // 1. Authenticate to ELLA World Admin API (scoped to worldSlug when provided)
+  const adminLoginPayload = { password: adminPassword };
+  if (targetWorldSlug) adminLoginPayload.worldSlug = targetWorldSlug;
   const adminLoginRes = await fetch(`${opts.baseUrl}/api/ella-world/admin/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password: adminPassword })
+    body: JSON.stringify(adminLoginPayload)
   });
   if (!adminLoginRes.ok) {
     throw new Error(`Admin login failed: HTTP ${adminLoginRes.status}`);
   }
-  const { adminToken, dashboard: initialDashboard } = await adminLoginRes.json();
+  const { adminToken, worldSlug: resolvedWorldSlug, dashboard: initialDashboard } = await adminLoginRes.json();
+
+  if (hasInviteAction) {
+    if (opts.invitesOnly) {
+      const invRes = await fetch(`${opts.baseUrl}/api/ella-world/admin/invites`, {
+        headers: { Authorization: `Bearer ${adminToken}` }
+      });
+      if (!invRes.ok) {
+        throw new Error(`Failed to fetch invites: HTTP ${invRes.status} ${await invRes.text()}`);
+      }
+      const invOut = await invRes.json();
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            worldSlug: invOut.worldSlug || resolvedWorldSlug || 'ella',
+            worldName: initialDashboard?.worldName,
+            invites: invOut.invites || []
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+
+    let invPayload;
+    if (opts.createFriendInvite) {
+      invPayload = {
+        action: 'create',
+        labelNote: opts.inviteLabel || 'Friend Invite',
+        maxUses: opts.maxUses ?? 1,
+        expiresInHours: opts.expiresHours ?? 168,
+        presetChatMode: opts.chatMode || 'normal',
+        presetVoiceMuted: opts.muteVoice ?? false,
+        presetCanBuild: opts.canBuild ?? true,
+        presetCanTrade: opts.canTrade ?? true,
+        starterCoins: opts.starterCoins ?? 120
+      };
+    } else if (opts.approveInvite) {
+      invPayload = { action: 'approve', code: opts.approveInvite };
+    } else if (opts.rejectInvite) {
+      invPayload = { action: 'reject', code: opts.rejectInvite };
+    } else {
+      invPayload = { action: 'revoke', code: opts.revokeInvite };
+    }
+    const invActOut = await postAdminInvites(opts.baseUrl, adminToken, invPayload);
+    const shareUrl = invActOut.invite?.code
+      ? `${opts.baseUrl.replace(/\/$/, '')}/?invite=${encodeURIComponent(invActOut.invite.code)}`
+      : null;
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          worldSlug: invActOut.worldSlug || resolvedWorldSlug || 'ella',
+          invite: invActOut.invite,
+          shareUrl
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
 
   if (opts.devicesOnly) {
     console.log(
       JSON.stringify(
         {
           ok: true,
+          worldSlug: resolvedWorldSlug || 'ella',
           worldName: initialDashboard?.worldName,
           enforceMachineSignatures: initialDashboard?.enforceMachineSignatures,
           deviceCount: (initialDashboard?.devices || []).length,
@@ -347,6 +570,7 @@ async function main() {
       JSON.stringify(
         {
           ok: true,
+          worldSlug: resolvedWorldSlug || 'ella',
           worldName: initialDashboard?.worldName,
           sessionEpoch: initialDashboard?.sessionEpoch,
           worldLocked: initialDashboard?.worldLocked,
@@ -554,6 +778,7 @@ async function main() {
       JSON.stringify(
         {
           ok: true,
+          worldSlug: resolvedWorldSlug || 'ella',
           username: updatedUser?.username || opts.username,
           displayName: updatedUser?.displayName || opts.displayName || opts.username,
           passwordRotated: upsertOut.passwordRotated,
@@ -569,10 +794,16 @@ async function main() {
   }
 
   // 3. Verify player login works with exact credentials, then immediately logout so no ghost avatar remains
+  const verifyLoginPayload = {
+    username: opts.username,
+    password: opts.password,
+    clientId: 'verify_cli'
+  };
+  if (resolvedWorldSlug) verifyLoginPayload.worldSlug = resolvedWorldSlug;
   const loginRes = await fetch(`${opts.baseUrl}/api/ella-world/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: opts.username, password: opts.password, clientId: 'verify_cli' })
+    body: JSON.stringify(verifyLoginPayload)
   });
   if (!loginRes.ok) {
     throw new Error(`Player login verification failed: HTTP ${loginRes.status}`);
@@ -586,6 +817,7 @@ async function main() {
 
   console.log(JSON.stringify({
     ok: true,
+    worldSlug: loginData.worldSlug || resolvedWorldSlug || 'ella',
     username: loginData.self?.user?.username,
     displayName: loginData.self?.user?.displayName,
     passwordRotated: upsertOut.passwordRotated,

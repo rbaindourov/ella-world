@@ -7,6 +7,8 @@ use subtle::ConstantTimeEq;
 
 type HmacSha256 = Hmac<Sha256>;
 
+pub const DEFAULT_WORLD_SLUG: &str = "ella";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenClaims {
@@ -29,6 +31,15 @@ pub struct TokenClaims {
     pub device_id: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireTokenPayload {
+    #[serde(flatten)]
+    claims: TokenClaims,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    world_slug: Option<String>,
+}
+
 /// Computes a 64-bit HMAC-SHA256 fingerprint binding a session token to `(subject, current_password)`
 /// without exposing the password in token claims. Any password rollover automatically invalidates
 /// all prior tokens for that subject across restarts and transports.
@@ -49,7 +60,15 @@ pub fn password_token_sig(subject: &str, password: &str, secret: &str) -> String
 }
 
 pub fn sign_token(claims: &TokenClaims, secret: &str) -> String {
-    let json_bytes = serde_json::to_vec(claims).expect("TokenClaims serialization cannot fail");
+    sign_world_token(claims, None, secret)
+}
+
+pub fn sign_world_token(claims: &TokenClaims, world_slug: Option<&str>, secret: &str) -> String {
+    let payload = WireTokenPayload {
+        claims: claims.clone(),
+        world_slug: world_slug.map(str::to_string),
+    };
+    let json_bytes = serde_json::to_vec(&payload).expect("TokenClaims serialization cannot fail");
     let encoded_payload = URL_SAFE_NO_PAD.encode(json_bytes);
     let mut mac =
         HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts keys of any size");
@@ -60,6 +79,10 @@ pub fn sign_token(claims: &TokenClaims, secret: &str) -> String {
 }
 
 pub fn verify_token(token: &str, secret: &str) -> Option<TokenClaims> {
+    verify_world_token(token, secret).map(|(claims, _)| claims)
+}
+
+pub fn verify_world_token(token: &str, secret: &str) -> Option<(TokenClaims, String)> {
     let (data, sig) = token.split_once('.')?;
     if data.is_empty() || sig.is_empty() {
         return None;
@@ -77,7 +100,15 @@ pub fn verify_token(token: &str, secret: &str) -> Option<TokenClaims> {
     }
 
     let decoded = URL_SAFE_NO_PAD.decode(data).ok()?;
-    serde_json::from_slice(&decoded).ok()
+    let wire: WireTokenPayload = serde_json::from_slice(&decoded).ok()?;
+    let effective_slug = wire
+        .world_slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_WORLD_SLUG)
+        .to_string();
+    Some((wire.claims, effective_slug))
 }
 
 pub fn constant_time_str_eq(a: &str, b: &str) -> bool {

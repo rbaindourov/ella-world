@@ -1,0 +1,19 @@
+[package]
+name = "ella_native_net"
+version = "0.1.0"
+edition = "2021"
+description = "Native EWLD v1 UDP + RFC 6716 Opus Voice GDExtension for Ella's World Godot 4 Client"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+godot = { version = "0.5", features = ["api-4-3", "lazy-function-tables"] }
+opus-pure = "0.2.5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

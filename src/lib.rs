@@ -5,6 +5,7 @@ pub mod economy;
 pub mod http_api;
 pub mod models;
 pub mod persistence;
+pub mod playground;
 pub mod udp_native;
 pub mod udp_wire;
 pub mod webrtc_sfu;
@@ -14,6 +15,7 @@ pub mod ws_spine;
 use crate::config::ServerConfig;
 use crate::device_sig::ClientPeerAddr;
 use crate::http_api::{build_router, AppState};
+use crate::playground::PlaygroundRegistry;
 use crate::udp_native::NativeUdpServer;
 use crate::webrtc_sfu::WebRtcSfu;
 use crate::world::WorldEngine;
@@ -41,21 +43,23 @@ pub struct RunningEllaWorld {
     pub webrtc_udp_port: u16,
     pub native_udp_addr: SocketAddr,
     pub world: Arc<WorldEngine>,
+    pub registry: Arc<PlaygroundRegistry>,
     pub sfu: Arc<WebRtcSfu>,
     pub native_udp: Arc<NativeUdpServer>,
     pub ws_hub: Arc<WsSpineHub>,
     pub http_task: JoinHandle<anyhow::Result<()>>,
 }
 
-/// Starts the complete standalone ELLA World v0.3.0 Hybrid stack:
-/// 1. `WorldEngine` (persistent users + blocks + chat JSONL + 20 Hz simulation tick + 12s grace + stateSeq)
+/// Starts the complete standalone ELLA World Multi-Playground Hybrid stack:
+/// 1. `WorldEngine` + `PlaygroundRegistry` (default `"ella"` + isolated `data/playgrounds/<slug>/` worlds + Invite Ledger)
 /// 2. `WebRtcSfu` (single-port multiplexed 8-slot zero-renegotiation UDP Voice + State fast-lane on `webrtc_udp_port`)
 /// 3. `NativeUdpServer` (raw `tokio::net::UdpSocket` `EWLD` v1 voice + state server on `native_udp_addr`)
 /// 4. `axum` HTTP or Native Rust TLS HTTPS + `TCP_NODELAY` Persistent Binary/JSON WebSocket Spine (`/api/ella-world/ws`) on `http_addr`
 pub async fn start_all_servers(mut config: ServerConfig) -> anyhow::Result<RunningEllaWorld> {
     let pre_world = WorldEngine::new(config.clone())?;
-    let sfu = WebRtcSfu::bind_and_start(Arc::clone(&pre_world)).await?;
-    let native_udp = NativeUdpServer::bind_and_start(Arc::clone(&pre_world)).await?;
+    let registry = PlaygroundRegistry::new(Arc::clone(&pre_world)).await?;
+    let sfu = WebRtcSfu::bind_and_start(Arc::clone(&registry)).await?;
+    let native_udp = NativeUdpServer::bind_and_start(Arc::clone(&registry)).await?;
     let ws_hub = WsSpineHub::new();
 
     // Reflect ephemeral port bindings if `0` was passed in integration tests
@@ -76,6 +80,7 @@ pub async fn start_all_servers(mut config: ServerConfig) -> anyhow::Result<Runni
 
     let router = build_router(AppState {
         world: Arc::clone(&pre_world),
+        registry: Arc::clone(&registry),
         sfu: Arc::clone(&sfu),
         native_udp: Arc::clone(&native_udp),
         ws_hub: Arc::clone(&ws_hub),
@@ -94,6 +99,7 @@ pub async fn start_all_servers(mut config: ServerConfig) -> anyhow::Result<Runni
         webrtc_udp_port: sfu.udp_port(),
         native_udp_addr: native_udp.local_addr(),
         world: pre_world,
+        registry,
         sfu,
         native_udp,
         ws_hub,

@@ -1,0 +1,44 @@
+; Engine configuration file.
+; Best edited using the Godot 4.3 editor UI or clean key-value sections.
+
+config_version=5
+
+[application]
+
+config/name="Ella's World"
+config/description="Invite-Only Family 3D Hangout, Dress-Up Runway, Sky Obbies, Homes & Co-Op Adventures"
+config/version="1.0.0"
+run/main_scene="res://scenes/MainApp.tscn"
+config/features=PackedStringArray("4.3", "Mobile")
+boot_splash/bg_color=Color(0.0588235, 0.0901961, 0.164706, 1)
+config/icon="res://icon.svg"
+
+[audio]
+
+buses/default_bus_layout="res://default_bus_layout.tres"
+driver/enable_input=true
+driver/mix_rate=48000
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/handheld/orientation=4
+
+[input_devices]
+
+pointing/emulate_touch_from_mouse=true
+pointing/android/enable_pan_and_scale_gestures=true
+
+[network]
+
+tls/enable_tls_v1.3=true
+
+[rendering]
+
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
+textures/vram_compression/import_etc2_astc=true
+anti_aliasing/quality/msaa_3d=1

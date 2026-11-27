@@ -323,7 +323,7 @@ fn read_jsonl_records<T: DeserializeOwned>(path: &Path) -> Vec<T> {
     out
 }
 
-fn write_atomic_json<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+pub(crate) fn write_atomic_json<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }

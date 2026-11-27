@@ -14,3 +14,15 @@
 *.bak
 *.blend1
 *.blend2
+
+# Godot 4 Android client generated caches, synced binary assets & build outputs
+/godot_client/.godot/
+/godot_client/assets/
+/godot_client/build/
+/godot_client/bin/*.so
+/godot_client/bin/*.dll
+/godot_client/bin/*.dylib
+/godot_client/rust_opus/target/
+/public/download/*.apk
+/public/download/*.aab
+

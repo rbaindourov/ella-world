@@ -11,12 +11,13 @@
 //! `O(1)` memory with monotonic per-slot RTP sequence numbers and lightweight `voice_slot_map` events.
 
 use crate::models::now_ms;
+use crate::playground::PlaygroundRegistry;
 use crate::udp_native::handle_client_event_command;
 use crate::udp_wire::{decode_c2s_state, encode_pong, OP_C2S_PING, OP_C2S_STATE};
 use crate::world::{BridgedOpusFrame, UdpWorldEvent, WorldEngine};
 use bytes::Bytes;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -47,6 +48,10 @@ use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 
 pub const MAX_VOICE_SLOTS: usize = 8;
 
+fn rtc_session_key(world_slug: &str, self_id: &str) -> String {
+    format!("{world_slug}::{self_id}")
+}
+
 struct VoiceSlot {
     slot_id: String,
     track: Arc<TrackLocalStaticRTP>,
@@ -57,6 +62,8 @@ struct VoiceSlot {
 
 struct PeerRtcSession {
     session_nonce: u64,
+    world_slug: String,
+    world: Arc<WorldEngine>,
     self_id: String,
     username: String,
     device_id: Option<String>,
@@ -82,13 +89,11 @@ impl PeerRtcSession {
         if self.slots.is_empty() {
             return None;
         }
-        // Fast path: already assigned
         for s in &self.slots {
             if s.assigned_peer.read().await.as_deref() == Some(speaker_id) {
                 return Some((Arc::clone(s), false));
             }
         }
-        // Assign first empty slot
         for s in &self.slots {
             let mut guard = s.assigned_peer.write().await;
             if guard.is_none() {
@@ -97,7 +102,6 @@ impl PeerRtcSession {
                 return Some((Arc::clone(s), true));
             }
         }
-        // All slots occupied (>8 speakers): reuse least-recently-speaking slot
         let oldest = self
             .slots
             .iter()
@@ -127,19 +131,18 @@ impl PeerRtcSession {
 pub struct WebRtcSfu {
     api: API,
     udp_port: u16,
-    world: Arc<WorldEngine>,
+    registry: Arc<PlaygroundRegistry>,
     sessions: RwLock<HashMap<String, Arc<PeerRtcSession>>>,
+    attached_worlds: RwLock<HashSet<String>>,
     active_count: AtomicUsize,
     next_nonce: AtomicU64,
 }
 
 impl WebRtcSfu {
-    pub async fn bind_and_start(world: Arc<WorldEngine>) -> anyhow::Result<Arc<Self>> {
-        let bind_addr: SocketAddr = format!(
-            "{}:{}",
-            world.config.webrtc_udp_bind_ip, world.config.webrtc_udp_port
-        )
-        .parse()?;
+    pub async fn bind_and_start(registry: Arc<PlaygroundRegistry>) -> anyhow::Result<Arc<Self>> {
+        let cfg = &registry.base_config;
+        let bind_addr: SocketAddr =
+            format!("{}:{}", cfg.webrtc_udp_bind_ip, cfg.webrtc_udp_port).parse()?;
 
         let sock = socket2::Socket::new(
             if bind_addr.is_ipv4() {
@@ -159,8 +162,8 @@ impl WebRtcSfu {
         let udp_socket = UdpSocket::from_std(std_udp)?;
         let actual_port = udp_socket.local_addr()?.port();
         info!(
-            "🎙️ [WebRTC SFU] Single-port zero-renegotiation UDP Voice + State listening on {}:{}/udp",
-            world.config.webrtc_udp_bind_ip, actual_port
+            "🎙️ [WebRTC SFU] Single-port multi-playground UDP Voice + State listening on {}:{}/udp",
+            cfg.webrtc_udp_bind_ip, actual_port
         );
 
         let udp_mux = UDPMuxDefault::new(UDPMuxParams::new(udp_socket));
@@ -181,14 +184,13 @@ impl WebRtcSfu {
             RTPCodecType::Audio,
         )?;
 
-        let mut registry = Registry::new();
-        registry = register_default_interceptors(registry, &mut media_engine)?;
+        let mut interceptor_reg = Registry::new();
+        interceptor_reg = register_default_interceptors(interceptor_reg, &mut media_engine)?;
 
         let mut setting_engine = SettingEngine::default();
         setting_engine.set_network_types(vec![NetworkType::Udp4]);
         setting_engine.set_udp_network(UDPNetwork::Muxed(udp_mux));
 
-        // Exclude container virtual bridge interfaces (`docker0`, `br-*`, `veth*`)
         setting_engine.set_interface_filter(Box::new(|iface_name: &str| {
             !iface_name.starts_with("docker")
                 && !iface_name.starts_with("br-")
@@ -196,11 +198,11 @@ impl WebRtcSfu {
                 && !iface_name.starts_with("virbr")
         }));
 
-        if world.config.webrtc_udp_bind_ip == "127.0.0.1" || world.config.public_ip.is_none() {
+        if cfg.webrtc_udp_bind_ip == "127.0.0.1" || cfg.public_ip.is_none() {
             setting_engine.set_include_loopback_candidate(true);
         }
 
-        if let Some(pub_ip) = &world.config.public_ip {
+        if let Some(pub_ip) = &cfg.public_ip {
             info!(
                 "🌐 [WebRTC SFU] Advertising dual LAN Host + WAN Srflx UDP candidate {}:{}",
                 pub_ip, actual_port
@@ -209,22 +211,40 @@ impl WebRtcSfu {
 
         let api = APIBuilder::new()
             .with_media_engine(media_engine)
-            .with_interceptor_registry(registry)
+            .with_interceptor_registry(interceptor_reg)
             .with_setting_engine(setting_engine)
             .build();
 
         let sfu = Arc::new(Self {
             api,
             udp_port: actual_port,
-            world: Arc::clone(&world),
+            registry: Arc::clone(&registry),
             sessions: RwLock::new(HashMap::new()),
+            attached_worlds: RwLock::new(HashSet::new()),
             active_count: AtomicUsize::new(0),
             next_nonce: AtomicU64::new(1),
         });
 
-        // Bridge incoming Native Raw UDP Opus packets into browser pre-allocated voice slots!
-        let bridge_sfu = Arc::clone(&sfu);
+        for (slug, world) in registry.all_worlds().await {
+            sfu.attach_world(slug, world).await;
+        }
+
+        Ok(sfu)
+    }
+
+    /// Attaches Native->WebRTC Opus bridging, departed speaker cleanup, and session revocations
+    /// for a Playground onto this single-port SFU (idempotent per `world_slug`).
+    pub async fn attach_world(self: &Arc<Self>, world_slug: String, world: Arc<WorldEngine>) {
+        {
+            let mut attached = self.attached_worlds.write().await;
+            if !attached.insert(world_slug.clone()) {
+                return;
+            }
+        }
+
+        let bridge_sfu = Arc::clone(self);
         let bridge_world = Arc::clone(&world);
+        let bridge_slug = world_slug.clone();
         let mut opus_rx = world.opus_bridge_tx.subscribe();
         tokio::spawn(async move {
             while let Ok(frame) = opus_rx.recv().await {
@@ -235,31 +255,39 @@ impl WebRtcSfu {
                     continue;
                 }
                 bridge_sfu
-                    .fanout_opus_payload(&frame.from_id, frame.timestamp, &frame.payload)
+                    .fanout_opus_payload(
+                        &bridge_slug,
+                        &frame.from_id,
+                        frame.timestamp,
+                        &frame.payload,
+                    )
                     .await;
             }
         });
 
-        // Release voice slots cleanly whenever a player leaves the world
-        let leave_sfu = Arc::clone(&sfu);
+        let leave_sfu = Arc::clone(self);
+        let leave_slug = world_slug.clone();
         let mut ev_rx = world.udp_event_tx.subscribe();
         tokio::spawn(async move {
             while let Ok(ev) = ev_rx.recv().await {
                 if let UdpWorldEvent::PlayerLeave { id, .. } = ev {
-                    leave_sfu.release_departed_speaker(&id).await;
+                    leave_sfu.release_departed_speaker(&leave_slug, &id).await;
                 }
             }
         });
 
-        // Immediately close WebRTC UDP PeerConnections on session revocation / password rollover
-        let revoke_sfu = Arc::clone(&sfu);
+        let revoke_sfu = Arc::clone(self);
+        let revoke_slug = world_slug;
         let mut revoke_rx = world.session_revoke_tx.subscribe();
         tokio::spawn(async move {
             while let Ok(sig) = revoke_rx.recv().await {
                 let matching: Vec<Arc<PeerRtcSession>> = {
                     let map = revoke_sfu.sessions.read().await;
                     map.values()
-                        .filter(|s| sig.matches(&s.self_id, &s.username, s.device_id.as_deref()))
+                        .filter(|s| {
+                            s.world_slug == revoke_slug
+                                && sig.matches(&s.self_id, &s.username, s.device_id.as_deref())
+                        })
                         .cloned()
                         .collect()
                 };
@@ -274,13 +302,15 @@ impl WebRtcSfu {
                         let _ = dc.send_text(notice.clone()).await;
                     }
                     revoke_sfu
-                        .cleanup_session_matching(&sess.self_id, Some(sess.session_nonce))
+                        .cleanup_session_matching(
+                            &sess.world_slug,
+                            &sess.self_id,
+                            Some(sess.session_nonce),
+                        )
                         .await;
                 }
             }
         });
-
-        Ok(sfu)
     }
 
     pub fn udp_port(&self) -> u16 {
@@ -298,7 +328,7 @@ impl WebRtcSfu {
             slots,
         };
         if let Ok(txt) = serde_json::to_string(&ev) {
-            self.world
+            sess.world
                 .send_peer_targeted_json(&sess.self_id, txt.clone())
                 .await;
             if let Some(dc) = sess.events_dc.read().await.clone() {
@@ -307,9 +337,15 @@ impl WebRtcSfu {
         }
     }
 
-    async fn release_departed_speaker(&self, departed_id: &str) {
-        let peers: Vec<Arc<PeerRtcSession>> =
-            self.sessions.read().await.values().cloned().collect();
+    async fn release_departed_speaker(&self, world_slug: &str, departed_id: &str) {
+        let peers: Vec<Arc<PeerRtcSession>> = self
+            .sessions
+            .read()
+            .await
+            .values()
+            .filter(|s| s.world_slug == world_slug)
+            .cloned()
+            .collect();
         for sess in peers {
             if sess.release_speaker_slot(departed_id).await {
                 self.emit_slot_map_for(&sess).await;
@@ -317,13 +353,19 @@ impl WebRtcSfu {
         }
     }
 
-    async fn fanout_opus_payload(&self, from_id: &str, timestamp: u32, payload: &Bytes) {
+    async fn fanout_opus_payload(
+        &self,
+        world_slug: &str,
+        from_id: &str,
+        timestamp: u32,
+        payload: &Bytes,
+    ) {
         let listeners: Vec<Arc<PeerRtcSession>> = self
             .sessions
             .read()
             .await
             .values()
-            .filter(|s| s.self_id != from_id)
+            .filter(|s| s.world_slug == world_slug && s.self_id != from_id)
             .cloned()
             .collect();
 
@@ -352,9 +394,6 @@ impl WebRtcSfu {
         }
     }
 
-    /// Counts how many audio media sections in the browser's SDP offer accept downlink audio
-    /// (`a=recvonly` or `a=sendrecv`) so we pre-bind that exact count of `Sendonly` slot tracks
-    /// (up to `MAX_VOICE_SLOTS = 8`) with zero unmatched transceivers.
     fn count_offered_downlink_audio_slots(offer_sdp: &str) -> usize {
         let mut in_audio = false;
         let mut current_dir = "sendrecv";
@@ -384,7 +423,7 @@ impl WebRtcSfu {
     }
 
     fn inject_public_srflx_candidate(&self, sdp: &str) -> String {
-        let Some(pub_ip) = &self.world.config.public_ip else {
+        let Some(pub_ip) = &self.registry.base_config.public_ip else {
             return sdp.to_string();
         };
         if sdp.contains(pub_ip) {
@@ -410,19 +449,22 @@ impl WebRtcSfu {
         out
     }
 
-    /// Cleans up a specific `PeerRtcSession` (matching `expected_nonce` if `Some` so an older
-    /// closing PeerConnection can never tear down a newly replaced session!).
-    /// Never evicts the player from `WorldEngine::players`—presence belongs to the WebSocket Spine!
-    pub async fn cleanup_session_matching(&self, self_id: &str, expected_nonce: Option<u64>) {
+    pub async fn cleanup_session_matching(
+        &self,
+        world_slug: &str,
+        self_id: &str,
+        expected_nonce: Option<u64>,
+    ) {
+        let key = rtc_session_key(world_slug, self_id);
         let removed_sess = {
             let mut map = self.sessions.write().await;
-            let should_remove = match (map.get(self_id), expected_nonce) {
+            let should_remove = match (map.get(&key), expected_nonce) {
                 (Some(existing), Some(nonce)) => existing.session_nonce == nonce,
                 (Some(_), None) => true,
                 (None, _) => false,
             };
             let s = if should_remove {
-                map.remove(self_id)
+                map.remove(&key)
             } else {
                 None
             };
@@ -432,21 +474,22 @@ impl WebRtcSfu {
 
         if let Some(s) = removed_sess {
             s.revoked.store(true, Ordering::Release);
-            self.world.set_udp_fastlane_active(self_id, false).await;
+            s.world.set_udp_fastlane_active(self_id, false).await;
             let _ = s.pc.close().await;
         }
     }
 
-    pub async fn cleanup_session(&self, self_id: &str) {
-        self.cleanup_session_matching(self_id, None).await;
+    pub async fn cleanup_session(&self, world_slug: &str, self_id: &str) {
+        self.cleanup_session_matching(world_slug, self_id, None)
+            .await;
     }
 
-    pub async fn cleanup_sessions_for_username(&self, username: &str) -> usize {
+    pub async fn cleanup_sessions_for_username(&self, world_slug: &str, username: &str) -> usize {
         let target = username.trim().to_lowercase();
         let matching: Vec<(String, u64)> = {
             let map = self.sessions.read().await;
             map.values()
-                .filter(|s| s.username.eq_ignore_ascii_case(&target))
+                .filter(|s| s.world_slug == world_slug && s.username.eq_ignore_ascii_case(&target))
                 .map(|s| {
                     s.revoked.store(true, Ordering::Release);
                     (s.self_id.clone(), s.session_nonce)
@@ -455,15 +498,17 @@ impl WebRtcSfu {
         };
         let count = matching.len();
         for (sid, nonce) in matching {
-            self.cleanup_session_matching(&sid, Some(nonce)).await;
+            self.cleanup_session_matching(world_slug, &sid, Some(nonce))
+                .await;
         }
         count
     }
 
-    pub async fn cleanup_all_sessions(&self) -> usize {
+    pub async fn cleanup_all_sessions(&self, world_slug: &str) -> usize {
         let all: Vec<(String, u64)> = {
             let map = self.sessions.read().await;
             map.values()
+                .filter(|s| s.world_slug == world_slug)
                 .map(|s| {
                     s.revoked.store(true, Ordering::Release);
                     (s.self_id.clone(), s.session_nonce)
@@ -472,25 +517,24 @@ impl WebRtcSfu {
         };
         let count = all.len();
         for (sid, nonce) in all {
-            self.cleanup_session_matching(&sid, Some(nonce)).await;
+            self.cleanup_session_matching(world_slug, &sid, Some(nonce))
+                .await;
         }
         count
     }
 
-    /// Accepts a browser's single-shot SDP Offer (`POST /api/ella-world/rtc/offer`), binding:
-    /// - 1 inbound Opus RTP voice track -> fanned out over UDP (`44444/udp`) to all listeners' pre-allocated slots
-    /// - Up to 8 pre-allocated outbound `Sendonly` Opus voice slots (`ella_slot_0`..`ella_slot_7`) -> ZERO renegotiation!
-    /// - `ella-udp-state` unreliable binary DataChannel (`20 Hz` UDP movement/emotes/RTT fast-lane)
-    /// - `ella-reliable-events` reliable UDP DataChannel
     pub async fn accept_browser_offer(
         self: &Arc<Self>,
+        world_slug: String,
+        world: Arc<WorldEngine>,
         self_id: String,
         username: String,
         device_id: Option<String>,
         offer_sdp: String,
     ) -> anyhow::Result<String> {
-        let _ = self.world.ensure_player_online(&self_id, &username).await;
-        self.cleanup_session_matching(&self_id, None).await;
+        let _ = world.ensure_player_online(&self_id, &username).await;
+        self.cleanup_session_matching(&world_slug, &self_id, None)
+            .await;
 
         let pc = Arc::new(
             self.api
@@ -525,7 +569,6 @@ impl WebRtcSfu {
                 )
                 .await?;
 
-            // Drain RTCP receiver reports so sender buffers never stall
             let rtcp_sender = transceiver.sender().await;
             tokio::spawn(async move {
                 let mut rtcp_buf = vec![0u8; 1500];
@@ -541,9 +584,7 @@ impl WebRtcSfu {
             }));
         }
 
-        // Pre-assign slots for currently online peers so mapping is ready before first syllable!
-        let existing_peer_ids: Vec<String> = self
-            .world
+        let existing_peer_ids: Vec<String> = world
             .active_player_ids()
             .await
             .into_iter()
@@ -558,6 +599,8 @@ impl WebRtcSfu {
         let session_nonce = self.next_nonce.fetch_add(1, Ordering::Relaxed);
         let session = Arc::new(PeerRtcSession {
             session_nonce,
+            world_slug: world_slug.clone(),
+            world: Arc::clone(&world),
             self_id: self_id.clone(),
             username: username.clone(),
             device_id,
@@ -569,17 +612,16 @@ impl WebRtcSfu {
 
         {
             let mut map = self.sessions.write().await;
-            map.insert(self_id.clone(), Arc::clone(&session));
+            map.insert(rtc_session_key(&world_slug, &self_id), Arc::clone(&session));
             self.active_count.store(map.len(), Ordering::Relaxed);
         }
 
-        // Also pre-assign this new joiner into an open voice slot on already-connected peers
         let other_sessions: Vec<Arc<PeerRtcSession>> = self
             .sessions
             .read()
             .await
             .values()
-            .filter(|s| s.self_id != self_id)
+            .filter(|s| s.world_slug == world_slug && s.self_id != self_id)
             .cloned()
             .collect();
         for other in other_sessions {
@@ -588,11 +630,14 @@ impl WebRtcSfu {
             }
         }
 
-        // 1. Lifecycle monitor — ONLY toggles `udp_fastlane_active`; NEVER kicks player from world!
         let state_sfu = Arc::clone(self);
+        let state_world = Arc::clone(&world);
+        let state_slug = world_slug.clone();
         let state_self_id = self_id.clone();
         pc.on_peer_connection_state_change(Box::new(move |st: RTCPeerConnectionState| {
             let sfu_c = Arc::clone(&state_sfu);
+            let world_c = Arc::clone(&state_world);
+            let slug_c = state_slug.clone();
             let sid = state_self_id.clone();
             Box::pin(async move {
                 if matches!(
@@ -600,29 +645,30 @@ impl WebRtcSfu {
                     RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
                 ) {
                     sfu_c
-                        .cleanup_session_matching(&sid, Some(session_nonce))
+                        .cleanup_session_matching(&slug_c, &sid, Some(session_nonce))
                         .await;
                 } else if st == RTCPeerConnectionState::Disconnected {
-                    sfu_c.world.set_udp_fastlane_active(&sid, false).await;
+                    world_c.set_udp_fastlane_active(&sid, false).await;
                 }
             })
         }));
 
-        // 2. Incoming Opus voice RTP stream over UDP -> fan out into listeners' pre-allocated slots!
         let track_sfu = Arc::clone(self);
-        let track_world = Arc::clone(&self.world);
+        let track_world = Arc::clone(&world);
+        let track_slug = world_slug.clone();
         let track_self_id = self_id.clone();
         pc.on_track(Box::new(move |remote_track, _receiver, _transceiver| {
             let sfu_c = Arc::clone(&track_sfu);
             let world_c = Arc::clone(&track_world);
+            let slug_c = track_slug.clone();
             let sid = track_self_id.clone();
             Box::pin(async move {
                 if remote_track.kind() != RTPCodecType::Audio {
                     return;
                 }
                 info!(
-                    "🎤 [WebRTC SFU] Receiving zero-renegotiation UDP Opus stream from {}",
-                    sid
+                    "🎤 [WebRTC SFU] Receiving zero-renegotiation UDP Opus stream from {} (world={})",
+                    sid, slug_c
                 );
                 while let Ok((rtp_pkt, _attrs)) = remote_track.read_rtp().await {
                     if !world_c.is_voice_allowed_for(&sid).await {
@@ -636,15 +682,19 @@ impl WebRtcSfu {
                         payload: rtp_pkt.payload.clone(),
                     });
                     sfu_c
-                        .fanout_opus_payload(&sid, rtp_pkt.header.timestamp, &rtp_pkt.payload)
+                        .fanout_opus_payload(
+                            &slug_c,
+                            &sid,
+                            rtp_pkt.header.timestamp,
+                            &rtp_pkt.payload,
+                        )
                         .await;
                 }
             })
         }));
 
-        // 3. Incoming DataChannels over UDP (`ella-udp-state` & `ella-reliable-events`)
         let dc_sfu = Arc::clone(self);
-        let dc_world = Arc::clone(&self.world);
+        let dc_world = Arc::clone(&world);
         let dc_sess = Arc::clone(&session);
         pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
             let label = dc.label().to_string();
@@ -664,7 +714,7 @@ impl WebRtcSfu {
         let offer = RTCSessionDescription::offer(offer_sdp)?;
         if let Err(err) = pc.set_remote_description(offer).await {
             warn!("Rejected invalid SDP offer from {}: {}", self_id, err);
-            self.cleanup_session_matching(&self_id, Some(session_nonce))
+            self.cleanup_session_matching(&world_slug, &self_id, Some(session_nonce))
                 .await;
             return Err(err.into());
         }
