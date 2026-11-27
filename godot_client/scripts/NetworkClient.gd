@@ -213,7 +213,7 @@ func redeem_friend_invite(code: String, uname: String, dname: String, pw: String
 		"clientId": client_id,
 		"deviceFp": _build_device_fingerprint()
 	}
-	request_json("/api/ella-world/invites/redeem-friend", HTTPClient.METHOD_POST, body, "", _on_auth_http_response)
+	request_json("/api/ella-world/invites/redeem", HTTPClient.METHOD_POST, body, "", _on_auth_http_response)
 
 func create_family_playground(code: String, world_name: String, world_slug: String, admin_pw: String, host_uname: String, host_dname: String, host_pw: String) -> void:
 	var body := {
@@ -227,7 +227,7 @@ func create_family_playground(code: String, world_name: String, world_slug: Stri
 		"clientId": client_id,
 		"deviceFp": _build_device_fingerprint()
 	}
-	request_json("/api/ella-world/playgrounds/create", HTTPClient.METHOD_POST, body, "", _on_auth_http_response)
+	request_json("/api/ella-world/invites/redeem-family", HTTPClient.METHOD_POST, body, "", _on_auth_http_response)
 
 func switch_playground(target_slug: String) -> void:
 	if auth_token.is_empty():
@@ -247,7 +247,7 @@ func redeem_additional_invite(code: String, cb: Callable) -> void:
 		"clientId": client_id,
 		"deviceFp": _build_device_fingerprint()
 	}
-	request_json("/api/ella-world/invites/redeem-existing", HTTPClient.METHOD_POST, body, auth_token, func(status: int, data: Dictionary) -> void:
+	request_json("/api/ella-world/invites/join-world", HTTPClient.METHOD_POST, body, auth_token, func(status: int, data: Dictionary) -> void:
 		if status >= 200 and status < 300 and data.has("token"):
 			_apply_authenticated_session(data)
 		if cb.is_valid():

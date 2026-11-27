@@ -343,10 +343,10 @@ To keep the local workstation (`darter`) cool and responsive, heavy `cargo` comp
    - **Kid Host Drafts (`POST /api/ella-world/invites/host-draft`)**: A Playground's Kid Host (`role == "host"`, e.g. Ella) can draft a Friend Invite in-game (`status: "pending_parent_approval"`). Attempting to redeem a pending code returns `403 Forbidden` until a Parent clicks **Approve** in the Admin Panel (`action: "approve"`).
 3. **Tier 2 — Parent Playground Founder Invites (`FAMILY-XXXX-XXXX`)**:
    - Issued by the Platform Super-Admin (`ELLA_SUPERADMIN_PASSWORD`, `POST /api/ella-world/superadmin/invites`, `#superadmin-dialog`, or `scripts/ella_admin_user_cli.mjs --create-family-invite`).
-   - Redeemed via `POST /api/ella-world/playgrounds/create` to provision a brand-new `<Kid>'s World` Playground (`data/playgrounds/<slug>/`), register its independent Parent Master Password + initial Kid Host account, and attach live UDP/SFU loops without restarting `ella-world.service`.
+   - Redeemed via `POST /api/ella-world/invites/redeem-family` (aliased at `/playgrounds/create`) to provision a brand-new `<Kid>'s World` Playground (`data/playgrounds/<slug>/`), register its independent Parent Master Password + initial Kid Host account, and attach live UDP/SFU loops without restarting `ella-world.service`.
 
 ### 16.3 One Login + `"My Playgrounds"` Switcher & Cross-World Avatar Continuity
-- **Single Global Kid Identity (`GlobalUserIdentity`)**: Kids sign in once (`POST /api/ella-world/login`), inspect all invited Playgrounds (`GET /api/ella-world/playgrounds/mine`), redeem additional `STAR-...` invites (`POST /api/ella-world/invites/redeem-existing`), and hop across Playgrounds in 1 click/tap (`POST /api/ella-world/playgrounds/switch`).
+- **Single Global Kid Identity (`GlobalUserIdentity`)**: Kids sign in once (`POST /api/ella-world/login`), inspect all invited Playgrounds (`GET /api/ella-world/playgrounds/mine`), redeem additional `STAR-...` invites (`POST /api/ella-world/invites/join-world`), and hop across Playgrounds in 1 click/tap (`POST /api/ella-world/playgrounds/switch`).
 - **Roaming 3D `AvatarAppearance` with Local Exclusive Reconciliation**: Updating an outfit in any Playground (`WorldEngine::avatar_sync_tx`) updates `GlobalUserIdentity.avatar` and propagates to every Playground the player belongs to—automatically stripping Playground-exclusive dungeon/boss cosmetics in worlds where that item has not yet been earned (`reconcile_equipped_cosmetics`).
 
 ### 16.4 Native Godot 4.3 Android App (`godot_client/`, `com.robertscreations.ellaworld`)

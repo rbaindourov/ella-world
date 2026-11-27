@@ -34,6 +34,7 @@ rsync -az \
   --exclude '/scratch/' \
   --exclude '/godot_client/.godot/' \
   --exclude '/godot_client/android/' \
+  --exclude '/godot_client/android_gradle/' \
   --exclude '/godot_client/build/' \
   --exclude '/godot_client/bin/*.so' \
   --exclude '/godot_client/rust_opus/target/' \

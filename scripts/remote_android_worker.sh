@@ -26,14 +26,23 @@ cp -f target/x86_64-linux-android/release/libella_native_net.so "$HOME/builds/el
 
 cd "$HOME/builds/ella-world/godot_client"
 
-# Ensure Godot 4.3 Android Gradle build template is unpacked for Play Store AAB export
+# Ensure clean .gdignore-protected Gradle build template directory for Play Store AAB export
 TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/4.3.stable"
-if [[ ! -f android/.build_version ]]; then
-  echo "  -> Unpacking Godot 4.3 Android Gradle source template for AAB export..."
-  mkdir -p android/build
-  unzip -oq "${TEMPLATE_DIR}/android_source.zip" -d android/build
-  printf "4.3.stable" > android/.build_version
+mkdir -p android_gradle build rust_opus .godot
+: > android_gradle/.gdignore
+: > build/.gdignore
+: > rust_opus/.gdignore
+if [[ -d android ]]; then
+  : > android/.gdignore
 fi
+if [[ ! -f android_gradle/.build_version ]]; then
+  echo "  -> Unpacking Godot 4.3 Android Gradle source template for AAB export..."
+  mkdir -p android_gradle/build
+  unzip -oq "${TEMPLATE_DIR}/android_source.zip" -d android_gradle/build
+  printf "4.3.stable" > android_gradle/.build_version
+  printf "4.3.stable" > android_gradle/build/.build_version
+fi
+printf "res://ella_native_net.gdextension\n" > .godot/extension_list.cfg
 
 # Ensure headless Godot editor settings point to JDK 17, Android SDK, and debug keystore
 mkdir -p "$HOME/.config/godot"

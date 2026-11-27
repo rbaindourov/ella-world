@@ -87,9 +87,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/playgrounds/public", get(playgrounds_public_handler))
         .route("/playgrounds/mine", get(playgrounds_mine_handler))
         .route("/playgrounds/switch", post(playgrounds_switch_handler))
+        .route("/playgrounds/create", post(invites_redeem_family_handler))
         .route("/invites/inspect", get(invites_inspect_handler))
         .route("/invites/redeem", post(invites_redeem_handler))
+        .route("/invites/redeem-friend", post(invites_redeem_handler))
         .route("/invites/join-world", post(invites_join_world_handler))
+        .route("/invites/redeem-existing", post(invites_join_world_handler))
         .route(
             "/invites/redeem-family",
             post(invites_redeem_family_handler),

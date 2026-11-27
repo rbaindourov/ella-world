@@ -875,7 +875,8 @@ func _append_chat_entry(entry: Dictionary) -> void:
 func _on_playgrounds_updated(data: Dictionary) -> void:
 	for c in playgrounds_list_vbox.get_children():
 		c.queue_free()
-	var arr: Array = data.get("playgrounds", []) if data.get("playgrounds") is Array else []
+	var raw_arr: Variant = data.get("myPlaygrounds", data.get("playgrounds", []))
+	var arr: Array = raw_arr if raw_arr is Array else []
 	for pg in arr:
 		if not (pg is Dictionary):
 			continue
